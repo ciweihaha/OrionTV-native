@@ -268,6 +268,9 @@ class MoonTvApi @Inject constructor(
                 throw e
             } catch (e: NonRetryableHttpException) {
                 throw IOException("HTTP ${e.statusCode}，不重试")
+            } catch (e: ResponseTooLargeException) {
+                // 响应体超限是确定性失败：重发只会再下载一遍同样的超大体，不重试
+                throw e
             } catch (e: IOException) {
                 lastError = e
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
@@ -281,11 +284,11 @@ class MoonTvApi @Inject constructor(
     private fun readBodyLimited(response: okhttp3.Response): String {
         val declared = response.header("Content-Length")?.toLongOrNull()
         if (declared != null && declared > ApiClient.MAX_BODY_BYTES) {
-            throw IOException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
+            throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
         val body = response.body?.string().orEmpty()
         if (body.toByteArray(Charsets.UTF_8).size > ApiClient.MAX_BODY_BYTES) {
-            throw IOException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
+            throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
         return body
     }
@@ -310,3 +313,6 @@ class MoonTvApi @Inject constructor(
 }
 
 class UnauthorizedException(message: String) : Exception(message)
+
+/** 响应体超限（>2MB）：确定性失败，不重试（仍是 IOException，调用方照常捕获）。 */
+internal class ResponseTooLargeException(message: String) : IOException(message)
