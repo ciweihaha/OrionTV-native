@@ -26,6 +26,9 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 - NanoHTTPD（远程输入 12346 服务）+ ZXing（二维码）
 
 依赖版本口径见 `gradle/libs.versions.toml`（以 `CONTRACT.md` §2 为准，全仓只用一套）。
+两处与 CONTRACT §2 不同（原版本在 Maven 上不存在，换为邻近可用版本）：
+tv-foundation 1.0.1 → **1.0.0**（androidx.tv:tv-foundation 最高只到 1.0.0，
+tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）。
 
 ## 怎么编
 
