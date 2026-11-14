@@ -71,7 +71,7 @@ class AggApi @Inject constructor(
                 Request.Builder().url(url).get().build(),
                 circuitBreaker = videoListCircuitBreaker,
             )
-            val body = readBodyLimited(response)
+            val body = readBodyLimited(response, videoListCircuitBreaker)
             val parsed = try {
                 json.decodeFromString<AggListResponse>(body)
             } catch (e: Exception) {
@@ -111,7 +111,7 @@ class AggApi @Inject constructor(
             timeoutSeconds = ApiClient.VERSION_CHECK_TIMEOUT_SECONDS,
             circuitBreaker = versionCircuitBreaker,
         )
-        val body = readBodyLimited(response)
+        val body = readBodyLimited(response, versionCircuitBreaker)
         val parsed = try {
             json.decodeFromString<VersionResponse>(body)
         } catch (e: Exception) {
@@ -145,13 +145,23 @@ class AggApi @Inject constructor(
         )
     }
 
-    /** 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验，复用 MoonTvApi 的思路）。 */
-    private fun readBodyLimited(response: okhttp3.Response): String {
+    /**
+     * 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验，复用 MoonTvApi 的思路）。
+     * 体读取超时也要记一次熔断（第 10 轮）：熔断器的判据就是“体超时”，而 body.string()
+     * 发生在 executeWithRetry 返回之后，不包进来熔断就永远看不到真正的体超时；
+     * 记在本次请求的熔断器上（与 executeWithRetry 的按请求计数一致，不重复记）。
+     */
+    private fun readBodyLimited(response: okhttp3.Response, circuitBreaker: CircuitBreaker): String {
         val declared = response.header("Content-Length")?.toLongOrNull()
         if (declared != null && declared > ApiClient.MAX_BODY_BYTES) {
             throw AggInvalidResponseException("agg 响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
-        val body = response.body?.string().orEmpty()
+        val body = try {
+            response.body?.string().orEmpty()
+        } catch (e: java.net.SocketTimeoutException) {
+            circuitBreaker.recordFailure()
+            throw e
+        }
         if (body.toByteArray(Charsets.UTF_8).size > ApiClient.MAX_BODY_BYTES) {
             throw AggInvalidResponseException("agg 响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
