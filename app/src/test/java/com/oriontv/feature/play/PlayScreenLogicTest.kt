@@ -20,4 +20,12 @@ class PlayScreenLogicTest {
         assertFalse(shouldShowPlayerControls(true, true, false))
         assertFalse(shouldShowPlayerControls(false, false, false))
     }
+
+    @Test
+    fun `seek keys intercepted only when controls shown and drawer closed`() {
+        // P1-2：控制条可见时左/右恒为快进预览；抽屉打开或控制条未显示时不拦截
+        assertTrue(shouldInterceptSeekKeys(controlsShown = true, drawerOpen = false))
+        assertFalse(shouldInterceptSeekKeys(controlsShown = true, drawerOpen = true))
+        assertFalse(shouldInterceptSeekKeys(controlsShown = false, drawerOpen = false))
+    }
 }
