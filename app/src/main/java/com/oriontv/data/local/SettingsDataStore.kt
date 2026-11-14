@@ -38,6 +38,8 @@ class SettingsDataStore @Inject constructor(
         val NEXT_EPISODE_OVERLAY_ENABLED = booleanPreferencesKey("nextEpisodeOverlayEnabled")
         val INCOGNITO_MODE = booleanPreferencesKey("incognitoMode")
         val BACKGROUND_PLAYBACK = booleanPreferencesKey("backgroundPlayback")
+        /** 倍速记忆：关掉后开播一律 1×，也不保存新倍速（阶段 4）。 */
+        val SPEED_MEMORY = booleanPreferencesKey("speedMemory")
         val UPDATE_LAST_CHECK_TIME = longPreferencesKey(StorageKeys.UPDATE_LAST_CHECK_TIME)
         val UPDATE_SKIP_VERSION = stringPreferencesKey(StorageKeys.UPDATE_SKIP_VERSION)
         /** 仅登录标记位，"1" 或 ""，不是 token（plan §5.4）。 */
@@ -59,6 +61,7 @@ class SettingsDataStore @Inject constructor(
     val nextEpisodeOverlayEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.NEXT_EPISODE_OVERLAY_ENABLED] ?: true }
     val incognitoMode: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.INCOGNITO_MODE] ?: false }
     val backgroundPlayback: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.BACKGROUND_PLAYBACK] ?: false }
+    val speedMemory: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.SPEED_MEMORY] ?: true }
     val updateLastCheckTime: Flow<Long> = context.settingsDataStore.data.map { it[Keys.UPDATE_LAST_CHECK_TIME] ?: 0L }
     val updateSkipVersion: Flow<String> = context.settingsDataStore.data.map { it[Keys.UPDATE_SKIP_VERSION].orEmpty() }
     val authCookies: Flow<String> = context.settingsDataStore.data.map { it[Keys.AUTH_COOKIES].orEmpty() }
@@ -104,6 +107,10 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setBackgroundPlayback(value: Boolean) {
         context.settingsDataStore.edit { it[Keys.BACKGROUND_PLAYBACK] = value }
+    }
+
+    suspend fun setSpeedMemory(value: Boolean) {
+        context.settingsDataStore.edit { it[Keys.SPEED_MEMORY] = value }
     }
 
     suspend fun setUpdateLastCheckTime(value: Long) {

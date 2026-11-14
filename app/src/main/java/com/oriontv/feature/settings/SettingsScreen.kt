@@ -1,6 +1,8 @@
 package com.oriontv.feature.settings
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,20 +26,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.Text
+import com.oriontv.BuildConfig
 import com.oriontv.core.focus.onKeyUp
-import com.oriontv.ui.components.ConfirmDialog
+import com.oriontv.feature.remoteinput.QrCodeGenerator
+import com.oriontv.feature.remoteinput.RemoteInputModal
+import com.oriontv.feature.update.UpdateCard
+import com.oriontv.feature.update.UpdateViewModel
+import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.orionFocus
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** 设置左菜单（ui-design.md §5.7）：源地址 / 播放设置 / 远程输入 / 检查更新 / 关于。 */
 private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "检查更新", "关于")
@@ -43,83 +57,199 @@ private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "
 /**
  * 设置页（ui-design.md §5.7）：左右两栏。
  * 左菜单列表，右内容区随左菜单切换；焦点在左菜单，右键进右栏，左键回左菜单
- * （方向键移动由系统焦点链处理）；
- * 源地址：API + M3U 两行输入，保存立即生效并清除登录态；
- * 播放设置：下集预告、跳过片头、倍速记忆三个开关；
- * 检查更新：当前版本 + “检查更新”按钮，有新版弹出更新卡片。
- * M3 补：真实读写 SettingsRepository、版本检查、登录态清除。
+ *（手工焦点机：只响应松键 KeyUp，菜单上下顺序移动由空间导航处理，
+ * 左右切换由 FocusRequester 显式交接，焦点永不丢失）；
+ * 源地址：API + M3U 两行输入，保存立即生效并清除登录态（保存按钮未改时不可点）；
+ * 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画开关 + 片头时长；
+ * 远程输入：开关 + 服务状态 + 二维码 + 配对码；检查更新：当前版本 + 检查按钮 + 更新卡片。
  */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel(),
 ) {
+    val uiState by viewModel.uiState.collectAsState()
+    val remoteState by viewModel.remoteInputState.collectAsState()
+    val updateState by updateViewModel.uiState.collectAsState()
     var selectedMenu by remember { mutableStateOf(0) }
-    var apiUrl by remember { mutableStateOf("") }
-    var m3uUrl by remember { mutableStateOf("") }
-    var nextPreview by remember { mutableStateOf(true) }
-    var skipIntro by remember { mutableStateOf(true) }
-    var speedMemory by remember { mutableStateOf(true) }
-    var showUpdateCard by remember { mutableStateOf(false) }
+    var showQrModal by remember { mutableStateOf(false) }
+    val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
+    val rightRequester = remember { FocusRequester() }
 
-    Row(
+    LaunchedEffect(Unit) {
+        menuRequesters[0].requestFocus()
+        viewModel.restoreRemoteInputIfEnabled()
+    }
+    // Toast 2 秒消失（ui-design.md §5.8）。
+    LaunchedEffect(uiState.toast) {
+        if (uiState.toast != null) {
+            delay(2000)
+            viewModel.consumeToast()
+        }
+    }
+    LaunchedEffect(updateState.toast) {
+        if (updateState.toast != null) {
+            delay(2000)
+            updateViewModel.consumeToast()
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(OrionDimens.ContentPadding),
+            .onKeyUp { event ->
+                if (event.key == Key.Back) {
+                    onBack()
+                    true
+                } else {
+                    false
+                }
+            },
     ) {
-        // 左：菜单列表。
-        Column(
-            modifier = Modifier.width(320.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(OrionDimens.ContentPadding),
         ) {
-            Text(text = "设置", style = OrionTextStyles.PageTitle)
-            Spacer(modifier = Modifier.height(16.dp))
-            SettingsMenu.forEachIndexed { index, label ->
-                SettingsMenuItem(
-                    label = label,
-                    selected = selectedMenu == index,
-                    onClick = { selectedMenu = index },
-                )
+            // 左：菜单列表。
+            Column(
+                modifier = Modifier.width(320.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(text = "设置", style = OrionTextStyles.PageTitle)
+                Spacer(modifier = Modifier.height(16.dp))
+                SettingsMenu.forEachIndexed { index, label ->
+                    SettingsMenuItem(
+                        label = label,
+                        selected = selectedMenu == index,
+                        modifier = Modifier.focusRequester(menuRequesters[index]),
+                        onClick = { selectedMenu = index },
+                        onRight = { rightRequester.requestFocus() },
+                    )
+                }
+            }
+
+            // 右：内容区。
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 48.dp)
+                    .onKeyUp { event ->
+                        if (event.key == Key.DirectionLeft) {
+                            menuRequesters[selectedMenu].requestFocus()
+                            true
+                        } else {
+                            false
+                        }
+                    },
+            ) {
+                when (selectedMenu) {
+                    0 -> SourceSettings(
+                        apiUrl = uiState.apiUrl,
+                        onApiUrlChange = { viewModel.onApiUrlChange(it) },
+                        m3uUrl = uiState.m3uUrl,
+                        onM3uUrlChange = { viewModel.onM3uUrlChange(it) },
+                        dirty = viewModel.isDirty,
+                        isSaving = uiState.isSaving,
+                        onSave = { viewModel.saveSourceAddresses() },
+                        firstRequester = rightRequester,
+                    )
+                    1 -> PlaybackSettings(
+                        state = uiState,
+                        onNextPreviewChange = { viewModel.setNextEpisodeOverlay(it) },
+                        onSkipIntroChange = { viewModel.setAutoSkipIntro(it) },
+                        onSpeedMemoryChange = { viewModel.setSpeedMemory(it) },
+                        onIncognitoChange = { viewModel.setIncognitoMode(it) },
+                        onBackgroundChange = { viewModel.setBackgroundPlayback(it) },
+                        onCycleIntroSeconds = { viewModel.cycleIntroSkipSeconds() },
+                        firstRequester = rightRequester,
+                    )
+                    2 -> RemoteInputSettings(
+                        enabled = uiState.remoteInputEnabled,
+                        isRunning = remoteState.isRunning,
+                        serverUrl = remoteState.serverUrl,
+                        pairingCode = remoteState.pairingCode,
+                        error = remoteState.error,
+                        onToggle = { viewModel.setRemoteInputEnabled(it) },
+                        onShowQr = { showQrModal = true },
+                        firstRequester = rightRequester,
+                    )
+                    3 -> UpdateSettings(
+                        currentVersion = updateState.currentVersion,
+                        isChecking = updateState.isChecking,
+                        error = updateState.error,
+                        onCheckUpdate = { updateViewModel.checkForUpdate(silent = false) },
+                        firstRequester = rightRequester,
+                    )
+                    4 -> AboutSettings(firstRequester = rightRequester)
+                }
             }
         }
 
-        // 右：内容区。
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 48.dp),
-        ) {
-            when (selectedMenu) {
-                0 -> SourceSettings(
-                    apiUrl = apiUrl,
-                    onApiUrlChange = { apiUrl = it },
-                    m3uUrl = m3uUrl,
-                    onM3uUrlChange = { m3uUrl = it },
-                    onSave = { /* M3：保存并清除登录态 */ },
+        // Toast：底部居中，2 秒消失。
+        val toast = uiState.toast ?: updateState.toast
+        if (toast != null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                OrionToast(message = toast, modifier = Modifier.padding(bottom = 48.dp))
+            }
+        }
+        // 更新失败红字：除卡片内已显示外，这里也给一行（卡片关闭后仍可见）。
+        if (updateState.error != null && !updateState.showUpdateCard) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Text(
+                    text = updateState.error ?: "",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.Error,
+                    modifier = Modifier.padding(bottom = 96.dp),
                 )
-                1 -> PlaybackSettings(
-                    nextPreview = nextPreview,
-                    onNextPreviewChange = { nextPreview = it },
-                    skipIntro = skipIntro,
-                    onSkipIntroChange = { skipIntro = it },
-                    speedMemory = speedMemory,
-                    onSpeedMemoryChange = { speedMemory = it },
+            }
+        }
+        if (uiState.error != null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Text(
+                    text = uiState.error ?: "",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.Error,
+                    modifier = Modifier.padding(bottom = 96.dp),
                 )
-                2 -> RemoteInputSettings()
-                3 -> UpdateSettings(onCheckUpdate = { showUpdateCard = true })
-                4 -> AboutSettings()
             }
         }
     }
 
-    if (showUpdateCard) {
-        ConfirmDialog(
-            title = "发现新版本 v2.0.1",
-            message = "大小：18MB\n更新内容：修复已知问题，提升稳定性。",
-            confirmText = "立即更新",
-            cancelText = "跳过此版",
-            onConfirm = { showUpdateCard = false /* M3：走 UpdateService 下载安装 */ },
-            onCancel = { showUpdateCard = false },
+    // 更新卡片：版本号 / 大小 / 更新说明 / 立即更新 / 跳过此版。
+    if (updateState.showUpdateCard && updateState.latestVersion != null) {
+        UpdateCard(
+            currentVersion = updateState.currentVersion,
+            latestVersion = updateState.latestVersion ?: "",
+            apkSizeBytes = updateState.apkSizeBytes,
+            downloading = updateState.downloading,
+            downloadProgress = updateState.downloadProgress,
+            downloaded = updateState.downloadedFilePath != null,
+            error = updateState.error,
+            onUpdate = { updateViewModel.startDownload() },
+            onInstall = { updateViewModel.installUpdate() },
+            onSkip = { updateViewModel.skipVersion() },
+            onDismiss = { updateViewModel.dismissCard() },
+        )
+    }
+
+    // 远程输入二维码弹窗。
+    if (showQrModal) {
+        RemoteInputModal(
+            serverUrl = remoteState.serverUrl,
+            pairingCode = remoteState.pairingCode,
+            error = remoteState.error,
+            onDismiss = { showQrModal = false },
         )
     }
 }
@@ -128,20 +258,27 @@ fun SettingsScreen(
 private fun SettingsMenuItem(
     label: String,
     selected: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onRight: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .focusable()
             .onFocusChanged { focused = it.isFocused }
             .onKeyUp {
-                if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
-                    onClick()
-                    true
-                } else {
-                    false
+                when (it.key) {
+                    Key.DirectionCenter, Key.Enter -> {
+                        onClick()
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        onRight()
+                        true
+                    }
+                    else -> false
                 }
             }
             .orionFocus(focused)
@@ -167,13 +304,25 @@ private fun SourceSettings(
     onApiUrlChange: (String) -> Unit,
     m3uUrl: String,
     onM3uUrlChange: (String) -> Unit,
+    dirty: Boolean,
+    isSaving: Boolean,
     onSave: () -> Unit,
+    firstRequester: FocusRequester,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(text = "源地址", style = OrionTextStyles.SectionTitle)
-        SettingsInputRow(label = "API 地址", value = apiUrl, onValueChange = onApiUrlChange)
+        SettingsInputRow(
+            label = "API 地址",
+            value = apiUrl,
+            onValueChange = onApiUrlChange,
+            focusRequester = firstRequester,
+        )
         SettingsInputRow(label = "M3U 地址", value = m3uUrl, onValueChange = onM3uUrlChange)
-        PrimaryButton(text = "保存", onClick = onSave)
+        PrimaryButton(
+            text = if (isSaving) "保存中…" else "保存",
+            onClick = onSave,
+            enabled = dirty && !isSaving,
+        )
         Text(text = "保存后立即生效，并清除登录状态。", style = OrionTextStyles.Small)
     }
 }
@@ -183,7 +332,9 @@ private fun SettingsInputRow(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
+    focusRequester: FocusRequester? = null,
 ) {
+    var focused by remember { mutableStateOf(false) }
     Column {
         Text(text = label, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         Spacer(modifier = Modifier.height(8.dp))
@@ -192,13 +343,21 @@ private fun SettingsInputRow(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(OrionDimens.CardCornerRadius))
                 .background(OrionColors.Surface)
+                .border(
+                    width = if (focused) OrionDimens.FocusBorderWidth else 1.dp,
+                    color = if (focused) OrionColors.Brand else OrionColors.Divider,
+                    shape = RoundedCornerShape(OrionDimens.CardCornerRadius),
+                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
                 textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                    .onFocusChanged { focused = it.isFocused },
                 decorationBox = { innerTextField ->
                     if (value.isEmpty()) {
                         Text(text = "请输入$label", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
@@ -210,33 +369,100 @@ private fun SettingsInputRow(
     }
 }
 
-/** 播放设置：下集预告、跳过片头、倍速记忆三个开关。 */
+/** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画 + 片头时长。 */
 @Composable
 private fun PlaybackSettings(
-    nextPreview: Boolean,
+    state: SettingsUiState,
     onNextPreviewChange: (Boolean) -> Unit,
-    skipIntro: Boolean,
     onSkipIntroChange: (Boolean) -> Unit,
-    speedMemory: Boolean,
     onSpeedMemoryChange: (Boolean) -> Unit,
+    onIncognitoChange: (Boolean) -> Unit,
+    onBackgroundChange: (Boolean) -> Unit,
+    onCycleIntroSeconds: () -> Unit,
+    firstRequester: FocusRequester,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(text = "播放设置", style = OrionTextStyles.SectionTitle)
-        ToggleRow(label = "下集预告", checked = nextPreview, onToggle = { onNextPreviewChange(!nextPreview) })
-        ToggleRow(label = "跳过片头", checked = skipIntro, onToggle = { onSkipIntroChange(!skipIntro) })
-        ToggleRow(label = "倍速记忆", checked = speedMemory, onToggle = { onSpeedMemoryChange(!speedMemory) })
+        ToggleRow(
+            label = "下一集预告",
+            description = "播到片尾附近时弹出下一集预告，可立即播放或关闭",
+            checked = state.nextEpisodeOverlay,
+            onToggle = { onNextPreviewChange(!state.nextEpisodeOverlay) },
+            modifier = Modifier.focusRequester(firstRequester),
+        )
+        ToggleRow(
+            label = "跳过片头",
+            description = "播放到片头结束处自动跳过；没标过片头时间时按下面“片头时长”跳",
+            checked = state.autoSkipIntro,
+            onToggle = { onSkipIntroChange(!state.autoSkipIntro) },
+        )
+        ToggleRow(
+            label = "倍速记忆",
+            description = "记住每部影片的倍速，下次开播自动恢复；关掉后一律 1 倍速",
+            checked = state.speedMemory,
+            onToggle = { onSpeedMemoryChange(!state.speedMemory) },
+        )
+        ToggleRow(
+            label = "无痕模式",
+            description = "开启后不保存播放记录与断点，不写搜索历史；收藏不受影响",
+            checked = state.incognitoMode,
+            onToggle = { onIncognitoChange(!state.incognitoMode) },
+        )
+        ToggleRow(
+            label = "后台播放与画中画",
+            description = "切到后台时继续播放并进入画中画；关掉后退出播放页即停播",
+            checked = state.backgroundPlayback,
+            onToggle = { onBackgroundChange(!state.backgroundPlayback) },
+        )
+        // 片头时长：点按循环切换档位（0=不跳，只用手动标记的片头时间）。
+        var focused by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusable()
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyUp {
+                    if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
+                        onCycleIntroSeconds()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .orionFocus(focused)
+                .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "片头时长", style = OrionTextStyles.Body)
+                Text(
+                    text = "没标过片头时间时，按这个时长跳过片头",
+                    style = OrionTextStyles.Small,
+                    color = OrionColors.TextSecondary,
+                )
+            }
+            Text(
+                text = if (state.introSkipSeconds == 0) "不跳过" else "${state.introSkipSeconds}秒",
+                style = OrionTextStyles.Body,
+                color = OrionColors.Brand,
+            )
+        }
     }
 }
 
 @Composable
 private fun ToggleRow(
     label: String,
+    description: String,
     checked: Boolean,
     onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .focusable()
             .onFocusChanged { focused = it.isFocused }
@@ -254,7 +480,10 @@ private fun ToggleRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, style = OrionTextStyles.Body)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = label, style = OrionTextStyles.Body)
+            Text(text = description, style = OrionTextStyles.Small, color = OrionColors.TextSecondary)
+        }
         Text(
             text = if (checked) "开" else "关",
             style = OrionTextStyles.Body,
@@ -263,42 +492,125 @@ private fun ToggleRow(
     }
 }
 
-/** 远程输入：手机扫码后在手机上打字（端口 12346，RemoteInputService）。 */
+/** 远程输入：开关 + 服务状态（异常红字）+ 二维码 + 配对码。 */
 @Composable
-private fun RemoteInputSettings() {
+private fun RemoteInputSettings(
+    enabled: Boolean,
+    isRunning: Boolean,
+    serverUrl: String?,
+    pairingCode: String?,
+    error: String?,
+    onToggle: (Boolean) -> Unit,
+    onShowQr: () -> Unit,
+    firstRequester: FocusRequester,
+) {
+    var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(serverUrl) {
+        qrBitmap = if (serverUrl.isNullOrBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.Default) { QrCodeGenerator.generateBitmap(serverUrl) }
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(text = "远程输入", style = OrionTextStyles.SectionTitle)
-        Text(text = "用手机扫码，在手机上输入文字，实时同步到电视。", style = OrionTextStyles.Body, color = OrionTextStyles.Body.color)
-        Box(
-            modifier = Modifier
-                .width(200.dp)
-                .height(200.dp)
-                .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
-                .background(OrionColors.Surface),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(text = "二维码（M3 接）", style = OrionTextStyles.Small)
+        ToggleRow(
+            label = "远程输入",
+            description = "开启后手机扫码，在手机上打字，实时同步到电视搜索框",
+            checked = enabled,
+            onToggle = { onToggle(!enabled) },
+            modifier = Modifier.focusRequester(firstRequester),
+        )
+        if (enabled) {
+            when {
+                isRunning -> {
+                    Text(
+                        text = "服务运行中：$serverUrl",
+                        style = OrionTextStyles.Body,
+                        color = OrionColors.PlayingGreen,
+                    )
+                    if (!pairingCode.isNullOrBlank()) {
+                        Text(
+                            text = "配对码：$pairingCode",
+                            style = OrionTextStyles.SectionTitle,
+                            color = OrionColors.Brand,
+                        )
+                    }
+                    if (qrBitmap != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = qrBitmap!!.asImageBitmap(),
+                            contentDescription = "远程输入二维码",
+                            modifier = Modifier
+                                .width(200.dp)
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
+                                .background(androidx.compose.ui.graphics.Color.White)
+                                .padding(8.dp),
+                        )
+                    }
+                    SecondaryButton(text = "放大二维码", onClick = onShowQr)
+                }
+                error != null -> {
+                    Text(text = error, style = OrionTextStyles.Body, color = OrionColors.Error)
+                }
+                else -> {
+                    Text(text = "服务启动中…", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+                }
+            }
+        } else {
+            Text(
+                text = "用手机扫码，在手机上输入文字，实时同步到电视。服务端口：12346。",
+                style = OrionTextStyles.Body,
+                color = OrionColors.TextSecondary,
+            )
         }
-        Text(text = "服务端口：12346", style = OrionTextStyles.Small)
     }
 }
 
-/** 检查更新：当前版本 + “检查更新”按钮。 */
+/** 检查更新：当前版本 + “检查更新”按钮；有新版弹更新卡片。 */
 @Composable
-private fun UpdateSettings(onCheckUpdate: () -> Unit) {
+private fun UpdateSettings(
+    currentVersion: String,
+    isChecking: Boolean,
+    error: String?,
+    onCheckUpdate: () -> Unit,
+    firstRequester: FocusRequester,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(text = "检查更新", style = OrionTextStyles.SectionTitle)
-        Text(text = "当前版本：v2.0.0", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
-        SecondaryButton(text = "检查更新", onClick = onCheckUpdate)
+        Text(text = "当前版本：v$currentVersion", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+        SecondaryButton(
+            text = if (isChecking) "检查中…" else "检查更新",
+            onClick = onCheckUpdate,
+            enabled = !isChecking,
+            modifier = Modifier.focusRequester(firstRequester),
+        )
+        if (error != null) {
+            Text(text = error, style = OrionTextStyles.Body, color = OrionColors.Error)
+        }
     }
 }
 
 /** 关于：版本与包名。 */
 @Composable
-private fun AboutSettings() {
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+private fun AboutSettings(firstRequester: FocusRequester) {
+    // 关于页无可交互控件：整块内容可聚焦，给右键进右栏一个落点（焦点永不丢失）。
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier
+            .focusable()
+            .focusRequester(firstRequester)
+            .onFocusChanged { focused = it.isFocused }
+            .orionFocus(focused)
+            .padding(8.dp),
+    ) {
         Text(text = "关于", style = OrionTextStyles.SectionTitle)
-        Text(text = "OrionTV v2.0.0（versionCode 10703）", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+        Text(
+            text = "OrionTV v${BuildConfig.VERSION_NAME}（versionCode ${BuildConfig.VERSION_CODE}）",
+            style = OrionTextStyles.Body,
+            color = OrionColors.TextSecondary,
+        )
         Text(text = "包名：com.oriontv", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         Text(text = "Kotlin + Compose for TV + Media3 原生重写。", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
     }

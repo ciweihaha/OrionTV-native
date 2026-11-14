@@ -93,6 +93,17 @@ object AppModule {
         settingsRepository: com.oriontv.data.repo.SettingsRepository,
     ): com.oriontv.data.repo.DetailRepository =
         com.oriontv.data.repo.DetailRepository(moonTvApi, settingsRepository, Dispatchers.IO)
+
+    /**
+     * UpdateDownloader 的 @Inject 构造函数带默认参数 `ioDispatcher = Dispatchers.IO`，
+     * Hilt 不会用默认值注入——这里显式 @Provides 构造（已知坑）。
+     */
+    @Provides
+    @Singleton
+    fun provideUpdateDownloader(
+        client: OkHttpClient,
+    ): com.oriontv.feature.update.UpdateDownloader =
+        com.oriontv.feature.update.UpdateDownloader(client, Dispatchers.IO)
 }
 
 /** 进程内 CookieJar：按 host 存 cookie，过期自动丢弃。 */
