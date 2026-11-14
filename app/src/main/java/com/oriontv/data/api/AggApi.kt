@@ -49,7 +49,7 @@ class AggApi @Inject constructor(
                 }
                 .build()
             val response = executeWithRetry(Request.Builder().url(url).get().build())
-            val body = response.body?.string().orEmpty()
+            val body = readBody(response)
             val parsed = try {
                 json.decodeFromString<AggListResponse>(body)
             } catch (e: Exception) {
@@ -70,12 +70,26 @@ class AggApi @Inject constructor(
             Request.Builder().url(url).get().build(),
             timeoutSeconds = ApiClient.VERSION_CHECK_TIMEOUT_SECONDS,
         )
-        val body = response.body?.string().orEmpty()
+        val body = readBody(response)
         val parsed = json.decodeFromString<VersionResponse>(body)
         require(com.oriontv.core.util.VersionUtils.isValidVersion(parsed.version)) {
             "版本号格式非法：${parsed.version}"
         }
         parsed.version
+    }
+
+    /**
+     * 读响应体：体读取超时也要记一次熔断——熔断器的判据就是“体超时”，
+     * 而 body.string() 发生在 executeWithRetry 返回之后，不包进来熔断就永远
+     * 看不到真正的体超时（请求阶段的超时在 executeWithRetry 里已记）。
+     */
+    private fun readBody(response: okhttp3.Response): String {
+        return try {
+            response.body?.string().orEmpty()
+        } catch (e: java.net.SocketTimeoutException) {
+            circuitBreaker.recordFailure()
+            throw e
+        }
     }
 
     /**
