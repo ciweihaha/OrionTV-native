@@ -55,6 +55,8 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 失效源置灰仍可切换；换源保留集数。
  * 第 3 轮收尾 B-P2-24：三参旧入口已删（全仓零调用，唯一调用走四参），
  * title 为空时仍用 id 兜底（见 DetailScreenContent 的 init 调用）。
+ * 返回全靠系统 Back/导航（P2-6：第 5 轮删掉从未被调用的 onBack 死参数，
+ * main 的 B-P2-24 已先删掉四参入口的 onBack，这里只剩注释对齐）。
  */
 @Composable
 fun DetailScreen(
