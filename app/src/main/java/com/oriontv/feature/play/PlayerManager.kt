@@ -128,9 +128,13 @@ class PlayerManager @Inject constructor(
     val bufferedPositionMs: Long get() = player.bufferedPosition.coerceAtLeast(0L)
     val isPlaying: Boolean get() = player.isPlaying
     /** 是否自然播完（STATE_ENDED；第 6 轮 P1-1：播完态下 isPlaying 恒 false，
-     * 须用它与“用户暂停”区分——播完时下一集倒计时应继续走，暂停时应冻结）。 */
+     * 须用它与“用户暂停”区分——A8-P1-1 起下一集倒计时只在播完态走）。 */
     val isEnded: Boolean get() = player.playbackState == Player.STATE_ENDED
     val isBuffering: Boolean get() = player.playbackState == Player.STATE_BUFFERING
+    /** 是否已加载媒体项（setMediaItem 后、stop 清掉前为真；A8-P1-3：按 Home
+     * 时正在缓冲 isPlaying=false，旧实现按“正在播”才进 PiP，缓冲中按 Home
+     * 既不进 PiP 也不暂停、稍后出声变无窗口后台音频——改按它进 PiP）。 */
+    val hasMediaItem: Boolean get() = player.currentMediaItem != null
 
     fun release() {
         player.release()

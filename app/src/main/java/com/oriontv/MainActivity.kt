@@ -26,13 +26,13 @@ import javax.inject.Inject
 
 /** 切到后台时的动作（纯决策，可单测；见 MainActivityLeaveHintTest）。 */
 enum class LeaveHintAction {
-    /** 开关开着且正在播：进画中画。 */
+    /** 开关开着且已加载媒体项：进画中画。 */
     EnterPip,
 
     /** 开关关着：暂停，VM 不销毁也不会继续播后台音频。 */
     Pause,
 
-    /** 开关开着但没在播：什么都不做。 */
+    /** 开关开着但未加载媒体项：什么都不做。 */
     None,
 }
 
@@ -147,16 +147,19 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 切到后台时进画中画（阶段 4，后台播放与画中画）：
-     * 只有正在播放且设置里开了“后台播放与画中画”才进 PiP；
+     * 设置里开了“后台播放与画中画”且播放器已加载媒体项时进 PiP；
      * 开关关着时直接暂停——按 Home 不销毁 ViewModel，旧实现无任何暂停逻辑，
      * 音频会继续播；进 PiP 后 Activity 不销毁，播放继续；
      * 用户点 PiP 窗口回前台后恢复全屏。
+     * A8-P1-3：不按 isPlaying 判定——正在缓冲时 isPlaying=false，旧实现
+     * 既不进 PiP 也不暂停，缓冲完成出声即变无窗口后台音频；已加载媒体项
+     * （含缓冲中、已暂停）就进 PiP，PiP 窗口里可继续看/暂停。
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         // A4-P2-5：读持续跟新的缓存值，不是进页时异步读入的旧值。
-        when (leaveHintAction(backgroundPlaybackCached, playerManager.isPlaying)) {
+        when (leaveHintAction(backgroundPlaybackCached, playerManager.hasMediaItem)) {
             LeaveHintAction.EnterPip -> {
                 try {
                     enterPictureInPictureMode(
@@ -177,10 +180,10 @@ class MainActivity : ComponentActivity() {
         /** 切后台后延迟停服的宽限（P2-13：覆盖调起安装器的流程）。 */
         internal const val REMOTE_INPUT_STOP_DELAY_MS = 60_000L
 
-        /** 切后台决策：开关开 + 在播 → PiP；开关关 → 暂停；开关开 + 未播 → 不动。 */
-        internal fun leaveHintAction(backgroundPlaybackEnabled: Boolean, isPlaying: Boolean): LeaveHintAction =
+        /** 切后台决策：开关开 + 已加载媒体项 → PiP；开关关 → 暂停；开关开 + 未加载 → 不动。 */
+        internal fun leaveHintAction(backgroundPlaybackEnabled: Boolean, hasMediaItem: Boolean): LeaveHintAction =
             when {
-                backgroundPlaybackEnabled && isPlaying -> LeaveHintAction.EnterPip
+                backgroundPlaybackEnabled && hasMediaItem -> LeaveHintAction.EnterPip
                 !backgroundPlaybackEnabled -> LeaveHintAction.Pause
                 else -> LeaveHintAction.None
             }

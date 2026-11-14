@@ -188,7 +188,9 @@ class LiveViewModel @Inject constructor(
             if (m3uUrl.isBlank()) return@launch
             val wasFailed = _uiState.value.playbackFailed
             val fresh = m3uRepository.loadChannels(m3uUrl, forceRefresh = true)
-            if (fresh.isEmpty()) {
+            // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，
+            // 只判空就当刷新成功、静默无事发生；loadFailed 标记是唯一的失败信号。
+            if (shouldReportRefreshFailed(fresh.isEmpty(), m3uRepository.loadFailed.value)) {
                 showToast("刷新失败，仍用旧频道表")
                 return@launch
             }
@@ -710,6 +712,14 @@ class LiveViewModel @Inject constructor(
          */
         internal fun shouldArmPanelTimer(panelOpen: Boolean, epgDialogOpen: Boolean): Boolean =
             panelOpen && !epgDialogOpen
+
+        /**
+         * 手动刷新后是否应按“刷新失败”提示（可单测，A8-P1-2）：拉网失败时
+         * loadChannels 回落旧缓存、返回非空旧表，只判表空会把失败当成功、
+         * 静默无事发生；失败标记为真或表为空时都要提示、保留旧表。
+         */
+        internal fun shouldReportRefreshFailed(freshIsEmpty: Boolean, loadFailed: Boolean): Boolean =
+            freshIsEmpty || loadFailed
     }
 }
 

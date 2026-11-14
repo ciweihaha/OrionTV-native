@@ -31,4 +31,14 @@ class LiveViewModelLogicTest {
         assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = true, isPlaying = false))
         assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = false))
     }
+
+    @Test
+    fun `refresh failure is reported when network fails even with cached channels`() {
+        // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，只判空
+        // 会把失败当成功、静默无事发生；失败标记为真时必须提示
+        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = false, loadFailed = true))
+        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = true, loadFailed = false))
+        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = true, loadFailed = true))
+        assertFalse(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = false, loadFailed = false))
+    }
 }

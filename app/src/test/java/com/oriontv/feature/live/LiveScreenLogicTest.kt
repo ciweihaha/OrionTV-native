@@ -90,4 +90,21 @@ class LiveScreenLogicTest {
         assertFalse(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = false, Key.DirectionUp))
         assertFalse(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = true, Key.DirectionDown))
     }
+
+    @Test
+    fun `panel favorite star matches any line not just first`() {
+        // A8-P2-1：M3U 轮换首线路后收藏的台按 urls[0] 匹配不到、星标消失；
+        // 面板行 ★ 应按全部线路匹配（控制器侧第 6 轮已修，面板行漏了）
+        val rotated = M3uParser.Channel(
+            id = "http://a/new.m3u8",
+            name = "CCTV-1",
+            urls = listOf("http://a/new.m3u8", "http://a/old.m3u8"),
+        )
+        val favs = listOf(LiveFavChannel(url = "http://a/old.m3u8", name = "CCTV-1"))
+        assertTrue(isPanelChannelFavorite(rotated, favs))
+        assertFalse(isPanelChannelFavorite(rotated, listOf(LiveFavChannel("http://a/other.m3u8", "CCTV-1"))))
+        assertFalse(isPanelChannelFavorite(rotated, emptyList()))
+        // 首线路命中仍亮
+        assertTrue(isPanelChannelFavorite(rotated, listOf(LiveFavChannel("http://a/new.m3u8", "CCTV-1"))))
+    }
 }

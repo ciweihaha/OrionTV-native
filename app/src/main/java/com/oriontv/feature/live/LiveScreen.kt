@@ -86,6 +86,14 @@ internal fun resolvePanelFocusIndex(
     current: M3uParser.Channel?,
 ): Int = current?.let { LiveController.indexOfChannel(filtered, it) }?.coerceAtLeast(0) ?: 0
 
+/** 面板行 ★ 是否应亮起（可单测，A8-P2-1）：按频道全部线路匹配收藏，
+ * 不只 urls[0]——M3U 轮换首线路后旧实现按 urls[0] 匹配，星标直接消失。
+ * 控制器侧（LiveController.isFavorite）第 6 轮已修，面板行漏了。 */
+internal fun isPanelChannelFavorite(
+    channel: M3uParser.Channel,
+    favorites: List<LiveFavChannel>,
+): Boolean = channel.urls.any { url -> favorites.any { it.url == url } }
+
 /** 频道行是否消费按键（可单测）：EPG 弹窗打开时不消费，焦点事件交给弹窗处理。 */
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
@@ -807,7 +815,7 @@ private fun ChannelPanel(
                         number = "${globalIndex + 1}",
                         channel = channel,
                         isCurrent = isCurrent,
-                        isFavorite = uiState.favorites.any { it.url == channel.url },
+                        isFavorite = isPanelChannelFavorite(channel, uiState.favorites),
                         epg = uiState.epg,
                         nowMs = uiState.nowMs,
                         // 当前台在分组里落当前行；不在时落第 0 行（与上面滚动落点一致）。
