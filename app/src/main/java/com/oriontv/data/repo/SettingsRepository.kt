@@ -45,9 +45,24 @@ class SettingsRepository @Inject constructor(
     /** 是否配了服务器地址（首页空态门控用）。 */
     suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
 
+    /** server-config 是否从未成功拉取过（"" = 未知，不是“本地模式”）。 */
+    suspend fun isServerConfigUnknown(): Boolean = currentStorageType().isBlank()
+
+    /**
+     * 第 3 轮收尾 B-P1-8：StorageType 未知时先拉一次 server-config（失败有 30 秒
+     * 缓存，不会每次调用都发请求）；已知后直接返回，不重复拉取。
+     * 冷启动拉取失败不再把进程钉死在本地模式：下次数据访问前会重拉。
+     */
+    suspend fun ensureServerConfig(): ServerConfig? {
+        if (!isServerConfigUnknown()) return null
+        return refreshServerConfig()
+    }
+
     /** 是否走服务端存储（redis 且配了地址）；否则走本地 Room。 */
-    suspend fun useServerStorage(): Boolean =
-        currentStorageType() == "redis" && currentApiBaseUrl().isNotBlank()
+    suspend fun useServerStorage(): Boolean {
+        ensureServerConfig()
+        return currentStorageType() == "redis" && currentApiBaseUrl().isNotBlank()
+    }
 
     private var lastConfigFailureAtMs: Long = 0L
     private var lastConfigFailureUrl: String = ""

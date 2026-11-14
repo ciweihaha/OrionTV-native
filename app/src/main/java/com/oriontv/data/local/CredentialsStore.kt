@@ -5,6 +5,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.oriontv.core.storage.StorageKeys
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,7 +32,12 @@ class CredentialsStore @Inject constructor(
         )
     }
 
-    fun save(username: String, password: String) {
+    /**
+     * 第 3 轮收尾 B-P2-18：三个方法均为 suspend 并切 IO dispatcher。
+     * EncryptedSharedPreferences 首次访问含 Keystore/磁盘 IO，之前在主线程
+     * 协程上下文（AuthViewModel、OrionNavHost 的 LaunchedEffect）里同步调。
+     */
+    suspend fun save(username: String, password: String) = withContext(Dispatchers.IO) {
         prefs.edit()
             .putString("username", username)
             .putString("password", password)
@@ -38,13 +45,13 @@ class CredentialsStore @Inject constructor(
     }
 
     /** 返回已保存的 (账号, 密码)，无保存时返回 null。 */
-    fun load(): Pair<String, String>? {
-        val username = prefs.getString("username", null) ?: return null
-        val password = prefs.getString("password", null) ?: return null
-        return username to password
+    suspend fun load(): Pair<String, String>? = withContext(Dispatchers.IO) {
+        val username = prefs.getString("username", null) ?: return@withContext null
+        val password = prefs.getString("password", null) ?: return@withContext null
+        username to password
     }
 
-    fun clear() {
+    suspend fun clear() = withContext(Dispatchers.IO) {
         prefs.edit().clear().apply()
     }
 }

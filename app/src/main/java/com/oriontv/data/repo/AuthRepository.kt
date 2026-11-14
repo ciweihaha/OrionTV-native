@@ -1,13 +1,23 @@
 package com.oriontv.data.repo
 
 import com.oriontv.data.api.MoonTvApi
+import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.local.CredentialsStore
 import com.oriontv.di.InMemoryCookieJar
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.coroutineContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -35,7 +45,12 @@ class AuthRepository @Inject constructor(
     val loginError: StateFlow<String?> = _loginError.asStateFlow()
 
     private val restoreMutex = Mutex()
-    private var restoreInFlight = false
+    /** 第 3 轮收尾 B-P2-17：在途恢复由各方共享（见 restoreSession）。 */
+    private var restoreDeferred: Deferred<Boolean>? = null
+    /** 恢复/配置重试用的后台作用域（与调用方生命周期解耦，共享恢复不随等待方取消）。 */
+    private val restoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** 第 3 轮收尾 B-P1-8：冷启动配置拉取失败后的一次延迟重试任务（只排一个）。 */
+    private var configRetryJob: Job? = null
 
     init {
         // MoonTvApi 的 401 续期回调：静默重登。
@@ -77,7 +92,8 @@ class AuthRepository @Inject constructor(
         try {
             if (baseUrl.isNotBlank()) moonTvApi.logout(baseUrl)
         } finally {
-            runCatching { credentialsStore.clear() }
+            // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了，改 try/catch。
+            try { credentialsStore.clear() } catch (_: Exception) { }
             runCatching { cookieJar.clear() }
             settingsRepository.setAuthCookies("")
             _isLoggedIn.value = false
@@ -85,7 +101,8 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * 冷启动检查：无地址 → 未登录；有登录标记 → 已登录；
+     * 冷启动检查：无地址 → 未登录；有登录标记 → 先轻量校验会话（B-P2-16），
+     * 有效才算已登录，过期走静默重登；
      * 无标记 → 有保存凭据就静默重登（localstorage 无密码服务传空密码也算一次尝试），
      * 重登失败才弹登录框。
      */
@@ -96,12 +113,31 @@ class AuthRepository @Inject constructor(
             _showLoginModal.value = false
             return
         }
-        settingsRepository.refreshServerConfig()
+        val config = settingsRepository.refreshServerConfig()
+        // B-P1-8：冷启动拉取失败且 StorageType 仍未知时，31 秒后（越过 30 秒
+        // 失败缓存）再试一次，不把进程钉死在本地模式。
+        if (config == null && settingsRepository.isServerConfigUnknown()) {
+            scheduleConfigRetry()
+        }
         val marker = settingsRepository.currentAuthCookies()
         if (marker.isNotBlank()) {
-            _isLoggedIn.value = true
-            _showLoginModal.value = false
-            return
+            when (verifySession(baseUrl)) {
+                SessionCheck.VALID -> {
+                    _isLoggedIn.value = true
+                    _showLoginModal.value = false
+                    return
+                }
+                SessionCheck.UNREACHABLE -> {
+                    // 服务端暂时不可达：无法判定会话，沿用标记位已登录，
+                    // 不因一次网络抖动弹登录框。
+                    _isLoggedIn.value = true
+                    _showLoginModal.value = false
+                    return
+                }
+                SessionCheck.EXPIRED -> {
+                    // 掉到下面的静默重登。
+                }
+            }
         }
         val restored = restoreSession()
         if (!restored) {
@@ -110,36 +146,78 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    /** 用已保存凭据静默重登；无凭据时对无密码服务试一次空登录。 */
-    suspend fun restoreSession(): Boolean {
-        if (restoreInFlight) return _isLoggedIn.value
-        return restoreMutex.withLock {
-            if (restoreInFlight) return@withLock _isLoggedIn.value
-            restoreInFlight = true
-            try {
-                val baseUrl = settingsRepository.currentApiBaseUrl()
-                if (baseUrl.isBlank()) return@withLock false
-                val saved = runCatching { credentialsStore.load() }.getOrNull()
-                val ok = try {
-                    moonTvApi.login(baseUrl, saved?.first, saved?.second)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    false
-                }
-                if (ok) {
-                    settingsRepository.setAuthCookies("1")
-                    _isLoggedIn.value = true
-                    _showLoginModal.value = false
-                    true
-                } else {
-                    _isLoggedIn.value = false
-                    false
-                }
-            } finally {
-                restoreInFlight = false
-            }
+    /** B-P1-8：冷启动配置失败后的一次延迟重试（31 秒，越过 30 秒失败缓存）。 */
+    private fun scheduleConfigRetry() {
+        if (configRetryJob?.isActive == true) return
+        configRetryJob = restoreScope.launch {
+            delay(CONFIG_RETRY_DELAY_MS)
+            runCatching { settingsRepository.refreshServerConfig() }
         }
+    }
+
+    /**
+     * B-P2-16：冷启动轻量会话校验（复用已有的 getFavorites，不新增服务端接口）。
+     * 401 续期回调里已试过一次静默重登，仍 401 即会话过期；网络错则算不可达。
+     */
+    private suspend fun verifySession(baseUrl: String): SessionCheck {
+        return try {
+            moonTvApi.getFavorites(baseUrl)
+            SessionCheck.VALID
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: UnauthorizedException) {
+            SessionCheck.EXPIRED
+        } catch (_: Exception) {
+            SessionCheck.UNREACHABLE
+        }
+    }
+
+    /** 会话校验结果：有效 / 已过期 / 服务端不可达（无法判定）。 */
+    private enum class SessionCheck { VALID, EXPIRED, UNREACHABLE }
+
+    /**
+     * 用已保存凭据静默重登；无凭据时对无密码服务试一次空登录。
+     * 第 3 轮收尾 B-P2-17：并发 401 不再各回各的旧值——在途恢复由 Deferred 共享，
+     * 等待方挂起等恢复完成后再取结果；重入（401 回调发生在恢复自身的 login 里）
+     * 直接回当前值，不自等自己死锁。
+     */
+    suspend fun restoreSession(): Boolean {
+        val deferred = restoreMutex.withLock {
+            val active = restoreDeferred?.takeIf { it.isActive }
+            if (active != null) {
+                if (active === coroutineContext[Job]) return _isLoggedIn.value
+                return@withLock active
+            }
+            restoreScope.async { performRestore() }.also { restoreDeferred = it }
+        }
+        return deferred.await()
+    }
+
+    private suspend fun performRestore(): Boolean {
+        val baseUrl = settingsRepository.currentApiBaseUrl()
+        if (baseUrl.isBlank()) return false
+        val saved = try { credentialsStore.load() } catch (_: Exception) { null }
+        val ok = try {
+            moonTvApi.login(baseUrl, saved?.first, saved?.second)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+        return if (ok) {
+            settingsRepository.setAuthCookies("1")
+            _isLoggedIn.value = true
+            _showLoginModal.value = false
+            true
+        } else {
+            _isLoggedIn.value = false
+            false
+        }
+    }
+
+    companion object {
+        /** B-P1-8：冷启动配置延迟重试间隔（越过 SettingsRepository 的 30 秒失败缓存）。 */
+        const val CONFIG_RETRY_DELAY_MS = 31_000L
     }
 
     fun showLogin() {
