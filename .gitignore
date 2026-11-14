@@ -1,0 +1,29 @@
+# Android 标准忽略
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+*.hprof
+
+# App 构建产物
+app/build/
+app/schemas/
+
+# 密钥与凭据 —— 绝不进仓库（CI 用 GitHub Actions Secrets）
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.keystore
+.env
+*secret*
+*password*
+keystore*.properties
+signing.properties

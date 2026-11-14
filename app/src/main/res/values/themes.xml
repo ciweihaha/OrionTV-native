@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.OrionTv" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#151718</item>
+        <item name="android:statusBarColor">#151718</item>
+        <item name="android:navigationBarColor">#151718</item>
+    </style>
+</resources>
