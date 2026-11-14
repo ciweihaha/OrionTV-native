@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 首页 ViewModel（ui-design.md §5.1）：
@@ -71,6 +72,9 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             val recent = try {
                 loadCategory(HomeCategory.RECENT, "")
+            } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不吞成 null（ViewModel 清掉时本应直接取消）。
+                throw e
             } catch (_: Exception) {
                 null
             }
@@ -87,6 +91,8 @@ class HomeViewModel @Inject constructor(
             async {
                 try {
                     loadCategory(category, baseUrl)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     HomeRow(category.title, emptyList(), error = "该分类加载失败")
                 }
@@ -125,8 +131,13 @@ class HomeViewModel @Inject constructor(
     /** CMS 分类：agg 首屏；失败或空列表时回落豆瓣（无筛选时才回落）。 */
     private suspend fun loadCmsCategory(category: HomeCategory, baseUrl: String): List<HomeRowItem> {
         val cmsType = category.cmsType ?: return emptyList()
-        val aggItems = runCatching { aggApi.videoList(cmsType, 1).list.orEmpty() }
-            .getOrDefault(emptyList())
+        val aggItems = try {
+            aggApi.videoList(cmsType, 1).list.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
         if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem)
         // 回落豆瓣：走用户服务器的 /api/douban。
         val fallbackTag = category.fallbackTag ?: return emptyList()
@@ -137,10 +148,14 @@ class HomeViewModel @Inject constructor(
         loadDouban(category.doubanType ?: "movie", category.doubanTag ?: "热门", baseUrl)
 
     private suspend fun loadDouban(type: String, tag: String, baseUrl: String): List<HomeRowItem> =
-        runCatching {
+        try {
             moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
                 .list.orEmpty().map(::mapDoubanItem)
-        }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
 }
 
 data class HomeUiState(
