@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -45,6 +46,7 @@ import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.orionFocus
+import com.oriontv.core.focus.preferredFocus
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
@@ -68,7 +70,9 @@ private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "
 fun SettingsScreen(
     onBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
-    updateViewModel: UpdateViewModel = hiltViewModel(),
+    // P1-6：由 NavHost 传入同一个 Activity 级实例，不再自己建第二个
+    //（冷启动检查与手动检查共用一份更新状态）。
+    updateViewModel: UpdateViewModel,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -77,6 +81,10 @@ fun SettingsScreen(
     var showQrModal by remember { mutableStateOf(false) }
     val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
     val rightRequester = remember { FocusRequester() }
+    val qrTriggerRequester = remember { FocusRequester() }
+    // 更新卡片 / 二维码弹窗关闭后焦点还给触发点（P1-5）。
+    var updateCardWasShown by remember { mutableStateOf(false) }
+    var qrModalWasOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         menuRequesters[0].requestFocus()
@@ -93,6 +101,24 @@ fun SettingsScreen(
         if (updateState.toast != null) {
             delay(2000)
             updateViewModel.consumeToast()
+        }
+    }
+    // P1-5：更新卡片关闭后焦点还给右栏首控件（“检查更新”按钮所在处）。
+    LaunchedEffect(updateState.showUpdateCard) {
+        if (updateState.showUpdateCard) {
+            updateCardWasShown = true
+        } else if (updateCardWasShown) {
+            updateCardWasShown = false
+            rightRequester.requestFocus()
+        }
+    }
+    // P1-5：二维码弹窗关闭后焦点还给“放大二维码”触发按钮。
+    LaunchedEffect(showQrModal) {
+        if (showQrModal) {
+            qrModalWasOpen = true
+        } else if (qrModalWasOpen) {
+            qrModalWasOpen = false
+            qrTriggerRequester.requestFocus()
         }
     }
 
@@ -175,6 +201,7 @@ fun SettingsScreen(
                         onToggle = { viewModel.setRemoteInputEnabled(it) },
                         onShowQr = { showQrModal = true },
                         firstRequester = rightRequester,
+                        qrTriggerRequester = qrTriggerRequester,
                     )
                     3 -> UpdateSettings(
                         currentVersion = updateState.currentVersion,
@@ -251,6 +278,8 @@ fun SettingsScreen(
             pairingCode = remoteState.pairingCode,
             error = remoteState.error,
             onDismiss = { showQrModal = false },
+            // P2-14：服务未启动时弹窗内一键开启。
+            onEnableRemoteInput = { viewModel.setRemoteInputEnabled(true) },
         )
     }
 }
@@ -416,14 +445,18 @@ private fun PlaybackSettings(
             onToggle = { onBackgroundChange(!state.backgroundPlayback) },
         )
         // 片头时长：点按循环切换档位（0=不跳，只用手动标记的片头时间）。
+        // P2-20：“跳过片头”关了就置灰且不可切换（值存着但不生效，别让人误操作）。
+        val introEnabled = state.autoSkipIntro
         var focused by remember { mutableStateOf(false) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .focusable()
+                .focusable(introEnabled)
                 .onFocusChanged { focused = it.isFocused }
                 .onKeyUp {
-                    if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
+                    if (!introEnabled) {
+                        false
+                    } else if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
                         onCycleIntroSeconds()
                         true
                     } else {
@@ -431,6 +464,7 @@ private fun PlaybackSettings(
                     }
                 }
                 .orionFocus(focused)
+                .alpha(if (introEnabled) 1f else 0.4f)
                 .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -504,6 +538,7 @@ private fun RemoteInputSettings(
     onToggle: (Boolean) -> Unit,
     onShowQr: () -> Unit,
     firstRequester: FocusRequester,
+    qrTriggerRequester: FocusRequester,
 ) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(serverUrl) {
@@ -522,6 +557,12 @@ private fun RemoteInputSettings(
             onToggle = { onToggle(!enabled) },
             modifier = Modifier.focusRequester(firstRequester),
         )
+        // P1-10：明文服务提示（局域网内可被嗅探）。
+        Text(
+            text = "注意：这是局域网明文服务，同一网络下的设备可以看到传输内容；配对码 5 分钟内有效，请勿在公共网络使用。",
+            style = OrionTextStyles.Small,
+            color = OrionColors.TextSecondary,
+        )
         if (enabled) {
             when {
                 isRunning -> {
@@ -532,7 +573,7 @@ private fun RemoteInputSettings(
                     )
                     if (!pairingCode.isNullOrBlank()) {
                         Text(
-                            text = "配对码：$pairingCode",
+                            text = "配对码：$pairingCode（5 分钟内有效）",
                             style = OrionTextStyles.SectionTitle,
                             color = OrionColors.Brand,
                         )
@@ -549,7 +590,11 @@ private fun RemoteInputSettings(
                                 .padding(8.dp),
                         )
                     }
-                    SecondaryButton(text = "放大二维码", onClick = onShowQr)
+                    SecondaryButton(
+                        text = "放大二维码",
+                        onClick = onShowQr,
+                        modifier = Modifier.preferredFocus(qrTriggerRequester),
+                    )
                 }
                 error != null -> {
                     Text(text = error, style = OrionTextStyles.Body, color = OrionColors.Error)
@@ -608,7 +653,8 @@ private fun AboutSettings(firstRequester: FocusRequester) {
     ) {
         Text(text = "关于", style = OrionTextStyles.SectionTitle)
         Text(
-            text = "OrionTV v${BuildConfig.VERSION_NAME}（versionCode ${BuildConfig.VERSION_CODE}）",
+            // P2-19：debug 包的 VERSION_NAME 带 "-debug" 后缀，显示时去掉。
+            text = "OrionTV v${BuildConfig.VERSION_NAME.substringBefore("-")}（versionCode ${BuildConfig.VERSION_CODE}）",
             style = OrionTextStyles.Body,
             color = OrionColors.TextSecondary,
         )
