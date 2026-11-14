@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * M3U 仓库（plan §5.3）：
@@ -39,10 +40,10 @@ class M3uRepository @Inject constructor(
             cached?.channels.orEmpty()
         }
 
-    /** 纯拉网（15 秒超时、5MB 上限，失败返回空列表，不抛错）。 */
+    /** 纯拉网（15 秒超时、5MB 上限，失败返回空列表，不抛错；协程取消原样抛出）。 */
     suspend fun fetchChannels(m3uUrl: String): List<M3uParser.Channel> = withContext(ioDispatcher) {
         if (m3uUrl.isBlank()) return@withContext emptyList()
-        runCatching {
+        try {
             val client = okHttpClient.newBuilder()
                 .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
@@ -53,7 +54,11 @@ class M3uRepository @Inject constructor(
                 if (body.toByteArray().size > ApiClient.MAX_M3U_BYTES) return@withContext emptyList()
                 M3uParser.parse(body)
             }
-        }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 }
 
@@ -84,16 +89,17 @@ class EpgRepository @Inject constructor(
                 return@withContext cached.data
             }
             val fresh = fetchEpg()
-            if (fresh != null) {
+            // 空 EPG 不覆盖好缓存：服务端偶尔吐空表时，旧缓存比“无节目单”强（P1-5；M3U 早有同款守卫）。
+            if (fresh != null && fresh.programmesByChannel.isNotEmpty()) {
                 cacheStore.saveEpgCache(fresh)
                 return@withContext fresh
             }
             cached?.data
         }
 
-    /** 纯拉网（15 秒超时、3MB 上限，失败返回 null，不抛错）。 */
+    /** 纯拉网（15 秒超时、3MB 上限，失败返回 null，不抛错；协程取消原样抛出）。 */
     suspend fun fetchEpg(): EpgParser.EpgData? = withContext(ioDispatcher) {
-        runCatching {
+        try {
             val client = okHttpClient.newBuilder()
                 .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
@@ -104,6 +110,10 @@ class EpgRepository @Inject constructor(
                 if (body.toByteArray().size > ApiClient.MAX_CACHE_BYTES) return@withContext null
                 EpgParser.parse(body)
             }
-        }.getOrNull()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 }
