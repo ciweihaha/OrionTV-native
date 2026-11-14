@@ -100,6 +100,96 @@ class UpdateDownloaderResumeTest {
     }
 
     @Test
+    fun `treats 416 as complete when local file already matches declared size`() {
+        // 第 6 轮 P2-2：上次已下完、未及校验就中断时，下次带 Range 起点恰在
+        // EOF，服务端回 416——旧行为删整包重下（110MB 弱网下等于白下一次）；
+        // 本地字节数已与 HEAD 声明体积相等时直接当下完（走校验），不删包。
+        val dir = Files.createTempDirectory("oriontv-416-test").toFile()
+        try {
+            val getCalls = AtomicInteger(0)
+            val rangeHeaders = mutableListOf<String?>()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                when {
+                    request.method == "HEAD" -> Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", full.size.toString())
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                    else -> {
+                        getCalls.incrementAndGet()
+                        rangeHeaders.add(request.header("Range"))
+                        responseFor(request, 416, ByteArray(0).toResponseBody(null))
+                    }
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.Unconfined)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            dest.writeBytes(full)
+            val result = runBlocking { downloader.downloadApk("https://example.com/orionTV.apk", dest) }
+            assertEquals(dest, result)
+            assertEquals(1, getCalls.get())
+            assertEquals(listOf("bytes=1000-"), rangeHeaders)
+            // 文件没被删：仍是完整的 1000 字节。
+            assertTrue(dest.readBytes().contentEquals(full))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `deletes partial file and restarts from zero on 416 when sizes differ`() {
+        // 第 6 轮 P2-2 的另一半：本地只有 400 字节、服务端声明 1000 字节时
+        // 416 说明服务端文件已换，仍删残文件重下（旧行为保留）。
+        val dir = Files.createTempDirectory("oriontv-416-test").toFile()
+        try {
+            val getCalls = AtomicInteger(0)
+            val rangeHeaders = mutableListOf<String?>()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                when {
+                    request.method == "HEAD" -> Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", full.size.toString())
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                    getCalls.get() == 0 -> {
+                        getCalls.incrementAndGet()
+                        rangeHeaders.add(request.header("Range"))
+                        responseFor(request, 416, ByteArray(0).toResponseBody(null))
+                    }
+                    else -> {
+                        getCalls.incrementAndGet()
+                        rangeHeaders.add(request.header("Range"))
+                        responseFor(request, 200, full.toResponseBody("application/octet-stream".toMediaTypeOrNull()))
+                    }
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.Unconfined)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            dest.writeBytes(full.copyOfRange(0, 400))
+            val result = runBlocking { downloader.downloadApk("https://example.com/orionTV.apk", dest) }
+            assertEquals(dest, result)
+            assertEquals(2, getCalls.get())
+            assertEquals(listOf("bytes=400-", null), rangeHeaders)
+            assertTrue(dest.readBytes().contentEquals(full))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `416 as complete needs declared size and full local file`() {
+        // 第 6 轮 P2-2：shouldTreat416AsComplete 的纯逻辑边界——拿不到声明
+        // 体积时不认、本地未下满时不认。
+        assertTrue(shouldTreat416AsComplete(1000, 1000))
+        assertTrue(shouldTreat416AsComplete(1200, 1000))
+        assertFalse(shouldTreat416AsComplete(400, 1000))
+        assertFalse(shouldTreat416AsComplete(1000, null))
+        assertFalse(shouldTreat416AsComplete(0, 1000))
+    }
+
+    @Test
     fun `restarts from zero when server ignores Range`() {
         val dir = Files.createTempDirectory("oriontv-resume-test").toFile()
         try {
