@@ -290,6 +290,19 @@ class MoonTvApi @Inject constructor(
         /** 标题归一化：去空白、小写（搜索子串过滤与精确标题匹配共用）。 */
         fun normalizeTitle(title: String): String =
             title.lowercase().replace(Regex("\\s+"), "")
+
+        /**
+         * 播放记录/收藏键：分段转义内部 `%`/`+` 后用 `+` 连接。
+         * 不含 `%`/`+` 的普通 source/id 与旧的 `"$source+$id"` 拼法结果完全一致，
+         * 已存的本地主键不受影响；含 `+` 的源/id 不再被按 `+` 切分错位。
+         * 注意：与 PlayViewModel 的原始拼法只在 source/id 含 `%`/`+` 时不同，
+         * 该分支的键解析（substringBefore/After "+"）按转义后键仍能正确拆回。
+         */
+        fun generateKey(source: String, id: String): String =
+            escapeSegment(source) + "+" + escapeSegment(id)
+
+        private fun escapeSegment(segment: String): String =
+            segment.replace("%", "%25").replace("+", "%2B")
     }
 }
 
