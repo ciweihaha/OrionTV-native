@@ -30,6 +30,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,6 +48,7 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -87,7 +90,28 @@ internal fun resolvePanelFocusIndex(
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
 /**
- * 根部 OK 是否走重试（可单测，P2-8）：
+ * EPG 弹窗焦点陷阱是否应拦截该方向键（可单测，P2-6）：
+ * 焦点在首个节目行按上、或在“关闭”按钮按下时拦截，不让焦点移出弹窗落到
+ * 背后频道行（OK 会误触选台）；行间移动、末行下移到“关闭”按钮都放行。
+ * @param focusedIndex 当前焦点位置：节目行下标 0..n-1，n = “关闭”按钮，-1 = 未知（不拦截）
+ * @param programmeCount 节目行数（“关闭”按钮的下标就是它）
+ */
+internal fun shouldTrapEpgFocusKey(key: Key, focusedIndex: Int, programmeCount: Int): Boolean {
+    if (focusedIndex < 0) return false
+    return when (key) {
+        Key.DirectionUp -> focusedIndex == 0
+        Key.DirectionDown -> focusedIndex >= programmeCount
+        else -> false
+    }
+}
+
+/** 直播长按换台节流（P2-7）：按住上/下时每 400ms 最多换一台，免得重复事件
+ * 以遥控器原生速率（通常每秒十余次）连续触发 playCurrent、反复重启播放器；
+ * 具体速率需真机确认后调。 */
+private const val LIVE_REPEAT_CHANGE_MIN_MS = 400L
+
+/**
+ * 根部 OK 是否走重试（可单测，A5-P2-4）：
  * A5-P2-4：只在 playbackFailed（自动处理耗尽、失败页已出）时重试；
  * failCount 1..5 时 OK 改重试与设计 §5.4 不符（失败未耗尽时 OK 应开面板），
  * 注释里“有意为之”的旧行为已废弃。
@@ -116,6 +140,9 @@ fun LiveScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val rootRequester = remember { FocusRequester() }
+    // P2-7：长按上/下换台的状态——某次重复事件换过台时，松手那次 KeyUp 不再多换一台。
+    var liveRepeatConsumed by remember { mutableStateOf(false) }
+    var lastRepeatChangeMs by remember { mutableLongStateOf(0L) }
 
     // C5-P1-2：焦点在导航轨上时按返回，根 Box 的 onKeyUp 收不到（焦点不在
     // 本页组合内），旧实现直接走 Activity 默认返回、白白退出直播页。
@@ -137,12 +164,21 @@ fun LiveScreen(
     // ON_PAUSE（切后台、进画中画）与 onDispose（导航轨切走本页）都走
     // onPagePaused：开关关着即停本页音频，时钟/EPG 刷新定时器随页停；
     // ON_RESUME 走 onPageResumed：定时器重起，播放器被抢走/停掉时重开播。
+    // P2-9：同时维护前台标志（LiveViewModel.startTicker 的门控），
+    // 切后台时停时钟/EPG 刷新，回前台恢复；只看 Activity 前台，与点播页同款接线。
+    // ON_RESUME 先开门控再重起定时器，ON_PAUSE 先关门控再停页。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.onPageResumed()
-                Lifecycle.Event.ON_PAUSE -> viewModel.onPagePaused()
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.setForeground(true)
+                    viewModel.onPageResumed()
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.setForeground(false)
+                    viewModel.onPagePaused()
+                }
                 else -> Unit
             }
         }
@@ -193,6 +229,30 @@ fun LiveScreen(
             .background(OrionColors.Background)
             .focusable()
             .focusRequester(rootRequester)
+            .onPreviewKeyEvent { event ->
+                // P2-7：直播长按上/下重复换台——重复 KeyDown 在预览阶段拦截并换台，
+                // 一律消费，不让重复事件触发焦点移动（与播放页 P1-C 同类问题）。
+                // 首按（repeatCount == 0）不换台，换台仍在松键时触发一次；
+                // 面板/弹窗/退出确认打开时上下交给焦点移动，不拦截。
+                // 节流见 LIVE_REPEAT_CHANGE_MIN_MS：节流掉的重复事件也消费掉。
+                if (event.type != KeyEventType.KeyDown ||
+                    event.nativeKeyEvent.repeatCount == 0 ||
+                    uiState.panelOpen || uiState.epgDialogChannel != null || uiState.exitConfirmOpen
+                ) {
+                    return@onPreviewKeyEvent false
+                }
+                when (event.key) {
+                    Key.DirectionUp, Key.DirectionDown -> {
+                        val now = System.currentTimeMillis()
+                        if (now - lastRepeatChangeMs < LIVE_REPEAT_CHANGE_MIN_MS) return@onPreviewKeyEvent true
+                        lastRepeatChangeMs = now
+                        liveRepeatConsumed = true
+                        viewModel.changeChannel(if (event.key == Key.DirectionUp) -1 else 1)
+                        true
+                    }
+                    else -> false
+                }
+            }
             .onKeyUp { event ->
                 when {
                     // 退出确认打开时：返回取消确认，其他键交给弹窗按钮。
@@ -267,12 +327,24 @@ fun LiveScreen(
                                 }
                             }
                             event.key == Key.DirectionUp -> {
-                                viewModel.changeChannel(-1)
-                                true
+                                // P2-7：长按换过台时松手不再多换一台。
+                                if (liveRepeatConsumed) {
+                                    liveRepeatConsumed = false
+                                    true
+                                } else {
+                                    viewModel.changeChannel(-1)
+                                    true
+                                }
                             }
                             event.key == Key.DirectionDown -> {
-                                viewModel.changeChannel(1)
-                                true
+                                // P2-7：长按换过台时松手不再多换一台。
+                                if (liveRepeatConsumed) {
+                                    liveRepeatConsumed = false
+                                    true
+                                } else {
+                                    viewModel.changeChannel(1)
+                                    true
+                                }
                             }
                             event.key == Key.DirectionLeft -> {
                                 viewModel.changeLine(-1)
@@ -348,11 +420,14 @@ fun LiveScreen(
             )
         }
 
-        // 换台信息条：台名 + 正在播 / 稍后播，3 秒后消失（消息条优先显示）。
+        // 换台信息条：台名 + 正在播 / 稍后播，3 秒后消失。
+        // P2-8：不再被 Toast 完全压制——信息条与 Toast 分层显示：
+        // 信息条照常显示，Toast 有信息条时上移 160dp（信息条约 115–135dp 高），
+        // 3 秒计时照常走，Toast 消失后信息条继续留到自己的 3 秒走完。
         val infoIndex = uiState.infoChannelIndex
-        if (infoIndex != null && uiState.toastMessage == null &&
+        val showInfoBar = infoIndex != null &&
             !uiState.panelOpen && uiState.epgDialogChannel == null
-        ) {
+        if (showInfoBar && infoIndex != null) {
             val channel = uiState.channels.getOrNull(infoIndex)
             if (channel != null) {
                 ChannelInfoBar(
@@ -366,12 +441,12 @@ fun LiveScreen(
             }
         }
 
-        // 提示消息条（底部居中，3 秒消失）。
+        // 提示消息条（底部居中，3 秒消失；信息条在时上移，免得盖住信息条）。
         uiState.toastMessage?.let { message ->
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 48.dp),
+                    .padding(bottom = if (showInfoBar) 160.dp else 48.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 OrionToast(message = message)
@@ -899,6 +974,13 @@ private fun EpgDialog(
     val listState = rememberLazyListState()
     val currentRequester = remember { FocusRequester() }
     val closeRequester = remember { FocusRequester() }
+    // P2-6 焦点陷阱：记录当前焦点在弹窗内的位置——节目行 0..n-1，n = “关闭”按钮；
+    // 初始值取将要获焦的行（正在播的节目，无则首行；无节目单时为“关闭”按钮下标 0）。
+    // 注意：打开后 100ms 才 requestFocus，之前焦点仍在背后频道行上；
+    // 该窗口内按上下最多只影响背后行一次，陷阱在焦点入弹窗后生效（需真机确认）。
+    var focusedIndex by remember(channel.url) {
+        mutableIntStateOf(if (programmes.isEmpty()) 0 else currentIndex.coerceAtLeast(0))
+    }
 
     // 打开 / 切台时滚到正在播的节目并落焦点；无正在播节目时落第一行（plan §3.3 第 2 条）。
     // 无节目单时落“关闭”按钮：否则弹窗无可聚焦行，焦点留在面板行上，OK 会误切台。
@@ -921,7 +1003,14 @@ private fun EpgDialog(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.6f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f))
+            .onPreviewKeyEvent { event ->
+                // P2-6 焦点陷阱（静态实现，需真机确认）：首行按上、关闭按钮按下时
+                // 在隧道阶段消费掉，不让焦点移出弹窗落到背后频道行；
+                // 行间移动与末行下移到“关闭”按钮放行。左/右/OK/返回仍走根部 EPG 分支。
+                event.type == KeyEventType.KeyDown &&
+                    shouldTrapEpgFocusKey(event.key, focusedIndex, programmes.size)
+            },
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -971,6 +1060,7 @@ private fun EpgDialog(
                             } else {
                                 null
                             },
+                            onFocus = { focusedIndex = index },
                         )
                     }
                 }
@@ -989,7 +1079,10 @@ private fun EpgDialog(
                 SecondaryButton(
                     text = "关闭",
                     onClick = onClose,
-                    modifier = Modifier.preferredFocus(closeRequester),
+                    modifier = Modifier
+                        .preferredFocus(closeRequester)
+                        // P2-6：焦点落在“关闭”按钮时记一笔，陷阱才知道按下要拦截。
+                        .onFocusChanged { if (it.isFocused) focusedIndex = programmes.size },
                 )
             }
         }
@@ -1003,12 +1096,17 @@ private fun EpgProgrammeRow(
     isNow: Boolean,
     nowMs: Long,
     focusRequester: FocusRequester?,
+    /** 获焦回调（P2-6 焦点陷阱用）：弹窗据此知道焦点在第几行。 */
+    onFocus: () -> Unit = {},
 ) {
     var focused by remember { mutableStateOf(false) }
     var rowModifier = Modifier
         .fillMaxWidth()
         .focusable()
-        .onFocusChanged { focused = it.isFocused }
+        .onFocusChanged {
+            focused = it.isFocused
+            if (it.isFocused) onFocus()
+        }
         .orionFocus(focused)
         .background(
             if (isNow) OrionColors.Surface else Color.Transparent,
