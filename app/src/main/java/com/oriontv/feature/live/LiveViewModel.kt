@@ -54,6 +54,8 @@ class LiveViewModel @Inject constructor(
     private var toastJob: Job? = null
     private var panelTimerJob: Job? = null
     private var digitCommitJob: Job? = null
+    /** 稳定播出确认任务（P1-6）：播出满 10 秒才调 confirmStablePlayback 清零失败计数。 */
+    private var stablePlayJob: Job? = null
     private var tickerJob: Job? = null
     private var epgRefreshJob: Job? = null
     /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
@@ -70,9 +72,13 @@ class LiveViewModel @Inject constructor(
                 readyTimeoutJob?.cancel()
                 controller.onPlaybackSuccess()
                 _uiState.update {
-                    it.copy(isPlaying = true, isBuffering = false, playbackFailed = false, failCount = 0, signalError = false)
+                    it.copy(isPlaying = true, isBuffering = false, playbackFailed = false, signalError = false)
                 }
+                // 失败计数不立即清零：只有连续稳定播出满 10 秒才清（P1-6），
+                // 否则短暂播出 1 秒就断流的台会永远绕开“>5 次停手”。
+                armStablePlaybackConfirm()
             } else {
+                stablePlayJob?.cancel()
                 _uiState.update { it.copy(isPlaying = false) }
             }
         }
@@ -127,7 +133,7 @@ class LiveViewModel @Inject constructor(
                 }
                 return@launch
             }
-            controller.setChannels(channels, restoreUrl = lastChannel?.url)
+            controller.setChannels(channels, restoreUrl = lastChannel?.url, restoreName = lastChannel?.name)
             _uiState.update {
                 it.copy(
                     isLoading = false,
@@ -184,6 +190,8 @@ class LiveViewModel @Inject constructor(
 
     /** 开播当前台/线路：直播 15 秒就绪超时（plan §5.5），超时按断流处理。 */
     private fun playCurrent() {
+        // 换台即开启新的稳定窗口：旧台的稳定确认任务不再有效（P1-6）。
+        stablePlayJob?.cancel()
         val url = controller.currentUrl ?: return
         playingConfirmed = false
         // 同 URL 重播（OK 重试当前台）：先停掉旧 item 才能真正重挂播放器。
@@ -212,6 +220,8 @@ class LiveViewModel @Inject constructor(
 
     /** 断流：按 LiveController 的升级链处理（备用线路 → 下一台 → >5 次停手）。 */
     private fun handlePlaybackError() {
+        // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
+        stablePlayJob?.cancel()
         val state = _uiState.value
         if (state.channels.isEmpty()) return
         when (val action = controller.onPlaybackError(state.panelOpen)) {
@@ -254,6 +264,18 @@ class LiveViewModel @Inject constructor(
         }
     }
 
+    /** 播出 10 秒后确认是否稳定：稳定才清零失败计数（P1-6，见 LiveController.confirmStablePlayback）。 */
+    private fun armStablePlaybackConfirm() {
+        stablePlayJob?.cancel()
+        stablePlayJob = viewModelScope.launch {
+            delay(LiveController.STABLE_PLAYBACK_MS)
+            if (!playerManager.isPlaying) return@launch
+            if (controller.confirmStablePlayback(System.currentTimeMillis())) {
+                _uiState.update { it.copy(failCount = 0) }
+            }
+        }
+    }
+
     /** OK 重试当前台（失败过且未耗尽自动跳台上限时，OK 不开面板、改重试）。 */
     fun retryCurrent() {
         controller.resetFailures()
@@ -285,6 +307,9 @@ class LiveViewModel @Inject constructor(
                 lineIndex = controller.lineIndex,
                 focusedChannelIndex = controller.currentIndex,
                 failCount = controller.failCount,
+                // 手动换台即清失败遮罩（P1-5，与 signalError 同款处理；playCurrent 里也有，
+                // 这里再清一次是为覆盖 playCurrent 因无 URL 提前返回的路径）。
+                playbackFailed = false,
                 panelOpen = if (closePanel) false else it.panelOpen,
                 epgDialogChannel = if (closePanel) null else it.epgDialogChannel,
             )
@@ -411,7 +436,12 @@ class LiveViewModel @Inject constructor(
 
     /** 面板 15 秒无操作自动关闭；任何面板内操作都要续命。 */
     fun pokePanelTimer() {
-        if (!_uiState.value.panelOpen) return
+        if (!shouldArmPanelTimer(_uiState.value.panelOpen, _uiState.value.epgDialogChannel != null)) {
+            // EPG 弹窗打开期间暂停面板定时器（P1-4）：弹窗内上/下浏览节目单不经过根 handler，
+            // 不续命也会 15 秒后连弹窗带面板一起关掉。先取消已挂起的定时器，弹窗关闭时再重起。
+            panelTimerJob?.cancel()
+            return
+        }
         panelTimerJob?.cancel()
         panelTimerJob = viewModelScope.launch {
             delay(LiveController.PANEL_AUTO_CLOSE_MS)
@@ -436,7 +466,8 @@ class LiveViewModel @Inject constructor(
         val state = _uiState.value
         val dialog = state.epgDialogChannel ?: return
         if (state.channels.isEmpty()) return
-        val idx = state.channels.indexOfFirst { it.url == dialog.url }
+        // 按对象身份定位（P2-4）：同 URL 出现多次时不落到第一条。
+        val idx = LiveController.indexOfChannel(state.channels, dialog)
         if (idx < 0) return
         val next = state.channels[(idx + delta + state.channels.size) % state.channels.size]
         _uiState.update { it.copy(epgDialogChannel = next) }
@@ -485,6 +516,7 @@ class LiveViewModel @Inject constructor(
         infoBarJob?.cancel()
         toastJob?.cancel()
         panelTimerJob?.cancel()
+        stablePlayJob?.cancel()
         digitCommitJob?.cancel()
         playerManager.removeListener(playerListener)
         // 后台播放开着：退出直播页后继续播（画中画/后台音频），不 pause、不 stop；
@@ -508,6 +540,13 @@ class LiveViewModel @Inject constructor(
 
         /** 直播永远 1× 倍速（点播倍速不泄漏到直播）。 */
         const val LIVE_PLAYBACK_SPEED = 1f
+
+        /**
+         * 面板定时器是否应挂起（可单测，P1-4）：面板打开且 EPG 弹窗未打开时才挂 15 秒定时器；
+         * 弹窗打开期间暂停（不挂新的，旧的由调用方取消），弹窗关闭后恢复。
+         */
+        internal fun shouldArmPanelTimer(panelOpen: Boolean, epgDialogOpen: Boolean): Boolean =
+            panelOpen && !epgDialogOpen
     }
 }
 
