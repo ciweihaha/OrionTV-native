@@ -13,6 +13,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSource
 import okio.ForwardingSource
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -198,7 +199,7 @@ class AggApiTest {
                 object : ForwardingSource(Buffer()) {
                     override fun read(sink: Buffer, byteCount: Long): Long =
                         throw SocketTimeoutException("body timeout")
-                }
+                }.buffer()
         }
         return Response.Builder()
             .request(request).protocol(Protocol.HTTP_1_1).code(200).message("test")
@@ -239,7 +240,7 @@ class AggApiTest {
                             closed = true
                             super.close()
                         }
-                    }
+                    }.buffer()
             }
             Response.Builder()
                 .request(request).protocol(Protocol.HTTP_1_1).code(200).message("test")
