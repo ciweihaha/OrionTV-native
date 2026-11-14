@@ -1,6 +1,8 @@
 package com.oriontv.data.api
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -18,11 +20,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * AggApi 重试 / 熔断 / 备用端点 / 逐条容错测试（第 4 轮 P0-2/P0-3/P1-2/P1-7/P1-8）。
@@ -271,6 +275,71 @@ class AggApiTest {
         }
         val version = runBlocking { api(client).version() }
         assertEquals("2.0.0", version)
+    }
+
+    @Test
+    fun `version falls back when primary hangs past its own budget`() {
+        // D6-P2-1：主端点挂起时不再被 60 秒总超时卡住——25 秒预算一到即走备用。
+        val (client, calls) = countingClient { request, _ ->
+            val url = request.url.toString()
+            if (url.contains("oriontv-version.json")) {
+                responseFor(request, 200, """{"version": "1.7.2"}""")
+            } else {
+                Thread.sleep(2000) // 远超注入的 100ms 主端点预算
+                responseFor(request, 200, """{"version": "9.9.9"}""")
+            }
+        }
+        val agg = AggApi(
+            client, json, Dispatchers.Unconfined,
+            retryBackoffMs = { 0L },
+            primaryVersionTimeoutMs = 100L,
+            totalVersionTimeoutMs = 10_000L,
+        )
+        val version = runBlocking { agg.version() }
+        assertEquals("1.7.2", version)
+        assertEquals(2, calls.get()) // 主端点 1 次（超时取消）+ 备用 1 次
+    }
+
+    @Test
+    fun `cancelled retry backoff releases probe lease`() {
+        // D6-P2-2：退避 delay() 期间取消，探针租约必须释放——否则黑窗从 60 秒
+        // 拖到约 120 秒（租约自然过期才放下一个探针）。
+        var now = 0L
+        val breaker = CircuitBreaker(nowMs = { now })
+        val (timeoutClient, _) = countingClient { _, _ -> throw SocketTimeoutException("timeout") }
+        val agg = AggApi(
+            timeoutClient, json, Dispatchers.Unconfined,
+            retryBackoffMs = { 0L },
+            videoListCircuitBreaker = breaker,
+        )
+        repeat(3) {
+            assertThrows(SocketTimeoutException::class.java) {
+                runBlocking { agg.videoList(1, 1) }
+            }
+        }
+        assertTrue(breaker.isOpen())
+        now += 61_000 // 越过 60 秒冷却期，进入半开
+        // 半开试探：首试抛普通 IOException 后进入 5 秒退避，在退避中取消。
+        val (ioClient, _) = countingClient { _, _ -> throw IOException("boom") }
+        val aggSlow = AggApi(
+            ioClient, json, Dispatchers.Unconfined,
+            retryBackoffMs = { 5_000L },
+            videoListCircuitBreaker = breaker,
+        )
+        runBlocking {
+            val job = launch { aggSlow.videoList(1, 1) }
+            delay(100)
+            job.cancel()
+            try {
+                job.join()
+                fail("expected CancellationException")
+            } catch (_: CancellationException) {
+                // 取消原样抛出，符合约定。
+            }
+        }
+        // 租约已释放：下一次 isOpen 能重新拿到试探资格（返回 false），
+        // 而不是继续以“探针在途”拒绝到 120 秒租约过期。
+        assertFalse(breaker.isOpen())
     }
 
 }

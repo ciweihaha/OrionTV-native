@@ -18,6 +18,7 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * MoonTvApi 重试 / 401 上限 / 键格式 / 逐条容错测试（第 4 轮 P0-2/P1-1/P1-8/P2-10/P2-11）。
@@ -271,5 +272,53 @@ class MoonTvApiTest {
             runBlocking { api(client).getResources("https://example.com") }
         }
         assertEquals(4, calls.get())
+    }
+
+    @Test
+    fun `logout rethrows CancellationException`() {
+        // D6-P2-7：登出中途被取消时，取消必须原样抛出，不能被 runCatching 吞掉。
+        val (client, _, _) = countingClient { _ -> throw CancellationException("cancelled") }
+        assertThrows(CancellationException::class.java) {
+            runBlocking { api(client).logout("https://example.com") }
+        }
+    }
+
+    @Test
+    fun `logout swallows network errors`() {
+        // D6-P2-7 的另一半：登出仍是 best-effort，网络错照常吞掉、不阻断收尾。
+        val (client, _, _) = countingClient { _ -> throw IOException("server down") }
+        runBlocking { api(client).logout("https://example.com") }
+    }
+
+    @Test
+    fun `401 refresh success retries POST once`() {
+        // D6-P2-8：401 是鉴权前置拒绝、请求未被执行，续期成功后 POST 也重发一次，
+        // 不再报“登录已过期”让用户手动重试。
+        val (client, calls, _) = countingClient { request ->
+            if (calls.get() == 1) responseFor(request, 401, "") else {
+                responseFor(request, 200, """{"success": true}""")
+            }
+        }
+        val moonTvApi = api(client)
+        moonTvApi.onUnauthorized = { true }
+        val ok = runBlocking {
+            moonTvApi.addFavorite("https://example.com", "k", Favorite(title = "片"))
+        }
+        assertTrue(ok)
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun `401 refresh failure still throws for POST`() {
+        // D6-P2-8 的另一半：续期失败时 POST 照常抛 UnauthorizedException，不盲重试。
+        val (client, calls, _) = countingClient { request -> responseFor(request, 401, "") }
+        val moonTvApi = api(client)
+        moonTvApi.onUnauthorized = { false }
+        assertThrows(UnauthorizedException::class.java) {
+            runBlocking {
+                moonTvApi.addFavorite("https://example.com", "k", Favorite(title = "片"))
+            }
+        }
+        assertEquals(1, calls.get())
     }
 }

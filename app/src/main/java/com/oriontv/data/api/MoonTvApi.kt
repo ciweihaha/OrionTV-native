@@ -41,8 +41,9 @@ interface AuthApi {
 
 /**
  * 用户 MoonTV 服务（{baseURL}，设置里填，默认空串）。接口路径与 plan §5.2 原样一致。
- * 除注明外 GET、15 秒超时、响应体 2MB 上限；401 时用已保存凭据重登后仅对幂等请求
- * （GET/DELETE/HEAD）重试一次，POST 不自动重试；超时/网络错/5xx 最多重试 3 次，退避 1 秒。
+ * 除注明外 GET、15 秒超时、响应体 2MB 上限；401 时用已保存凭据重登后重试一次
+ * （第 6 轮 D6-P2-8：401 是鉴权前置拒绝、请求未被执行，重发对 POST 也安全，
+ * 不再只限幂等方法）；超时/网络错/5xx 最多重试 3 次，退避 1 秒。
  *
  * 注意：真 cookie 在 OkHttp CookieJar 里（见 AppModule 的 InMemoryCookieJar），
  * 这里只处理登录标记位；GET /api/detail 是死代码（本 HEAD 无调用方），不实现。
@@ -131,7 +132,15 @@ class MoonTvApi @Inject constructor(
             val request = Request.Builder()
                 .url("${baseUrl.trimEnd('/')}/api/logout")
                 .post("{}".toRequestBody("application/json".toMediaType())).build()
-            runCatching { okHttpClient.newCall(request).executeCancellable().close() }
+            // D6-P2-7：登出是 best-effort，网络错照常吞掉，但 CancellationException
+            // 必须原样抛出——runCatching 会连取消一起吞，违反仓库内“取消原样抛出”的约定。
+            try {
+                okHttpClient.newCall(request).executeCancellable().close()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // 登出失败不阻断调用方收尾（AuthRepository.logout 的 finally 三清照常执行）。
+            }
             // finally 里无条件清登录标记（由调用方清 StorageKeys.AUTH_COOKIES）
         }
     }
@@ -338,7 +347,8 @@ class MoonTvApi @Inject constructor(
 
     /**
      * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
-     * 4xx 不重试；401 时调 onUnauthorized 重登，成功且请求幂等则重试一次；
+     * 4xx 不重试；401 时调 onUnauthorized 重登，成功则重试一次
+     * （第 6 轮 D6-P2-8：不限方法，401 即请求未执行，重发安全）；
      * 响应体超 2MB 拒绝。
      *
      * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
@@ -370,8 +380,13 @@ class MoonTvApi @Inject constructor(
                         if (!refreshAttempted) {
                             refreshAttempted = true
                             val refreshed = onUnauthorized?.invoke() ?: false
-                            if (refreshed && ApiClient.isIdempotent(request.method)) {
-                                return@repeat // 外层循环再发一次（幂等重试）
+                            if (refreshed) {
+                                // D6-P2-8：续期成功后重发一次，不再只限幂等方法——
+                                // 401 是鉴权中间件在业务处理前拒绝的，请求一定
+                                // 未被执行，重发不会 double-apply；本 execute 只
+                                // 服务按键 upsert/删除类调用（收藏/记录/搜索历史），
+                                // 语义上也可重放。续期失败仍抛 UnauthorizedException。
+                                return@repeat // 外层循环再发一次
                             }
                         }
                         throw UnauthorizedException("登录已过期，请重新登录")
