@@ -12,6 +12,22 @@ import javax.inject.Singleton
 import javax.net.ssl.SSLException
 
 /**
+ * 播放器代际/所有者 token（纯逻辑，可单测；见 PlaybackGenerationTest）：
+ * 直播与点播两个 ViewModel 共用一个 PlayerManager 单例，各自 onCleared 都
+ * 会异步 pause/stop；没有代际校验时，后销毁的 VM 会停掉先启动的另一页的播放。
+ * 每次认领播放 +1 代，清理时只停自己那一代。
+ */
+class PlaybackGeneration {
+    private var generation: Long = 0L
+
+    /** 认领播放，返回本代 token。 */
+    fun claim(): Long = ++generation
+
+    /** 该 token 是否仍是当前代（即认领者仍是最新所有者）。 */
+    fun isCurrent(token: Long): Boolean = token == generation
+}
+
+/**
  * ExoPlayer 单例（plan §4.5）：点播与直播共用，换 MediaItem 即换台/换集；
  * Player.Listener 翻译成沿用 PlaybackStatus 形状
  *（isLoaded/isPlaying/isBuffering/positionMs/durationMs/didJustFinish/error），
@@ -35,6 +51,22 @@ class PlayerManager @Inject constructor(
      */
     @Volatile
     var backgroundPlaybackEnabled: Boolean = false
+
+    /** 播放所有权代际：各页 onCleared 只停自己那一代（见 PlaybackGeneration）。 */
+    private val ownership = PlaybackGeneration()
+
+    /** 认领播放，返回本代 token（进页时调一次）。 */
+    fun claimPlayback(): Long = ownership.claim()
+
+    /** 只有 token 仍是当前代时才暂停（过期代的清理不碰别人的播放）。 */
+    fun pauseIfOwner(token: Long) {
+        if (ownership.isCurrent(token)) pause()
+    }
+
+    /** 只有 token 仍是当前代时才停播。 */
+    fun stopIfOwner(token: Long) {
+        if (ownership.isCurrent(token)) stop()
+    }
 
     /** 当前播放状态（沿用 RN PlaybackStatus 形状）。 */
     data class PlaybackStatus(

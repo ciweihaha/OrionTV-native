@@ -68,6 +68,8 @@ class PlayViewModel @Inject constructor(
     private var currentKey: String = ""
     private var routePositionMs: Long = 0L
     private var initialised = false
+    /** 本页认领的播放代际（onCleared 只停自己那一代，不停直播页的播放）。 */
+    private var playbackToken: Long = 0L
 
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
@@ -88,6 +90,7 @@ class PlayViewModel @Inject constructor(
     fun init(source: String, id: String, title: String, episodeIndex: Int, positionMs: Long) {
         if (initialised && currentKey == "$source+$id") return
         initialised = true
+        playbackToken = playerManager.claimPlayback()
         currentKey = "$source+$id"
         routePositionMs = positionMs
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
@@ -516,8 +519,8 @@ class PlayViewModel @Inject constructor(
                 playerManager.backgroundPlaybackEnabled = true
             } else {
                 playerManager.backgroundPlaybackEnabled = false
-                playerManager.pause()
-                playerManager.stop()
+                playerManager.pauseIfOwner(playbackToken)
+                playerManager.stopIfOwner(playbackToken)
             }
         }
         // cleanupScope 不在这里 cancel：断点保存协程要在 onCleared 之后跑完。

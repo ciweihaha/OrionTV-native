@@ -46,6 +46,8 @@ class LiveViewModel @Inject constructor(
     private val controller = LiveController()
     private var initialised = false
     private var playingConfirmed = false
+    /** 本页认领的播放代际（onCleared 只停自己那一代，不停点播页的播放）。 */
+    private var playbackToken: Long = 0L
     private var lastPlayedUrl: String? = null
     private var readyTimeoutJob: Job? = null
     private var infoBarJob: Job? = null
@@ -90,6 +92,7 @@ class LiveViewModel @Inject constructor(
     fun init() {
         if (initialised) return
         initialised = true
+        playbackToken = playerManager.claimPlayback()
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画；
         // 之前只有点播页读这个开关，直播页按 Home 从不进 PiP、回首页必停播。
         viewModelScope.launch {
@@ -186,6 +189,8 @@ class LiveViewModel @Inject constructor(
         // 同 URL 重播（OK 重试当前台）：先停掉旧 item 才能真正重挂播放器。
         if (url == lastPlayedUrl) playerManager.stop()
         lastPlayedUrl = url
+        // 点播 2× 倍速不泄漏到直播：PlayerManager 单例保留倍速，开播前复位 1×。
+        playerManager.setPlaybackSpeed(LIVE_PLAYBACK_SPEED)
         playerManager.playUrl(url)
         _uiState.update {
             it.copy(
@@ -489,8 +494,8 @@ class LiveViewModel @Inject constructor(
                 playerManager.backgroundPlaybackEnabled = true
             } else {
                 playerManager.backgroundPlaybackEnabled = false
-                playerManager.pause()
-                playerManager.stop()
+                playerManager.pauseIfOwner(playbackToken)
+                playerManager.stopIfOwner(playbackToken)
             }
         }
         // cleanupScope 不在这里 cancel：后台判断协程要在 onCleared 之后跑完。
@@ -500,6 +505,9 @@ class LiveViewModel @Inject constructor(
     companion object {
         /** 直播播放就绪 15 秒超时（plan §5.5）。 */
         const val LIVE_READY_TIMEOUT_MS = 15_000L
+
+        /** 直播永远 1× 倍速（点播倍速不泄漏到直播）。 */
+        const val LIVE_PLAYBACK_SPEED = 1f
     }
 }
 
