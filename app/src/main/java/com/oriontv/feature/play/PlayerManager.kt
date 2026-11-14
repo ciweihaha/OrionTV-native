@@ -58,6 +58,9 @@ class PlayerManager @Inject constructor(
     /** 认领播放，返回本代 token（进页时调一次）。 */
     fun claimPlayback(): Long = ownership.claim()
 
+    /** 该 token 是否仍是当前播放所有者（A4-P2-9：错误回调的归属校验用）。 */
+    fun isCurrentOwner(token: Long): Boolean = ownership.isCurrent(token)
+
     /** 只有 token 仍是当前代时才暂停（过期代的清理不碰别人的播放）。 */
     fun pauseIfOwner(token: Long) {
         if (ownership.isCurrent(token)) pause()

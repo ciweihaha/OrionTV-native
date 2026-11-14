@@ -154,8 +154,16 @@ fun PlayScreen(
 
     // 播放错误页出现时焦点默认落到“重试”（P2-3）：否则焦点停在根部/原控制条按钮上，
     // 首次按 OK 只会 pokeControls，用户需先用方向键盲找按钮。
+    // A4-P1-2：错误消失（重试成功）时焦点回控制条首选按钮；控制条未组合时回根。
+    var hadError by remember { mutableStateOf(false) }
     LaunchedEffect(uiState.error) {
-        if (uiState.error != null) errorRetryRequester.requestFocus()
+        if (uiState.error != null) {
+            hadError = true
+            errorRetryRequester.requestFocus()
+        } else if (hadError) {
+            hadError = false
+            if (!controlsFirstButtonRequester.requestFocus()) rootRequester.requestFocus()
+        }
     }
 
     // 下一集预告出时强制唤出控制条（P1-3）：播完时控制条可能已 5 秒自动隐藏，
@@ -279,8 +287,17 @@ fun PlayScreen(
                                 viewModel.openDrawer(null)
                                 true
                             }
+                            // A4-P2-6：下一集预告显示时按返回先取消预告（之前第一次
+                            // 只隐藏控制条、无可见变化，第二次直接退出）。
+                            uiState.showNextEpisode -> {
+                                viewModel.dismissNextEpisode()
+                                true
+                            }
                             controlsVisible -> {
                                 controlsVisible = false
+                                // A4-P1-1：隐藏控制条后焦点回根，否则焦点留在已
+                                // 隐藏的按钮上、方向键/OK 再也唤不出控制条。
+                                rootRequester.requestFocus()
                                 true
                             }
                             else -> {

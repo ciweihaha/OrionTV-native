@@ -24,11 +24,16 @@ class M3uRepository @Inject constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /** 缓存优先加载：缓存新鲜直接返回；过期拉网，成功落盘，失败回落旧缓存。 */
-    suspend fun loadChannels(m3uUrl: String, nowMs: Long = System.currentTimeMillis()): List<M3uParser.Channel> =
+    suspend fun loadChannels(
+        m3uUrl: String,
+        nowMs: Long = System.currentTimeMillis(),
+        /** A4-P2-3：强制刷新时跳过缓存直接拉网（面板“刷新直播源”入口用）。 */
+        forceRefresh: Boolean = false,
+    ): List<M3uParser.Channel> =
         withContext(ioDispatcher) {
             if (m3uUrl.isBlank()) return@withContext emptyList()
             val cached = cacheStore.readM3uCache(m3uUrl)
-            if (cached != null && nowMs - cached.ts <= LiveController.M3U_CACHE_TTL_MS) {
+            if (!forceRefresh && cached != null && nowMs - cached.ts <= LiveController.M3U_CACHE_TTL_MS) {
                 return@withContext cached.channels
             }
             val fresh = fetchChannels(m3uUrl)
@@ -50,8 +55,9 @@ class M3uRepository @Inject constructor(
             val request = Request.Builder().url(m3uUrl).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext emptyList()
-                val body = response.body?.string().orEmpty()
-                if (body.toByteArray().size > ApiClient.MAX_M3U_BYTES) return@withContext emptyList()
+                // A4-P2-2：流式限量读，超 5MB 即停，不先整读 body 再判上限。
+                val body = readBodyCapped(response, ApiClient.MAX_M3U_BYTES)
+                    ?: return@withContext emptyList()
                 M3uParser.parse(body)
             }
         } catch (e: CancellationException) {
@@ -113,8 +119,9 @@ class EpgRepository @Inject constructor(
             val request = Request.Builder().url(EPG_URL).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
-                val body = response.body?.string().orEmpty()
-                if (body.toByteArray().size > ApiClient.MAX_CACHE_BYTES) return@withContext null
+                // A4-P2-2：流式限量读，超 3MB 即停，不先整读 body 再判上限。
+                val body = readBodyCapped(response, ApiClient.MAX_CACHE_BYTES)
+                    ?: return@withContext null
                 EpgParser.parse(body)
             }
         } catch (e: CancellationException) {
@@ -123,4 +130,25 @@ class EpgRepository @Inject constructor(
             null
         }
     }
+}
+
+/**
+ * 流式限量读响应体（A4-P2-2）：Content-Length 先行拒绝，之后按 64KB 块流式读，
+ * 累计超上限即停并返回 null，不把超大体整读进内存再判。
+ */
+internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String? {
+    val declared = response.header("Content-Length")?.toLongOrNull()
+    if (declared != null && declared > maxBytes) return null
+    val body = response.body ?: return null
+    val out = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(64 * 1024)
+    body.byteStream().use { input ->
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            if (out.size() + read > maxBytes) return null
+            out.write(buffer, 0, read)
+        }
+    }
+    return String(out.toByteArray(), Charsets.UTF_8)
 }

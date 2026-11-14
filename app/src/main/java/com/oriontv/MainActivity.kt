@@ -49,8 +49,22 @@ class MainActivity : ComponentActivity() {
     /** C4-P1-6：热启动深链用——singleTask 下新 Intent 走 onNewIntent，交给它处理。 */
     private var navController: NavController? = null
 
+    /**
+     * A4-P2-5：后台播放开关的最新值（持续跟随 DataStore 流）；onUserLeaveHint
+     * 处同步读它，不再只靠进播放页时异步读一次的旧值（进页后立刻按 Home
+     * 时异步读入还没跑完，会误暂停）。
+     */
+    @Volatile
+    private var backgroundPlaybackCached: Boolean = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch {
+            settingsRepository.backgroundPlayback.collect { enabled ->
+                backgroundPlaybackCached = enabled
+                playerManager.backgroundPlaybackEnabled = enabled
+            }
+        }
         setContent {
             OrionTheme {
                 val navController = rememberNavController()
@@ -106,7 +120,8 @@ class MainActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        when (leaveHintAction(playerManager.backgroundPlaybackEnabled, playerManager.isPlaying)) {
+        // A4-P2-5：读持续跟新的缓存值，不是进页时异步读入的旧值。
+        when (leaveHintAction(backgroundPlaybackCached, playerManager.isPlaying)) {
             LeaveHintAction.EnterPip -> {
                 try {
                     enterPictureInPictureMode(

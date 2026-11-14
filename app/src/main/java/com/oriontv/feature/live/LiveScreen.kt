@@ -190,8 +190,11 @@ fun LiveScreen(
                             }
                             else -> {
                                 if (isMenuKey(event)) {
-                                    val focused = uiState.channels.getOrNull(uiState.focusedChannelIndex)
-                                    if (focused != null) viewModel.openEpgDialog(focused)
+                                    // A4-P2-7：焦点在分组 chip 上时行没消费按键，走到这里；
+                                    // focusedChannelIndex 是旧值（上次聚焦的行），用它开 EPG
+                                    // 会开到错台，改开当前播放台的节目单。
+                                    val current = uiState.channels.getOrNull(uiState.currentIndex)
+                                    if (current != null) viewModel.openEpgDialog(current)
                                     true
                                 } else {
                                     false
@@ -342,6 +345,7 @@ fun LiveScreen(
                 onFocusChannel = { viewModel.setFocusedChannel(it) },
                 onToggleFavorite = { viewModel.toggleFavorite(it) },
                 onOpenEpg = { viewModel.openEpgDialog(it) },
+                onRefreshChannels = { viewModel.refreshChannels() },
             )
         }
 
@@ -537,6 +541,8 @@ private fun ChannelPanel(
     onFocusChannel: (Int) -> Unit,
     onToggleFavorite: (M3uParser.Channel) -> Unit,
     onOpenEpg: (M3uParser.Channel) -> Unit,
+    /** A4-P2-3：面板里的“刷新直播源”入口（强制拉网）。 */
+    onRefreshChannels: () -> Unit,
 ) {
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
@@ -657,6 +663,9 @@ private fun ChannelPanel(
         }
         // 底部当前频道信息。
         if (currentChannel != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            // A4-P2-3：7 天缓存内手动刷新入口（强制拉网，不断流）。
+            SecondaryButton(text = "刷新直播源", onClick = onRefreshChannels)
             Spacer(modifier = Modifier.height(12.dp))
             val now = uiState.epg?.let {
                 EpgParser.nowPlaying(it, currentChannel.tvgId, currentChannel.name, uiState.nowMs)

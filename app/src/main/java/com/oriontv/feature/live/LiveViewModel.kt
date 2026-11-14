@@ -67,6 +67,9 @@ class LiveViewModel @Inject constructor(
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
+            // 点播的播放状态不能清掉直播的失败计数/稳定窗口。
+            if (!playerManager.isCurrentOwner(playbackToken)) return
             if (isPlaying) {
                 playingConfirmed = true
                 readyTimeoutJob?.cancel()
@@ -84,6 +87,8 @@ class LiveViewModel @Inject constructor(
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            // A4-P2-9：同上，不是自己的播放不改直播的缓冲态。
+            if (!playerManager.isCurrentOwner(playbackToken)) return
             _uiState.update {
                 it.copy(isBuffering = playbackState == Player.STATE_BUFFERING)
             }
@@ -151,9 +156,39 @@ class LiveViewModel @Inject constructor(
 
     /** 手动重试加载（空态/失败页的“重试”按钮）。 */
     fun reload() {
+        // A4-P2-4：重载先停掉旧播放——否则失败时旧台音频继续播、UI 却显示加载失败。
+        playerManager.stop()
         initialised = false
         _uiState.update { LiveUiState(favorites = _uiState.value.favorites) }
         init()
+    }
+
+    /** 手动刷新直播源（A4-P2-3）：7 天缓存内无刷新入口时强制拉网。 */
+    fun refreshChannels() {
+        viewModelScope.launch {
+            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
+            if (m3uUrl.isBlank()) return@launch
+            val wasFailed = _uiState.value.playbackFailed
+            val fresh = m3uRepository.loadChannels(m3uUrl, forceRefresh = true)
+            if (fresh.isEmpty()) {
+                showToast("刷新失败，仍用旧频道表")
+                return@launch
+            }
+            val current = controller.currentChannel
+            controller.setChannels(fresh, restoreUrl = current?.url, restoreName = current?.name)
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    loadError = null,
+                    channels = fresh,
+                    currentIndex = controller.currentIndex,
+                    lineIndex = controller.lineIndex,
+                    focusedChannelIndex = controller.currentIndex,
+                )
+            }
+            // 当前台还在新表里且之前没失败过：不断流，只更新表；否则重开播。
+            if (controller.currentUrl != lastPlayedUrl || wasFailed) playCurrent()
+        }
     }
 
     private suspend fun loadEpg() {
@@ -190,6 +225,8 @@ class LiveViewModel @Inject constructor(
 
     /** 开播当前台/线路：直播 15 秒就绪超时（plan §5.5），超时按断流处理。 */
     private fun playCurrent() {
+        // A4-P2-9：每次开播重新认领播放代际（错误/状态回调核对后再处理）。
+        playbackToken = playerManager.claimPlayback()
         // 换台即开启新的稳定窗口：旧台的稳定确认任务不再有效（P1-6）。
         stablePlayJob?.cancel()
         val url = controller.currentUrl ?: return
@@ -220,6 +257,9 @@ class LiveViewModel @Inject constructor(
 
     /** 断流：按 LiveController 的升级链处理（备用线路 → 下一台 → >5 次停手）。 */
     private fun handlePlaybackError() {
+        // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
+        // 点播的错误不能触发直播切台（会抢走点播的播放器）。
+        if (!playerManager.isCurrentOwner(playbackToken)) return
         // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
         stablePlayJob?.cancel()
         val state = _uiState.value

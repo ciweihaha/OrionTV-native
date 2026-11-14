@@ -139,6 +139,9 @@ class PlayViewModel @Inject constructor(
                         it.copy(isLoading = false, error = "没有找到可播放的源")
                     }
                 }
+            } catch (e: CancellationException) {
+                // A4-P2-1：取消必须原样抛出（与 DetailViewModel 同款残留）。
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isLoading = false, error = "加载失败：${e.message ?: "网络错误"}")
@@ -158,10 +161,18 @@ class PlayViewModel @Inject constructor(
         cachedAutoSkipIntro = settingsRepository.autoSkipIntro.first()
         cachedIntroSkipSeconds = settingsRepository.introSkipSeconds.first()
         cachedNextEpisodeOverlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
+        // A4-P2-5：后台播放开关也在这里同步重读（设置页返回/切回前台时刷新），
+        // 不只靠进页时那一次异步读入。
+        playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
     }
 
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
     private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
+        // A4-P2-8：新一集开播的挂起操作（读设置/断点，服务端模式下还有网络读）
+        // 期间旧的就绪超时仍挂着，可能误触自动换源；开播先取消旧超时。
+        readyTimeoutJob?.cancel()
+        // A4-P2-9：每集开播重新认领播放代际（见 handlePlaybackError 的归属校验）。
+        playbackToken = playerManager.claimPlayback()
         val episodes = result.episodes
         if (episodes.isEmpty() || episodeIndex !in episodes.indices) {
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
@@ -235,6 +246,13 @@ class PlayViewModel @Inject constructor(
 
     /** 播放错误 → 标记当前源失败 → 自动换源（最多 2 次）→ 再报错。 */
     private fun handlePlaybackError(error: PlaybackException?) {
+        // A4-P2-8：处理错误即作废就绪超时（超时任务本身调进来时已跑完，取消无害；
+        // 新一集开播挂起期间误触的超时也到此为止，不再多算一次失败）。
+        readyTimeoutJob?.cancel()
+        // A4-P2-9：代际/归属校验——播放器是直播与点播共用的单例，直播页的
+        // 监听器还挂着时，点播的错误不能由直播页接走（反之亦然）；只有当前
+        // 播放所有者才处理自己的错误。
+        if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
         val attempts = state.autoSwitchAttempts
@@ -271,6 +289,8 @@ class PlayViewModel @Inject constructor(
 
     /** 播完：有下一集且开启预告、且本集没被用户取消过时出预告卡（3 秒倒计时），否则停在末尾。 */
     private fun onPlaybackEnded() {
+        // A4-P2-9：同 handlePlaybackError，不是自己的播放不弹下一集预告。
+        if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
         saveRecordNow()
