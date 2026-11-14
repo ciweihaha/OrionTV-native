@@ -16,7 +16,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
-import java.net.SocketTimeoutException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -40,6 +39,10 @@ class AggApi @Inject constructor(
 ) {
     companion object {
         const val BASE_URL = "https://ysp.ciweihaha.win/agg"
+
+        /** 是否体超时：OkHttp 读/连接超时抛 SocketTimeoutException，才记熔断（第 6 轮 fa348ad）。 */
+        internal fun isBodyTimeout(e: IOException): Boolean =
+            e is java.net.SocketTimeoutException
     }
 
     /** videoList 专用的体超时熔断器（与 version 分开）。 */
@@ -198,8 +201,9 @@ class AggApi @Inject constructor(
                 delay(retryBackoffMs(attempt + 1))
             }
         }
-        // 只在“请求最终失败且原因为读超时”时计数一次。
-        if (lastError is SocketTimeoutException) {
+        // 只在“请求最终失败且原因为读超时”时计数一次（按请求，不按每次重试尝试；
+        // 第 6 轮 fa348ad 只改了判据、仍按尝试计数，一次超时请求会记 4 次直接击穿阈值 3——这里按请求记一次）。
+        if (lastError is IOException && isBodyTimeout(lastError)) {
             circuitBreaker.recordFailure()
         }
         throw lastError ?: IOException("请求失败")
