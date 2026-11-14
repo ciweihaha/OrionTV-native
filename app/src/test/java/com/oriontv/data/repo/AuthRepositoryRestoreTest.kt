@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -243,7 +244,7 @@ class AuthRepositoryRestoreTest {
         val settings = FakeAuthSettings(marker = "")
         val jar = InMemoryCookieJar()
         val repo = repository(api, settings, jar = jar)
-        val url = "https://example.com/".let { okhttp3.HttpUrl.Companion.toHttpUrl(it) }
+        val url = "https://example.com/".toHttpUrl()
         api.onLogin = {
             jar.saveFromResponse(
                 url,
@@ -276,7 +277,7 @@ class AuthRepositoryRestoreTest {
         val settings = FakeAuthSettings(marker = "")
         val jar = InMemoryCookieJar()
         val repo = repository(api, settings, jar = jar)
-        val url = "https://example.com/".let { okhttp3.HttpUrl.Companion.toHttpUrl(it) }
+        val url = "https://example.com/".toHttpUrl()
         api.onLogin = {
             jar.saveFromResponse(
                 url,

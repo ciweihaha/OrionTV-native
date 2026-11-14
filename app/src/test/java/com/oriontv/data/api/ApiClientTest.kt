@@ -1,11 +1,17 @@
 package com.oriontv.data.api
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 
 class CircuitBreakerTest {
 
@@ -206,16 +212,16 @@ class ReadStreamCappedTest {
         // OkHttp 读超时；5 秒 withTimeout 是护栏——若取消递送不到，
         // await 挂住、超时抛错且流仍未关，测试失败。
         val stream = GatedInputStream()
-        kotlinx.coroutines.runBlocking {
-            val deferred = async(kotlinx.coroutines.Dispatchers.IO) {
+        runBlocking {
+            val deferred = async(Dispatchers.IO) {
                 readStreamCapped(stream, 1024L) { stream.close() }
             }
-            kotlinx.coroutines.delay(100)
+            delay(100)
             deferred.cancel()
-            val thrown = try {
-                kotlinx.coroutines.withTimeout(5_000) { deferred.await() }
+            val thrown: CancellationException? = try {
+                withTimeout(5_000) { deferred.await() }
                 null
-            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            } catch (e: CancellationException) {
                 e
             }
             org.junit.Assert.assertNotNull("取消的体读应抛 CancellationException", thrown)
