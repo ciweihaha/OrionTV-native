@@ -111,6 +111,16 @@ class AggApiTest {
     }
 
     @Test
+    fun `version strips v prefix before validating`() {
+        // B4-P2-13：服务端带 v 返回版本号时不再直接抛错，去前缀后返回纯版本号。
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, """{"version": "v2.0.1"}""")
+        }
+        val version = runBlocking { api(client).version() }
+        assertEquals("2.0.1", version)
+    }
+
+    @Test
     fun `version validates the fallback version too`() {
         val (client, _) = countingClient { request, _ ->
             val url = request.url.toString()

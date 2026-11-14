@@ -2,8 +2,11 @@ package com.oriontv.data.api
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -20,6 +23,7 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -149,12 +153,16 @@ class MoonTvApi @Inject constructor(
     /** 全源搜索：超时放宽到 60 秒；服务端缺 results 字段时当空结果。 */
     suspend fun searchVideos(baseUrl: String, query: String): List<SearchResult> =
         withContext(ioDispatcher) {
-            val url = "${baseUrl.trimEnd('/')}/api/search?q=${URLEncoder.encode(query, "UTF-8")}"
-            val body = execute(
-                Request.Builder().url(url).get().build(),
-                timeoutSeconds = ApiClient.SEARCH_TIMEOUT_SECONDS,
-            )
-            decodeSearchResults(body)
+            // B4-P2-15：单次搜索总超时 150 秒——服务端多源串行时最坏 ~4 分钟，
+            // 无总超时/取消入口会把调用方钉死。
+            withTimeout(150_000) {
+                val url = "${baseUrl.trimEnd('/')}/api/search?q=${URLEncoder.encode(query, "UTF-8")}"
+                val body = execute(
+                    Request.Builder().url(url).get().build(),
+                    timeoutSeconds = ApiClient.SEARCH_TIMEOUT_SECONDS,
+                )
+                decodeSearchResults(body)
+            }
         }
 
     /**
@@ -337,9 +345,16 @@ class MoonTvApi @Inject constructor(
         }
         var lastError: Exception? = null
         var refreshAttempted = false
+        // B4-P2-15：同 AggApi——repeat 的 lambda 里 coroutineContext 不可见，先捕获。
+        val context = coroutineContext
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
-                client.newCall(request).execute().use { response ->
+                val call = client.newCall(request)
+                // B4-P2-15：同 AggApi——协程取消时取消底层 OkHttp 调用。
+                // （coroutines 1.11 无 Job.invokeOnCancellation，用公开的
+                // 单参数 invokeOnCompletion；正常完成时 cancel 是空操作。）
+                context[Job]?.invokeOnCompletion { call.cancel() }
+                call.execute().use { response ->
                     if (response.code == 401) {
                         if (!refreshAttempted) {
                             refreshAttempted = true
@@ -371,6 +386,9 @@ class MoonTvApi @Inject constructor(
                 throw e
             } catch (e: IOException) {
                 lastError = e
+                // B4-P2-15：取消已触发时（call.cancel() 让 execute 抛
+                // IOException），在这里重抛 CE，不再重试。
+                context.ensureActive()
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
                 if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
             }

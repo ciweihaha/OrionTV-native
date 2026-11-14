@@ -141,7 +141,9 @@ class PairingGate(
      */
     @Synchronized
     fun check(clientIp: String, code: String, expectedCode: String): Boolean {
-        val ip = clientIp.ifBlank { "unknown" }
+        // B4-P2-25：拿不到 IP 时不再全进 "unknown" 同一桶——不同连接
+        // 共用一个计数会互相锁定；用唯一键单独计数，失败不聚合、不共享锁定。
+        val ip = clientIp.ifBlank { "unknown:" + java.util.UUID.randomUUID().toString() }
         val now = nowMs()
         val state = attemptsByIp[ip]
         if (state != null) {

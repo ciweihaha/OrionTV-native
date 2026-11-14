@@ -61,6 +61,12 @@ android {
         }
     }
 
+    // B4-P2-21：LenientDecode/EpgParser 改用 android.util.Log 后，JVM 单测里
+    // 未 mock 的 android.* 方法默认抛错；返回默认值即可（Log 调用返回值无意义）。
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"

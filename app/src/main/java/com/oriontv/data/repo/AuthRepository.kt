@@ -161,7 +161,13 @@ class AuthRepository @Inject constructor(
         if (configRetryJob?.isActive == true) return
         configRetryJob = restoreScope.launch {
             delay(CONFIG_RETRY_DELAY_MS)
-            runCatching { settingsRepository.refreshServerConfig() }
+            // B4-P2-17：31 秒后配置重拉成功时重跑登录恢复——否则冷启动时
+            // 配置未到、restoreSession 已失败，登录弹窗一直滞留；
+            // 重跑成功时 performRestore 会把弹窗关掉，失败则弹窗继续留着。
+            val refreshed = runCatching { settingsRepository.refreshServerConfig() }.getOrNull()
+            if (refreshed != null) {
+                restoreSession()
+            }
         }
     }
 

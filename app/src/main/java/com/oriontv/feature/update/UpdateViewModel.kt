@@ -235,16 +235,12 @@ class UpdateViewModel @Inject constructor(
     fun consumeToast() {
         _uiState.update { it.copy(toast = null) }
     }
-
-    fun clearError() {
-        _uiState.update { it.copy(error = null) }
-    }
 }
 
 /**
  * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
- * 注意：AggApi.version() 内部仍会对带 v 的版本直接抛错（正则在数据层），
- * 这里的 strip 只是防御层，服务端一旦真带 v 返回，根治还得在 AggApi 里 strip。
+ * B4-P2-13：AggApi.version() 内部已 strip v 前缀（根治），这里的 strip
+ * 是死防御，留着无害。
  * 纯逻辑，可单测。
  */
 fun stripVersionPrefix(version: String): String =

@@ -73,6 +73,20 @@ class RemoteInputLogicTest {
     }
 
     @Test
+    fun `pairing gate blank ip does not share lockout`() {
+        var now = 1_000_000L
+        val gate = PairingGate(nowMs = { now })
+        // B4-P2-25：拿不到 IP 时失败不聚合——两次空 IP 失败后合法配对仍能通过
+        //（之前全进 "unknown" 同一桶，5 次失败会把所有无 IP 客户端一起锁掉）。
+        repeat(2) { assertFalse(gate.check("", "0000", "1234")) }
+        assertTrue(gate.check("", "1234", "1234"))
+        // 空 IP 再失败 5 次，也不锁定其它客户端与后续空 IP 合法配对。
+        repeat(5) { assertFalse(gate.check("", "0000", "1234")) }
+        assertTrue(gate.check("1.2.3.4", "1234", "1234"))
+        assertTrue(gate.check("", "1234", "1234"))
+    }
+
+    @Test
     fun `pairing gate success clears failure count`() {
         val gate = PairingGate()
         repeat(4) { assertFalse(gate.check("1.2.3.4", "0000", "1234")) }

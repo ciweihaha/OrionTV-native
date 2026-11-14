@@ -10,6 +10,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -73,6 +74,18 @@ class DetailRepository @Inject constructor(
         q: String,
         preferredResults: List<SearchResult>,
     ): List<SearchResult> = coroutineScope {
+        // B4-P2-16：总超时 120 秒 + 资源数上限 30——无上限时源多、单源慢，
+        // 详情全量搜索会拖很久才返回。
+        withTimeout(120_000) {
+            fullSearchUnbounded(baseUrl, q, preferredResults)
+        }
+    }
+
+    private suspend fun fullSearchUnbounded(
+        baseUrl: String,
+        q: String,
+        preferredResults: List<SearchResult>,
+    ): List<SearchResult> = coroutineScope {
         val resources = try {
             moonTvApi.getResources(baseUrl)
         } catch (e: CancellationException) {
@@ -81,7 +94,7 @@ class DetailRepository @Inject constructor(
             return@coroutineScope preferredResults
         }
         val semaphore = Semaphore(DetailSearchLogic.SEARCH_CONCURRENCY_LIMIT)
-        val deferred = resources.map { site ->
+        val deferred = resources.take(30).map { site ->
             async {
                 semaphore.withPermit {
                     try {

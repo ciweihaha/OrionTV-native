@@ -179,8 +179,9 @@ class RemoteInputManager @Inject constructor() {
 
     /** 供 Application 退出时释放（正常流程不需要调）。 */
     fun release() {
-        rotationJob?.cancel()
-        rotationJob = null
+        // B4-P2-24：先停 HTTP 服务（轮换任务、server.stop()、清配对码）
+        // 再取消 scope——之前只取消 scope，server 还在后台跑着。
+        stopLocked()
         scope.cancel()
     }
 }

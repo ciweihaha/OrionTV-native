@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -53,9 +54,13 @@ class FavoritesRepository @Inject constructor(
     private val writeMutex = Mutex()
 
     /** B-P2-20：上次成功拉到的服务端收藏（失败时保留展示用）；失败标记供 UI 提示。 */
+    @Volatile
     private var lastGoodFavorites: Map<String, Favorite>? = null
     private val _loadFailed = MutableStateFlow(false)
     val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
+    /** B4-P2-19：上次已知的收藏态——服务端网络失败时返回它，不误显示“未收藏”。 */
+    private val lastKnownFavorites = ConcurrentHashMap<String, Boolean>()
 
     /** 全部收藏（最新在前），附带记录键（导航到详情页要 source+id）。 */
     suspend fun getAllWithKeys(): List<Pair<String, Favorite>> {
@@ -85,7 +90,17 @@ class FavoritesRepository @Inject constructor(
     suspend fun isFavorite(key: String): Boolean {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
+            // B4-P2-19：服务端失败时返回上次已知态，不误显示“未收藏”；
+            // 从未查过才默认 false。
+            return try {
+                moonTvApi.getFavorites(baseUrl, key).isNotEmpty().also {
+                    lastKnownFavorites[key] = it
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                lastKnownFavorites[key] ?: false
+            }
         }
         return db.favoriteDao().getByKey(key) != null
     }
@@ -150,6 +165,7 @@ class PlayRecordsRepository @Inject constructor(
     private val writeMutex = Mutex()
 
     /** B-P2-20：上次成功拉到的服务端播放记录（失败时保留展示用）；失败标记供 UI 提示。 */
+    @Volatile
     private var lastGoodRecords: Map<String, PlayRecord>? = null
     private val _loadFailed = MutableStateFlow(false)
     val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
@@ -262,6 +278,7 @@ class SearchHistoryRepository @Inject constructor(
     private val writeMutex = Mutex()
 
     /** B-P2-20：上次成功拉到的服务端搜索历史（失败时保留展示用）。 */
+    @Volatile
     private var lastGoodHistory: List<String>? = null
 
     /** 搜索历史最新 20 条，新词插头部、去重。 */
@@ -281,38 +298,67 @@ class SearchHistoryRepository @Inject constructor(
         return db.searchHistoryDao().getLatest20().map { it.keyword }
     }
 
-    suspend fun add(keyword: String) = writeMutex.withLock {
+    /**
+     * B4-P2-18：服务端写操作（add/delete/clear）重试一次；最终失败返回
+     * false 并记 Log.w，不再静默吞掉（否则删掉的词下次刷新又“幽灵复现”）。
+     */
+    private suspend fun serverWrite(tag: String, block: suspend () -> Unit): Boolean {
+        repeat(2) { attempt ->
+            try {
+                block()
+                return true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (attempt == 1) {
+                    Log.w("SearchHistoryRepository", "服务端写搜索历史失败：$tag")
+                    return false
+                }
+            }
+        }
+        return false
+    }
+
+    /** 返回是否写成功；服务端失败重试一次后仍失败返回 false（调用方不假装已写）。 */
+    suspend fun add(keyword: String): Boolean = writeMutex.withLock {
         val trimmed = keyword.trim()
-        if (trimmed.isEmpty()) return@withLock
+        if (trimmed.isEmpty()) return@withLock true
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runOrDefault(emptyList()) { moonTvApi.addSearchHistory(baseUrl, trimmed) }
-            return@withLock
+            return@withLock serverWrite("add:$trimmed") {
+                moonTvApi.addSearchHistory(baseUrl, trimmed)
+            }
         }
         db.searchHistoryDao().insert(
             SearchHistoryEntity(keyword = trimmed, saveTime = System.currentTimeMillis()),
         )
         // 写侧裁剪到 20 条（P2-7；服务端分支由服务端管）。
         db.searchHistoryDao().trimToLatest20()
+        true
     }
 
-    /** 单条删除（搜索历史 chips 的 ×）。 */
-    suspend fun delete(keyword: String) = writeMutex.withLock {
+    /** 单条删除（搜索历史 chips 的 ×）；返回是否删成功。 */
+    suspend fun delete(keyword: String): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runOrDefault(false) { moonTvApi.deleteSearchHistory(baseUrl, keyword) }
-            return@withLock
+            return@withLock serverWrite("delete:$keyword") {
+                moonTvApi.deleteSearchHistory(baseUrl, keyword)
+            }
         }
         db.searchHistoryDao().deleteByKeyword(keyword)
+        true
     }
 
-    suspend fun clear() = writeMutex.withLock {
+    /** 返回是否清成功。 */
+    suspend fun clear(): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runOrDefault(false) { moonTvApi.deleteSearchHistory(baseUrl) }
-            return@withLock
+            return@withLock serverWrite("clear") {
+                moonTvApi.deleteSearchHistory(baseUrl)
+            }
         }
         db.searchHistoryDao().clearAll()
+        true
     }
 }
 

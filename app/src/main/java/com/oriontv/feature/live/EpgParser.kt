@@ -1,9 +1,9 @@
 package com.oriontv.feature.live
 
+import android.util.Log
 import com.oriontv.core.util.TimeUtils
 import kotlinx.serialization.Serializable
 import java.io.StringReader
-import java.util.logging.Logger
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
@@ -20,8 +20,6 @@ import org.xml.sax.InputSource
  * 用 javax.xml 解析（纯 JVM），便于本地单测；不要用 android.util.Xml。
  */
 object EpgParser {
-
-    private val logger = Logger.getLogger("EpgParser")
 
     @Serializable
     data class Programme(
@@ -69,7 +67,8 @@ object EpgParser {
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
             true
         }.getOrDefault(false)
-        logger.info("EPG 解析安全特性：$features（ACCESS_EXTERNAL_DTD=\"\" 拦外部 DTD 拉取、不拒 DOCTYPE）")
+        // B4-P2-21：java.util.logging 在 Android 上无输出，改 android.util.Log。
+        Log.i("EpgParser", "EPG 解析安全特性：$features（ACCESS_EXTERNAL_DTD=\"\" 拦外部 DTD 拉取、不拒 DOCTYPE）")
         val builder = factory.newDocumentBuilder()
         val doc = builder.parse(InputSource(StringReader(xml)))
 

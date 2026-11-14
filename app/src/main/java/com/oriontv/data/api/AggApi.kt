@@ -3,8 +3,11 @@ package com.oriontv.data.api
 import com.oriontv.core.util.VersionUtils
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -19,6 +22,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -94,17 +98,21 @@ class AggApi @Inject constructor(
      * 解码/校验异常包成 [AggInvalidResponseException]，与 videoList 一致（P1-7）。
      */
     suspend fun version(): String = withContext(ioDispatcher) {
-        val primaryUrl = BASE_URL.toHttpUrl().newBuilder()
-            .addQueryParameter("ac", "oriontv-version")
-            .build()
-        val fallbackUrl = "$BASE_URL/oriontv-version.json".toHttpUrl()
-        try {
-            fetchVersion(primaryUrl)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // 主端点失败（网络/5xx/结构异常）才走备用；两者都失败时抛备用端的错。
-            fetchVersion(fallbackUrl)
+        // B4-P2-14：总超时 60 秒——主备两端点各最多重试 3 次、单次 20 秒，
+        // 最坏 ~3 分钟；无取消入口时调用方（更新检查）会被钉死。
+        withTimeout(60_000) {
+            val primaryUrl = BASE_URL.toHttpUrl().newBuilder()
+                .addQueryParameter("ac", "oriontv-version")
+                .build()
+            val fallbackUrl = "$BASE_URL/oriontv-version.json".toHttpUrl()
+            try {
+                fetchVersion(primaryUrl)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // 主端点失败（网络/5xx/结构异常）才走备用；两者都失败时抛备用端的错。
+                fetchVersion(fallbackUrl)
+            }
         }
     }
 
@@ -121,10 +129,13 @@ class AggApi @Inject constructor(
         } catch (e: Exception) {
             throw AggInvalidResponseException("版本接口返回 JSON 损坏", e)
         }
-        if (!VersionUtils.isValidVersion(parsed.version)) {
+        // B4-P2-13：版本号先去 v/V 前缀再校验/返回——服务端带 v 返回时
+        // 之前直接抛错；UpdateViewModel 的 strip 是死防御，留着无害。
+        val version = parsed.version.trim().removePrefix("v").removePrefix("V")
+        if (!VersionUtils.isValidVersion(version)) {
             throw AggInvalidResponseException("版本号格式非法：${parsed.version}")
         }
-        return parsed.version
+        return version
     }
 
     /**
@@ -196,9 +207,19 @@ class AggApi @Inject constructor(
                 .build()
         }
         var lastError: Exception? = null
+        // B4-P2-14：repeat 的 lambda 不是 suspend 上下文，coroutineContext
+        // 在里面不可见，先在外面捕获。
+        val context = coroutineContext
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
-                val response = client.newCall(request).execute()
+                val call = client.newCall(request)
+                // B4-P2-14：协程取消时取消底层 OkHttp 调用——同步 execute()
+                // 本身不响应取消，version() 最坏 ~3 分钟才返回。
+                // 注：coroutines 1.11 没有 Job.invokeOnCancellation，
+                // 三参数 invokeOnCompletion 是 internal；用公开的单参数版，
+                // 正常完成时调 call.cancel() 是空操作，无害。
+                context[Job]?.invokeOnCompletion { call.cancel() }
+                val response = call.execute()
                 if (response.isSuccessful) {
                     circuitBreaker.recordSuccess()
                     return response
@@ -216,6 +237,9 @@ class AggApi @Inject constructor(
                 throw e
             } catch (e: IOException) {
                 lastError = e
+                // B4-P2-14：取消已触发时（call.cancel() 让 execute 抛
+                // IOException），在这里重抛 CE，不再重试。
+                context.ensureActive()
             }
             if (attempt < ApiClient.MAX_RETRIES) {
                 delay(retryBackoffMs(attempt + 1))

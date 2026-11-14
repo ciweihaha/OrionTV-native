@@ -213,10 +213,6 @@ class SettingsViewModel @Inject constructor(
     fun consumeToast() {
         _uiState.update { it.copy(toast = null) }
     }
-
-    fun clearError() {
-        _uiState.update { it.copy(error = null) }
-    }
 }
 
 data class SettingsUiState(

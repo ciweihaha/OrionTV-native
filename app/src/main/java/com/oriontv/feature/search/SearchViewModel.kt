@@ -222,10 +222,27 @@ class SearchViewModel @Inject constructor(
     /** 单条删除历史。 */
     fun deleteHistory(keyword: String) {
         viewModelScope.launch {
-            searchHistoryRepository.delete(keyword)
+            val deleted = try {
+                searchHistoryRepository.delete(keyword)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                false
+            }
+            // B4-P2-18：删除失败时不刷成“已删”假象——重读服务端真实状态
+            // （失败时该词仍在，读回来照常显示）；删成功但刷新读失败回落
+            // 到旧缓存时，把已删词从展示里去掉，不让它“幽灵复现”
+            // （服务端已删，展示也该消失）。
+            val fresh = try {
+                searchHistoryRepository.getLatest20()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _uiState.value.history
+            }
+            val newHistory = if (deleted) fresh.filter { it != keyword } else fresh
             // B-P2-7：先取新 history 再算联想；用删除前的旧 history 算，
             // 删后联想 chips 仍含已删词，直到下次输入才刷新。
-            val newHistory = searchHistoryRepository.getLatest20()
             _uiState.value = _uiState.value.copy(
                 history = newHistory,
                 suggestions = suggest(_uiState.value.query, newHistory),

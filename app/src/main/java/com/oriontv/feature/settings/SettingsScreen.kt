@@ -208,7 +208,6 @@ fun SettingsScreen(
                     3 -> UpdateSettings(
                         currentVersion = updateState.currentVersion,
                         isChecking = updateState.isChecking,
-                        error = updateState.error,
                         onCheckUpdate = { updateViewModel.checkForUpdate(silent = false) },
                         firstRequester = rightRequester,
                     )
@@ -602,11 +601,12 @@ private fun RemoteInputSettings(
 }
 
 /** 检查更新：当前版本 + “检查更新”按钮；有新版弹更新卡片。 */
+// B4-P2-22：更新错误只留底部常驻那处（卡片关闭后仍可见），这里的内联
+// error Text 与底部重复显示，删掉（error 参数随之去掉）。
 @Composable
 private fun UpdateSettings(
     currentVersion: String,
     isChecking: Boolean,
-    error: String?,
     onCheckUpdate: () -> Unit,
     firstRequester: FocusRequester,
 ) {
@@ -619,9 +619,6 @@ private fun UpdateSettings(
             enabled = !isChecking,
             modifier = Modifier.focusRequester(firstRequester),
         )
-        if (error != null) {
-            Text(text = error, style = OrionTextStyles.Body, color = OrionColors.Error)
-        }
     }
 }
 
