@@ -109,6 +109,10 @@ interface SearchHistoryDao {
 
     @Query("DELETE FROM search_history")
     suspend fun clearAll()
+
+    /** 搜索历史写侧上限 20 条：只留最新 20 条（P2-7；之前只读侧 LIMIT 20，表会无限长）。 */
+    @Query("DELETE FROM search_history WHERE keyword NOT IN (SELECT keyword FROM search_history ORDER BY saveTime DESC LIMIT 20)")
+    suspend fun trimToLatest20()
 }
 
 @Dao

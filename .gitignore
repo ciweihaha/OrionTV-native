@@ -13,7 +13,7 @@ local.properties
 
 # App 构建产物
 app/build/
-app/schemas/
+# Room schema（app/schemas/）要入库：迁移靠它在编译期校验，下次构建生成后随代码提交。
 
 # 密钥与凭据 —— 绝不进仓库（CI 用 GitHub Actions Secrets）
 *.jks

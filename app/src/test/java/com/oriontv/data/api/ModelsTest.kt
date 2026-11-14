@@ -39,4 +39,28 @@ class ModelsTest {
         assertEquals("2024", parsed.vod_year)
         assertEquals("8.5", parsed.vod_douban_score)
     }
+
+    @Test
+    fun `agg item defaults missing display fields`() {
+        val parsed = json.decodeFromString<AggVideoItem>("""{"vod_id": "1"}""")
+        assertEquals("", parsed.vod_name)
+        assertEquals("", parsed.vod_pic)
+    }
+
+    @Test
+    fun `search result defaults missing display fields`() {
+        val parsed = json.decodeFromString<SearchResult>(
+            """{"source": "a", "source_name": "源A"}""",
+        )
+        assertEquals("", parsed.title)
+        assertEquals("", parsed.poster)
+    }
+
+    @Test
+    fun `favorite defaults missing fields`() {
+        val parsed = json.decodeFromString<Favorite>("""{}""")
+        assertEquals("", parsed.cover)
+        assertEquals("", parsed.title)
+        assertEquals(0, parsed.total_episodes)
+    }
 }

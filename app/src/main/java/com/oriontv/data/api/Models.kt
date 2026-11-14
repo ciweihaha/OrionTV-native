@@ -47,8 +47,9 @@ object LenientStringSerializer : KSerializer<String?> {
 data class AggVideoItem(
     @Serializable(with = LenientStringSerializer::class)
     val vod_id: String? = null,
-    val vod_name: String,
-    val vod_pic: String,
+    /** 展示字段给默认值：服务端漏字段时整条不至于解码失败（P1-8）。 */
+    val vod_name: String = "",
+    val vod_pic: String = "",
     @Serializable(with = LenientStringSerializer::class)
     val vod_year: String? = null,
     val vod_area: String? = null,
@@ -77,11 +78,11 @@ data class AggListResponse(
 data class SearchResult(
     @Serializable(with = LenientStringSerializer::class)
     val id: String? = null,
-    val title: String,
-    val poster: String,
+    val title: String = "",
+    val poster: String = "",
     val episodes: List<String> = emptyList(),
-    val source: String,
-    val source_name: String,
+    val source: String = "",
+    val source_name: String = "",
     @SerialName("class")
     val class_: String? = null,
     @Serializable(with = LenientStringSerializer::class)
@@ -97,8 +98,8 @@ data class SearchResponse(
 
 @Serializable
 data class DoubanItem(
-    val title: String,
-    val poster: String,
+    val title: String = "",
+    val poster: String = "",
     val rate: String? = null,
 )
 
@@ -111,35 +112,35 @@ data class DoubanResponse(
 
 @Serializable
 data class ApiSite(
-    val key: String,
-    val api: String,
-    val name: String,
+    val key: String = "",
+    val api: String = "",
+    val name: String = "",
     val detail: String? = null,
 )
 
 @Serializable
 data class Favorite(
-    val cover: String,
-    val title: String,
-    val source_name: String,
-    val total_episodes: Int,
-    val search_title: String,
+    val cover: String = "",
+    val title: String = "",
+    val source_name: String = "",
+    val total_episodes: Int = 0,
+    val search_title: String = "",
     val year: String? = null,
     val save_time: Long? = null,
 )
 
 @Serializable
 data class PlayRecord(
-    val title: String,
-    val source_name: String,
-    val cover: String,
-    val index: Int,
-    val total_episodes: Int,
+    val title: String = "",
+    val source_name: String = "",
+    val cover: String = "",
+    val index: Int = 0,
+    val total_episodes: Int = 0,
     /** 已播秒数。 */
-    val play_time: Long,
+    val play_time: Long = 0,
     /** 总时长秒数。 */
-    val total_time: Long,
-    val save_time: Long,
+    val total_time: Long = 0,
+    val save_time: Long = 0,
     val year: String? = null,
 )
 

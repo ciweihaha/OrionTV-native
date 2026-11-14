@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 /**
  * 熔断器（plan §5.5：agg 分类体超时连续 3 次后 60 秒内不再发）。
  * 纯逻辑类，可单测；时间由调用方注入，便于测试。
+ * 线程安全：AggApi 的 videoList/version 在 IO 线程并发调用，计数用 @Synchronized 保护。
  */
 class CircuitBreaker(
     private val failureThreshold: Int = 3,
@@ -15,6 +16,7 @@ class CircuitBreaker(
     private var openedAtMs: Long = -1L
 
     /** 熔断是否开启（开启期间拒绝发请求）。 */
+    @Synchronized
     fun isOpen(): Boolean {
         if (openedAtMs < 0) return false
         if (nowMs() - openedAtMs >= openDurationMs) {
@@ -26,11 +28,13 @@ class CircuitBreaker(
         return true
     }
 
+    @Synchronized
     fun recordSuccess() {
         consecutiveFailures = 0
         openedAtMs = -1L
     }
 
+    @Synchronized
     fun recordFailure() {
         consecutiveFailures++
         if (consecutiveFailures >= failureThreshold) {
@@ -84,7 +88,7 @@ object ApiClient {
     /** 是否值得重试：超时/网络错（IOException）/5xx 才重试；4xx 不重试。 */
     fun shouldRetryOnStatus(statusCode: Int): Boolean = statusCode >= 500
 
-    /** 指数退避（版本检查：2s × 次数；默认：1s 固定）。 */
+    /** 线性退避：baseMs × 次数（默认 1s/2s/3s；版本检查 2s × 次数；APK 下载 3s × 次数）。 */
     fun backoffMs(attempt: Int, baseMs: Long = RETRY_BACKOFF_MS): Long =
         baseMs * attempt.coerceAtLeast(1)
 

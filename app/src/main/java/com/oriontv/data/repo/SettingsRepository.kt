@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 设置仓库：双存储模式分支（plan §4.3）——按 server-config 的 StorageType
@@ -69,6 +70,8 @@ class SettingsRepository @Inject constructor(
             lastConfigFailureAtMs = 0L
             config.StorageType?.let { settingsDataStore.setStorageType(it) }
             config
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             lastConfigFailureAtMs = System.currentTimeMillis()
             lastConfigFailureUrl = baseUrl

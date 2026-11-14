@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 详情多源聚合（plan §5.2，照搬 RN detailStore 流程）：
@@ -45,6 +46,8 @@ class DetailRepository @Inject constructor(
             try {
                 val raw = moonTvApi.searchVideo(baseUrl, q, preferredSource)
                 preferredResults = DetailSearchLogic.selectPreferredResults(raw, q, id)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 preferredError = e
             }
@@ -72,6 +75,8 @@ class DetailRepository @Inject constructor(
     ): List<SearchResult> = coroutineScope {
         val resources = try {
             moonTvApi.getResources(baseUrl)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             return@coroutineScope preferredResults
         }
@@ -79,8 +84,13 @@ class DetailRepository @Inject constructor(
         val deferred = resources.map { site ->
             async {
                 semaphore.withPermit {
-                    runCatching { moonTvApi.searchVideo(baseUrl, q, site.key) }
-                        .getOrDefault(emptyList())
+                    try {
+                        moonTvApi.searchVideo(baseUrl, q, site.key)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
                 }
             }
         }

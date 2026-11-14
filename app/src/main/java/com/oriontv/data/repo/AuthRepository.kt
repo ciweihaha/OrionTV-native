@@ -2,6 +2,7 @@ package com.oriontv.data.repo
 
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.local.CredentialsStore
+import com.oriontv.di.InMemoryCookieJar
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -9,6 +10,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 登录会话仓库（ui-design.md §5.8，照搬 RN authStore）：
@@ -21,6 +23,7 @@ class AuthRepository @Inject constructor(
     private val moonTvApi: MoonTvApi,
     private val settingsRepository: SettingsRepository,
     private val credentialsStore: CredentialsStore,
+    private val cookieJar: InMemoryCookieJar,
 ) {
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
@@ -55,6 +58,8 @@ class AuthRepository @Inject constructor(
             _isLoggedIn.value = true
             _showLoginModal.value = false
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val message = "登录失败：${e.message ?: "网络错误"}"
             _loginError.value = message
@@ -62,12 +67,18 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    /** 退出登录：远程登出失败也不留标记（finally 无条件清）。 */
+    /**
+     * 退出登录：远程登出失败也不留会话残留（finally 无条件清）。
+     * 只清标记位等于没退：已保存凭据还在，重启后静默重登会直接登回去；
+     * CookieJar 里的会话 cookie 也还在（P0-4）。三处都要清。
+     */
     suspend fun logout() {
         val baseUrl = settingsRepository.currentApiBaseUrl()
         try {
             if (baseUrl.isNotBlank()) moonTvApi.logout(baseUrl)
         } finally {
+            runCatching { credentialsStore.clear() }
+            runCatching { cookieJar.clear() }
             settingsRepository.setAuthCookies("")
             _isLoggedIn.value = false
         }
@@ -111,6 +122,8 @@ class AuthRepository @Inject constructor(
                 val saved = runCatching { credentialsStore.load() }.getOrNull()
                 val ok = try {
                     moonTvApi.login(baseUrl, saved?.first, saved?.second)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     false
                 }

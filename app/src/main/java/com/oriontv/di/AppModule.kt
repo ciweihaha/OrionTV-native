@@ -6,6 +6,7 @@ import com.oriontv.data.api.AggApi
 import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.local.AppDatabase
+import com.oriontv.data.local.MIGRATION_1_2
 import com.oriontv.feature.live.EpgRepository
 import com.oriontv.feature.live.M3uRepository
 import dagger.Module
@@ -30,14 +31,15 @@ object AppModule {
     /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
      * 冷启动后会话失效时由 AuthRepository 用已保存凭据静默重登恢复。
+     * 返回具体类型 [InMemoryCookieJar]（而非接口），以便 AuthRepository 退出登录时调 clear()。
      */
     @Provides
     @Singleton
-    fun provideCookieJar(): CookieJar = InMemoryCookieJar()
+    fun provideCookieJar(): InMemoryCookieJar = InMemoryCookieJar()
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(cookieJar: CookieJar): OkHttpClient =
+    fun provideOkHttpClient(cookieJar: InMemoryCookieJar): OkHttpClient =
         ApiClient.newBuilder().cookieJar(cookieJar).build()
 
     @Provides
@@ -52,7 +54,9 @@ object AppModule {
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, "oriontv.db")
-            .fallbackToDestructiveMigration()
+            // v1 → v2 用真实迁移（只建 player_settings 表），不再破坏性重建：
+            // 旧版本用户升级后收藏/记录/搜索历史都在。
+            .addMigrations(MIGRATION_1_2)
             .build()
 
     /**
@@ -112,7 +116,9 @@ class InMemoryCookieJar : CookieJar {
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val now = System.currentTimeMillis()
-        val kept = (store[url.host].orEmpty() + cookies)
+        // 新值优先：新 cookie 在前，distinctBy 按 name 去重时留新丢旧
+        //（之前旧在前，服务端轮换 cookie 后这里一直留旧值，P1-6）。
+        val kept = (cookies + store[url.host].orEmpty())
             .filter { it.expiresAt > now }
             .distinctBy { it.name }
         store[url.host] = kept.toMutableList()
@@ -120,6 +126,14 @@ class InMemoryCookieJar : CookieJar {
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         val now = System.currentTimeMillis()
-        return store[url.host].orEmpty().filter { it.expiresAt > now }
+        // 按 Cookie 自身的 path/domain 过滤（matches 含子域规则），不只按 host 取；
+        // 全表扫描：服务端以父域下发的 cookie，在子域请求时也能带上。
+        return store.values.flatten()
+            .filter { it.expiresAt > now && it.matches(url) }
+    }
+
+    /** 退出登录时清掉全部会话 cookie（只清标记位等于没退，P0-4）。 */
+    fun clear() {
+        store.clear()
     }
 }

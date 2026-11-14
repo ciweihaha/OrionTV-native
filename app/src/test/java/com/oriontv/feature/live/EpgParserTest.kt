@@ -96,4 +96,49 @@ class EpgParserTest {
         assertEquals("广东卫视", EpgParser.normalizeName("广东 卫视"))
         assertEquals("abc", EpgParser.normalizeName("A_B C"))
     }
+
+    @Test
+    fun `parses real epg header with DOCTYPE`() {
+        // 真实节目单头部（2026-11-14 实测 https://ysp.ciweihaha.win/epg.xml）：
+        // 以 <!DOCTYPE tv SYSTEM "xmltv.dtd"> 开头，之前会被 disallow-doctype-decl 拒掉整份 EPG。
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE tv SYSTEM "xmltv.dtd">
+            <tv>
+              <channel id="cctv1"><display-name>CCTV-1 综合</display-name></channel>
+              <programme channel="cctv1" start="20261114120000 +0800" stop="20261114130000 +0800">
+                <title>新闻联播</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+        val data = EpgParser.parse(xml)
+        assertEquals("CCTV-1 综合", data.channelNames["cctv1"])
+        assertEquals("新闻联播", data.programmesByChannel["cctv1"]?.first()?.title)
+    }
+
+    @Test
+    fun `does not fetch external DTD`() {
+        // DOCTYPE 指到一个不存在的外部 DTD：如果解析器试图拉取，解析会失败；
+        // 127.0.0.1:1 端口关闭，拉取会立刻连接失败，不会挂起。
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE tv SYSTEM "http://127.0.0.1:1/nonexistent.dtd">
+            <tv>
+              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
+              <programme channel="cctv1" start="20261114120000 +0800" stop="20261114130000 +0800">
+                <title>新闻联播</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+        val data = EpgParser.parse(xml)
+        assertEquals("新闻联播", data.programmesByChannel["cctv1"]?.first()?.title)
+    }
+
+    @Test
+    fun `nowPlaying matches tvg-id case-insensitively`() {
+        val data = EpgParser.parse(sample)
+        // M3U 写 CCTV1、EPG 写 cctv1 时，之前直接对不上，只能等名字兜底。
+        val now = EpgParser.nowPlaying(data, "CCTV1", "别的台名", nowMs)
+        assertEquals("新闻联播", now?.title)
+    }
 }

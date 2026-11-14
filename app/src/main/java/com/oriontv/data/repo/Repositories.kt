@@ -13,6 +13,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
+
+/**
+ * 服务端调用失败时回落默认值，但协程取消必须原样抛出（不吞 CancellationException，P2）。
+ * 各仓库的 runCatching{...}.getOrDefault(...) 都走这里。
+ */
+private suspend fun <T> runOrDefault(default: T, block: suspend () -> T): T {
+    return try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        default
+    }
+}
 
 /**
  * 写串行化（plan §4.3）：RN 用 promise 链防读-改-写互相覆盖，
@@ -34,8 +49,7 @@ class FavoritesRepository @Inject constructor(
     suspend fun getAllWithKeys(): List<Pair<String, Favorite>> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runCatching { moonTvApi.getFavorites(baseUrl) }
-                .getOrDefault(emptyMap())
+            return runOrDefault(emptyMap()) { moonTvApi.getFavorites(baseUrl) }
                 .entries
                 .sortedByDescending { it.value.save_time ?: 0L }
                 .map { it.key to it.value }
@@ -48,8 +62,7 @@ class FavoritesRepository @Inject constructor(
     suspend fun isFavorite(key: String): Boolean {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runCatching { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
-                .getOrDefault(false)
+            return runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
         }
         return db.favoriteDao().getByKey(key) != null
     }
@@ -57,8 +70,7 @@ class FavoritesRepository @Inject constructor(
     suspend fun toggle(key: String, favorite: Favorite): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            val exists = runCatching { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
-                .getOrDefault(false)
+            val exists = runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
             if (exists) {
                 moonTvApi.deleteFavorite(baseUrl, key)
                 false
@@ -112,8 +124,7 @@ class PlayRecordsRepository @Inject constructor(
     suspend fun getAllWithKeys(): List<Pair<String, PlayRecord>> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runCatching { moonTvApi.getPlayRecords(baseUrl) }
-                .getOrDefault(emptyMap())
+            return runOrDefault(emptyMap()) { moonTvApi.getPlayRecords(baseUrl) }
                 .entries
                 .sortedByDescending { it.value.save_time }
                 .map { it.key to it.value }
@@ -126,7 +137,7 @@ class PlayRecordsRepository @Inject constructor(
     suspend fun getByKey(key: String): PlayRecord? {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runCatching { moonTvApi.getPlayRecords(baseUrl)[key] }.getOrNull()
+            return runOrDefault<PlayRecord?>(null) { moonTvApi.getPlayRecords(baseUrl)[key] }
         }
         return db.playRecordDao().getByKey(key)?.toPlayRecord()
     }
@@ -135,7 +146,7 @@ class PlayRecordsRepository @Inject constructor(
     suspend fun save(key: String, record: PlayRecord) = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runCatching { moonTvApi.savePlayRecord(baseUrl, key, record) }
+            runOrDefault(false) { moonTvApi.savePlayRecord(baseUrl, key, record) }
             return@withLock
         }
         db.playRecordDao().insert(
@@ -158,7 +169,7 @@ class PlayRecordsRepository @Inject constructor(
     suspend fun delete(key: String) = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runCatching { moonTvApi.deletePlayRecord(baseUrl, key) }
+            runOrDefault(false) { moonTvApi.deletePlayRecord(baseUrl, key) }
             return@withLock
         }
         db.playRecordDao().deleteByKey(key)
@@ -189,8 +200,7 @@ class SearchHistoryRepository @Inject constructor(
     suspend fun getLatest20(): List<String> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runCatching { moonTvApi.getSearchHistory(baseUrl) }
-                .getOrDefault(emptyList()).take(20)
+            return runOrDefault(emptyList()) { moonTvApi.getSearchHistory(baseUrl) }.take(20)
         }
         return db.searchHistoryDao().getLatest20().map { it.keyword }
     }
@@ -200,19 +210,21 @@ class SearchHistoryRepository @Inject constructor(
         if (trimmed.isEmpty()) return@withLock
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runCatching { moonTvApi.addSearchHistory(baseUrl, trimmed) }
+            runOrDefault(emptyList()) { moonTvApi.addSearchHistory(baseUrl, trimmed) }
             return@withLock
         }
         db.searchHistoryDao().insert(
             SearchHistoryEntity(keyword = trimmed, saveTime = System.currentTimeMillis()),
         )
+        // 写侧裁剪到 20 条（P2-7；服务端分支由服务端管）。
+        db.searchHistoryDao().trimToLatest20()
     }
 
     /** 单条删除（搜索历史 chips 的 ×）。 */
     suspend fun delete(keyword: String) = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runCatching { moonTvApi.deleteSearchHistory(baseUrl, keyword) }
+            runOrDefault(false) { moonTvApi.deleteSearchHistory(baseUrl, keyword) }
             return@withLock
         }
         db.searchHistoryDao().deleteByKeyword(keyword)
@@ -221,7 +233,7 @@ class SearchHistoryRepository @Inject constructor(
     suspend fun clear() = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runCatching { moonTvApi.deleteSearchHistory(baseUrl) }
+            runOrDefault(false) { moonTvApi.deleteSearchHistory(baseUrl) }
             return@withLock
         }
         db.searchHistoryDao().clearAll()
