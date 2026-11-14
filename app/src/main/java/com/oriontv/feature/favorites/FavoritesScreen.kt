@@ -13,7 +13,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -90,8 +93,23 @@ fun FavoritesScreen(
 
     // 首进落默认锚点；返回时恢复上次卡片（滚动到位后再请求焦点）。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑。
+    // 第 6 轮 P2-7：恢复 effect 只在需要时跑一次——首进、弹窗关闭 tick、
+    // 页内删除落点请求（focusRestoreRequest +1）；后台回前台的例行刷新
+    // （ON_RESUME 每次都跑 refresh）不再每次把焦点从“删除/续播”按钮上
+    // 拉回卡片。区分依据：导航返回时组合是重建的（restorePending 初值 true），
+    // 后台回前台时组合还在（restorePending 已消费为 false）；删除落点由
+    // ViewModel 的 focusRestoreRequest 显式通知，tick 由 lastHandledTick 比对。
+    var restorePending by remember { mutableStateOf(true) }
+    var lastHandledTick by remember { mutableIntStateOf(0) }
+    val restoreRequest = uiState.focusRestoreRequest
+    LaunchedEffect(restoreRequest) {
+        if (restoreRequest > 0) restorePending = true
+    }
     LaunchedEffect(uiState.items, uiState.isLoading, focusRestoreTick) {
         if (uiState.isLoading) return@LaunchedEffect
+        if (!restorePending && focusRestoreTick == lastHandledTick) return@LaunchedEffect
+        restorePending = false
+        lastHandledTick = focusRestoreTick
         if (!viewModel.initialFocusDone) {
             if (uiState.items.isNotEmpty()) firstCardRequester.requestFocus()
             else goHomeRequester.requestFocus()
@@ -222,6 +240,8 @@ fun FavoritesScreen(
                         SecondaryButton(
                             text = "删除",
                             onClick = { viewModel.removeFavorite(key, favorite) },
+                            // 第 6 轮 P1-2：删除进行中禁用，防连按把条目删了又加回来。
+                            enabled = key !in uiState.removingKeys,
                         )
                     }
                 }

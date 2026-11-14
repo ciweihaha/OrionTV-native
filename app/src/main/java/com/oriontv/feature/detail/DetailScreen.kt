@@ -231,6 +231,8 @@ private fun DetailScreenContent(
                                 SecondaryButton(
                                     text = if (uiState.isFavorite) "已收藏" else "收藏",
                                     onClick = { viewModel.toggleFavorite() },
+                                    // 第 6 轮 P1-2：切换进行中禁用，防连按把收藏态翻回去。
+                                    enabled = !uiState.isFavoriteToggling,
                                 )
                             }
                             Spacer(modifier = Modifier.height(24.dp))

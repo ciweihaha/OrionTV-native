@@ -3,6 +3,7 @@ package com.oriontv.feature.favorites
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.oriontv.core.util.InFlightGuard
 import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.repo.FavoritesRepository
@@ -27,6 +28,9 @@ class FavoritesViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(FavoritesUiState(isLoading = true))
     val uiState: StateFlow<FavoritesUiState> = _uiState.asStateFlow()
+
+    /** 第 6 轮 P1-2：页内删除防连按守卫（按记录键区分，不同卡片互不阻塞）。 */
+    private val removeGuard = InFlightGuard()
 
     /**
      * 第 5 轮：P1-3/P1-4 首进落默认锚点、返回恢复上次卡片——这两个值原来是
@@ -83,18 +87,29 @@ class FavoritesViewModel @Inject constructor(
                 emptyMap()
             }
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。
+            // 第 6 轮 P1-2/P2-7：refresh 整包替换 uiState，删除进行中的键集合与
+            // 焦点恢复请求计数要带上，否则刷新一次就把守卫/落点请求清掉。
             _uiState.value = FavoritesUiState(
                 items = items,
                 playRecords = records,
                 loadFailed = favoritesRepository.loadFailed.value,
+                removingKeys = _uiState.value.removingKeys,
+                focusRestoreRequest = _uiState.value.focusRestoreRequest,
             )
         }
     }
 
     /** 页内删除（P2-3）：先确认仍是收藏再 toggle，避免已删的情况下
      * toggle 反而重新收藏；删前算好焦点落点（下一张卡，末尾则上一张），
-     * 删完刷新后焦点落在那张卡上（见 FavoritesScreen 的恢复逻辑）。 */
+     * 删完刷新后焦点落在那张卡上（见 FavoritesScreen 的恢复逻辑）。
+     * 第 6 轮 P1-2：删除防连按——两次快速点按时两个 isFavorite 预检都可能
+     * 在第一次 toggle 落地前返回 true，随后两次 toggle 串行执行：第一次删、
+     * 第二次读到“不存在”又加回，条目幽灵复现。守卫在发起前同步按记录键拿锁，
+     * 进行中第二次点按直接丢弃；按钮同时按 removingKeys 禁用（见 FavoritesScreen）。
+     * 只改调用方守卫，不碰 Repositories.kt 的 toggle() 本体（数据层 D6-P1-2 修）。 */
     fun removeFavorite(key: String, favorite: Favorite) {
+        if (!removeGuard.tryAcquire(key)) return
+        _uiState.update { it.copy(removingKeys = it.removingKeys + key) }
         viewModelScope.launch {
             try {
                 if (!favoritesRepository.isFavorite(key)) return@launch
@@ -106,6 +121,9 @@ class FavoritesViewModel @Inject constructor(
                     idx - 1 >= 0 -> items[idx - 1].first
                     else -> null
                 }
+                // 第 6 轮 P2-7：删后落点要恢复焦点——refresh 换掉 items 后
+                // 恢复 effect 须跑一次（平时例行刷新不跑）；计数 +1 通知界面。
+                _uiState.update { it.copy(focusRestoreRequest = it.focusRestoreRequest + 1) }
                 favoritesRepository.toggle(key, favorite)
                 refresh()
             } catch (e: CancellationException) {
@@ -115,6 +133,10 @@ class FavoritesViewModel @Inject constructor(
                 // B-P0-1 只修了详情页一侧，收藏页漏了）——接住给失败提示，
                 // 不刷新列表（删失败的项仍在，不闪没），不崩溃。
                 _uiState.update { it.copy(favoriteError = nextToastEvent("取消收藏失败，请检查网络后重试")) }
+            } finally {
+                removeGuard.release(key)
+                _uiState.update { it.copy(removingKeys = it.removingKeys - key) }
+            }
             }
         }
     }
@@ -142,4 +164,8 @@ data class FavoritesUiState(
     val playRecords: Map<String, PlayRecord> = emptyMap(),
     /** B7-P0-1：删收藏失败时的一次性提示（2 秒 Toast，UI 消费后清掉；与详情页同款）。 */
     val favoriteError: ToastEvent? = null,
+    /** 第 6 轮 P1-2：删除进行中的记录键集合（进行中该卡的“删除”按钮禁用）。 */
+    val removingKeys: Set<String> = emptySet(),
+    /** 第 6 轮 P2-7：页内删除请求焦点恢复的计数（删后落点恢复跑一次；例行刷新不跑）。 */
+    val focusRestoreRequest: Int = 0,
 )
