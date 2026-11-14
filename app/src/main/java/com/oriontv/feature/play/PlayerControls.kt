@@ -64,6 +64,8 @@ fun PlayerControls(
     posterUrl: String = "",
     showSkipIntro: Boolean,
     showNextEpisode: Boolean,
+    /** 抽屉是否打开（P2-1）：抽屉打开时下一集倒计时暂停，不在用户挑集时强制切集。 */
+    drawerOpen: Boolean = false,
     introEndMs: Long? = null,
     outroStartMs: Long? = null,
     /** 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。 */
@@ -86,22 +88,28 @@ fun PlayerControls(
     modifier: Modifier = Modifier,
 ) {
     var countdown by remember(showNextEpisode) { mutableIntStateOf(3) }
-    LaunchedEffect(showNextEpisode) {
+    // P2-1：倒计时在暂停或抽屉打开时冻结——每秒只在“正在播且抽屉关闭”时减 1，
+    // 暂停期间 / 用户在抽屉里挑集时不强制切集。LaunchedEffect 的 key 含 isPlaying
+    // 与 drawerOpen：状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
+    // 保留当前值，不会重置回 3；预告关闭（showNextEpisode 变 false）时直接返回。
+    LaunchedEffect(showNextEpisode, isPlaying, drawerOpen) {
         if (showNextEpisode) {
-            countdown = 3
             while (countdown > 0) {
                 delay(1000)
-                countdown--
+                if (shouldTickNextEpisodeCountdown(isPlaying, drawerOpen)) countdown--
             }
             onNextEpisode()
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 顶部：标题 + 集数 + 源名。
+        // 顶部：标题 + 集数 + 源名。P2-11：单行省略，不让长片名延伸到屏幕中央
+        // 与预览气泡重叠；气泡同时下移到标题行之下（top 96dp），双保险。
         Text(
             text = "$title · $episodeLabel（$sourceName）",
             style = OrionTextStyles.PageTitle,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(horizontal = 48.dp, vertical = 32.dp),
@@ -112,7 +120,7 @@ fun PlayerControls(
             Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 32.dp)
+                    .padding(top = 96.dp)
                     .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
                     .background(OrionColors.Overlay)
                     .padding(horizontal = 20.dp, vertical = 12.dp),
@@ -285,6 +293,14 @@ private fun SeekableProgressBar(
         }
     }
 }
+
+/**
+ * 下一集倒计时是否应走一秒（可单测，P2-1）：正在播且抽屉关闭时才减；
+ * 暂停期间（用户可能正在看预告文案）或抽屉打开（正在挑集）时冻结，
+ * 到点不强制切集。
+ */
+internal fun shouldTickNextEpisodeCountdown(isPlaying: Boolean, drawerOpen: Boolean): Boolean =
+    isPlaying && !drawerOpen
 
 /**
  * 快进预览气泡文案（可单测，P2-1）：方向 + 目标时间。
