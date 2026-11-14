@@ -103,10 +103,11 @@ class PlayViewModel @Inject constructor(
     }
 
     fun init(source: String, id: String, title: String, episodeIndex: Int, positionMs: Long) {
-        if (initialised && currentKey == MoonTvApi.generateKey(source, id)) return
+        // B4-P1-1：统一键——与 DetailViewModel.init 同源（recordKey，空 id 用标题兜底）。
+        if (initialised && currentKey == MoonTvApi.recordKey(source, id, title)) return
         initialised = true
         playbackToken = playerManager.claimPlayback()
-        currentKey = MoonTvApi.generateKey(source, id)
+        currentKey = MoonTvApi.recordKey(source, id, title)
         routePositionMs = positionMs
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
         viewModelScope.launch {
@@ -179,8 +180,10 @@ class PlayViewModel @Inject constructor(
             return
         }
         loadCachedSettings()
-        val key = MoonTvApi.generateKey(result.source, result.id.orEmpty())
-        currentKey = key
+        // B4-P1-1：断点/倍速记忆用 init 定下的 currentKey（进入时的源/标题），
+        // 不再按当前结果重算——否则换源/自动换源后记录存到另一把键下，详情
+        // 页按进入键查不到断点/收藏。
+        val key = currentKey
         val settings = playerSettingsRepository.get(key)
         // 倍速记忆关掉时一律 1×（阶段 4）；开着才恢复该片保存的倍速。
         val speedMemory = settingsRepository.currentSpeedMemory()

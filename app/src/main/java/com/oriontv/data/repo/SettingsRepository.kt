@@ -97,6 +97,13 @@ class SettingsRepository @Inject constructor(
     suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
+
+    /**
+     * B4-P1-3：把 StorageType 清为空（未知态）——换源地址时先清，旧服务
+     * 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次数据访问
+     * 自动重拉（ensureServerConfig），成功前按本地模式兜底。
+     */
+    suspend fun clearStorageType() = settingsDataStore.setStorageType("")
     suspend fun setRemoteInputEnabled(value: Boolean) = settingsDataStore.setRemoteInputEnabled(value)
     suspend fun setAutoSkipIntro(value: Boolean) = settingsDataStore.setAutoSkipIntro(value)
     suspend fun setIntroSkipSeconds(value: Int) = settingsDataStore.setIntroSkipSeconds(value)

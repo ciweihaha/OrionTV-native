@@ -44,7 +44,9 @@ class DetailViewModel @Inject constructor(
 
     fun init(source: String, id: String, title: String) {
         // 同一视频重复 init 不重新搜（返回后重组不丢状态）。
-        val key = MoonTvApi.generateKey(source, id)
+        // B4-P1-1：统一键——init/toggleFavorite/PlayViewModel 只用 recordKey；
+        // id 为空时用标题兜底，不再所有空 id 项共用 `source+` 空键。
+        val key = MoonTvApi.recordKey(source, id, title)
         if (currentKey == key && _uiState.value.results.isNotEmpty()) return
         currentKey = key
         currentTitle = title
@@ -125,8 +127,10 @@ class DetailViewModel @Inject constructor(
                     search_title = currentTitle,
                     year = current.year,
                 )
-                // P2-16：收藏键以当前源为准（切源后再收藏，不再存进入时的源）。
-                val key = MoonTvApi.generateKey(current.source, current.id.orEmpty())
+                // B4-P1-1：收藏键用 init 的 currentKey（进入时的源/标题），不
+                // 再按当前结果重算——否则切源后收藏存到另一把键下，init 查
+                // isFavorite 时查不到，收藏态永远对不上（旧 P2-16 做法已废弃）。
+                val key = currentKey
                 // B-P0-1：服务端写失败时 toggle 抛错（见 FavoritesRepository），
                 // 这里接住给失败提示、不崩溃，收藏态保持原值。
                 val nowFavorite = favoritesRepository.toggle(key, favorite)

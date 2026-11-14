@@ -135,10 +135,60 @@ class MoonTvApiTest {
     }
 
     @Test
-    fun `login returns false when response body is not parseable`() {
+    fun `login returns WrongCredentials when response body is not parseable`() {
         val (client, _, _) = countingClient { request -> responseFor(request, 200, "not-json") }
-        val ok = runBlocking { api(client).login("https://example.com", "u", "p") }
-        assertFalse(ok)
+        val result = runBlocking { api(client).login("https://example.com", "u", "p") }
+        assertEquals(MoonTvApi.LoginResult.WrongCredentials, result)
+    }
+
+    @Test
+    fun `login returns WrongCredentials on 401 without retry`() {
+        val (client, calls, _) = countingClient { request -> responseFor(request, 401, "") }
+        val result = runBlocking { api(client).login("https://example.com", "u", "p") }
+        assertEquals(MoonTvApi.LoginResult.WrongCredentials, result)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `login retries once on 5xx and succeeds`() {
+        val callCount = AtomicInteger(0)
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val n = callCount.incrementAndGet()
+            val request = chain.request()
+            if (n == 1) responseFor(request, 500, "") else responseFor(request, 200, """{"ok":true}""")
+        }.build()
+        val result = runBlocking { api(client).login("https://example.com", "u", "p") }
+        assertEquals(MoonTvApi.LoginResult.Success, result)
+        assertEquals(2, callCount.get())
+    }
+
+    @Test
+    fun `login returns Transient after two 5xx`() {
+        val (client, calls, _) = countingClient { request -> responseFor(request, 500, "") }
+        val result = runBlocking { api(client).login("https://example.com", "u", "p") }
+        assertTrue(result is MoonTvApi.LoginResult.Transient)
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun `recordKey falls back to normalized title when id is blank`() {
+        // 空 id 不再共用 `source+` 空键；标题归一化去空白小写并去掉 +/%。
+        assertEquals("agg+title:abc", MoonTvApi.recordKey("agg", "", "A B C"))
+        assertEquals("agg+title:ab", MoonTvApi.recordKey("agg", "", "a+b"))
+        assertEquals("agg+title:ab", MoonTvApi.recordKey("agg", "", "a%b"))
+        assertEquals("agg+title:unknown", MoonTvApi.recordKey("agg", "", "   "))
+        // 有 id 时与原来一致。
+        assertEquals("agg+123", MoonTvApi.recordKey("agg", "123", "片名"))
+    }
+
+    @Test
+    fun `recordKey round-trips through split and rejoin`() {
+        // FavoritesScreen/HomeModels 按第一个 + 拆键再重拼，键必须不变。
+        val key = MoonTvApi.recordKey("agg", "", "好片 + 100%")
+        val source = key.substringBefore("+", "")
+        val id = key.substringAfter("+", "")
+        assertEquals("agg", source)
+        assertEquals(key, MoonTvApi.recordKey(source, id, "好片 + 100%"))
     }
 
     @Test

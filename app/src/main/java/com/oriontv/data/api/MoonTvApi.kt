@@ -52,7 +52,22 @@ class MoonTvApi @Inject constructor(
 
     // ---- 登录 / 配置 ----
 
-    suspend fun login(baseUrl: String, username: String?, password: String?): Boolean =
+    /**
+     * B4-P1-2：登录结果分型返回——只有 401（或 2xx 但 ok=false）才算密码错；
+     * 5xx/超时/网络错是 Transient，可重试，不再一律报“账号或密码错误”。
+     */
+    sealed interface LoginResult {
+        /** 登录成功。 */
+        data object Success : LoginResult
+
+        /** 账号或密码错误（401；或 2xx 但 ok=false/响应体解不出来）。 */
+        data object WrongCredentials : LoginResult
+
+        /** 服务端/网络问题（5xx、超时、连接失败、其它 4xx），可重试。 */
+        data class Transient(val cause: Throwable) : LoginResult
+    }
+
+    suspend fun login(baseUrl: String, username: String?, password: String?): LoginResult =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/login"
             val body = buildJsonObject {
@@ -60,12 +75,37 @@ class MoonTvApi @Inject constructor(
                 password?.let { put("password", JsonPrimitive(it)) }
             }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url(url).post(body).build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext false
-                val text = readBodyLimited(response)
-                // 响应体解不出来时不算登录成功（默认 false；之前默认 true 会误认登录成功）。
-                runCatching { json.decodeFromString<LoginResponse>(text).ok }.getOrDefault(false)
+            // 超时/5xx 做一次重试（401 与 ok=false 不重试，那是密码错）。
+            var lastError: Throwable? = null
+            repeat(2) { attempt ->
+                try {
+                    okHttpClient.newCall(request).execute().use { response ->
+                        when {
+                            response.isSuccessful -> {
+                                val text = readBodyLimited(response)
+                                // 响应体解不出来时不算登录成功（默认 false；之前默认 true 会误认登录成功）。
+                                val ok = runCatching {
+                                    json.decodeFromString<LoginResponse>(text).ok
+                                }.getOrDefault(false)
+                                return@withContext if (ok) LoginResult.Success
+                                else LoginResult.WrongCredentials
+                            }
+                            response.code == 401 -> return@withContext LoginResult.WrongCredentials
+                            response.code in 500..599 ->
+                                lastError = IOException("服务器错误（${response.code}）")
+                            else -> return@withContext LoginResult.Transient(
+                                IOException("登录失败：HTTP ${response.code}"),
+                            )
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: IOException) {
+                    lastError = e
+                }
+                if (attempt == 0) delay(retryBackoffMs)
             }
+            return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
         }
 
     suspend fun logout(baseUrl: String) {
@@ -376,6 +416,26 @@ class MoonTvApi @Inject constructor(
          */
         fun generateKey(source: String, id: String): String =
             escapeKeySegment(source) + "+" + escapeKeySegment(id)
+
+        /**
+         * B4-P1-1：收藏/断点统一键——全链路（DetailViewModel.init/
+         * toggleFavorite、PlayViewModel.init/startEpisode）只用它。
+         * id 为空时用标题兜底（`source+title:<归一化标题>`），避免所有空 id
+         * 项共用 `source+` 空键互相覆盖；`title:` 前缀使空 id 键与真实 id
+         * 键永不重合。归一化标题去空白小写并去掉 `+`/`%`，保证经
+         * FavoritesScreen/HomeModels 的 `substringBefore/After("+")` 拆分
+         * 再重拼后键不变（拆回的 id 仍是 `title:xxx`，重拼得同一键）。
+         * 兼容：旧数据里已存的 `source+` 空键记录无法反歧义，不删用户数据；
+         * 新键查不到旧记录，空 id 项表现为未收藏、从头播。
+         */
+        fun recordKey(source: String, id: String, title: String): String =
+            if (id.isNotBlank()) generateKey(source, id)
+            else generateKey(source, "title:" + normalizeTitleForKey(title))
+
+        /** 键用归一化标题：去空白小写，再去掉 +/%（防拆分歧义）；标题为空兜底 unknown。 */
+        fun normalizeTitleForKey(title: String): String =
+            title.lowercase().replace(Regex("\\s+"), "").replace("+", "").replace("%", "")
+                .ifBlank { "unknown" }
 
         /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
         private fun escapeKeySegment(segment: String): String =

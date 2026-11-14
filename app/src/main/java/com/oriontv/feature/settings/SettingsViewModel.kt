@@ -122,8 +122,17 @@ class SettingsViewModel @Inject constructor(
                 }
                 settingsRepository.setApiBaseUrl(state.apiUrl.trim())
                 settingsRepository.setM3uUrl(state.m3uUrl.trim())
+                // B4-P1-3：换源地址先把 storageType 清为空（未知态），旧服务
+                // 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次
+                // 数据访问自动重拉，成功前按本地模式兜底并提示用户。
+                var configFailed = false
+                if (apiChanged) {
+                    settingsRepository.clearStorageType()
+                }
                 if (state.apiUrl.trim().isNotBlank()) {
-                    settingsRepository.refreshServerConfig()
+                    if (settingsRepository.refreshServerConfig() == null && apiChanged) {
+                        configFailed = true
+                    }
                 }
                 _uiState.update {
                     it.copy(
@@ -132,7 +141,11 @@ class SettingsViewModel @Inject constructor(
                         savedM3uUrl = state.m3uUrl.trim(),
                         apiUrl = state.apiUrl.trim(),
                         m3uUrl = state.m3uUrl.trim(),
-                        toast = if (apiChanged) "已保存，登录状态已清除" else "已保存",
+                        toast = when {
+                            configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行"
+                            apiChanged -> "已保存，登录状态已清除"
+                            else -> "已保存"
+                        },
                     )
                 }
             } catch (e: CancellationException) {

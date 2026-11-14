@@ -63,16 +63,26 @@ class AuthRepository @Inject constructor(
         if (baseUrl.isBlank()) return Result.failure(IllegalStateException("还没有配置服务器地址"))
         _loginError.value = null
         return try {
-            val ok = moonTvApi.login(baseUrl, username, password)
-            if (!ok) {
-                _loginError.value = "账号或密码错误"
-                return Result.failure(IllegalStateException("账号或密码错误"))
+            when (val result = moonTvApi.login(baseUrl, username, password)) {
+                MoonTvApi.LoginResult.Success -> {
+                    credentialsStore.save(username, password)
+                    settingsRepository.setAuthCookies("1")
+                    _isLoggedIn.value = true
+                    _showLoginModal.value = false
+                    Result.success(Unit)
+                }
+                // B4-P1-2：只有 401（或 2xx 但 ok=false）才报“账号或密码错误”。
+                MoonTvApi.LoginResult.WrongCredentials -> {
+                    _loginError.value = "账号或密码错误"
+                    Result.failure(IllegalStateException("账号或密码错误"))
+                }
+                // 5xx/超时/网络错：MoonTvApi 内已重试一次，仍失败则报网络类错误，不误导改密码。
+                is MoonTvApi.LoginResult.Transient -> {
+                    val message = "登录失败：${result.cause.message ?: "网络错误"}，请检查网络后重试"
+                    _loginError.value = message
+                    Result.failure(IllegalStateException(message, result.cause))
+                }
             }
-            credentialsStore.save(username, password)
-            settingsRepository.setAuthCookies("1")
-            _isLoggedIn.value = true
-            _showLoginModal.value = false
-            Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -198,7 +208,8 @@ class AuthRepository @Inject constructor(
         if (baseUrl.isBlank()) return false
         val saved = try { credentialsStore.load() } catch (_: Exception) { null }
         val ok = try {
-            moonTvApi.login(baseUrl, saved?.first, saved?.second)
+            // B4-P1-2：静默恢复只认 Success；Transient/WrongCredentials 都算未恢复。
+            moonTvApi.login(baseUrl, saved?.first, saved?.second) is MoonTvApi.LoginResult.Success
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
