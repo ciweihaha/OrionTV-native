@@ -1,6 +1,7 @@
 package com.oriontv.feature.auth
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -119,6 +121,9 @@ private fun LoginField(
     keyboardType: KeyboardType,
     masked: Boolean,
 ) {
+    // C4-P1-7：输入框也要有焦点态（品牌色 2dp 描边 + 背景提亮，与 orionFocus 同款），
+    // 否则遥控器移上去看不出落在哪个框。
+    var focused by remember { mutableStateOf(false) }
     Column {
         Text(text = label, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         Spacer(modifier = Modifier.height(8.dp))
@@ -126,7 +131,12 @@ private fun LoginField(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(OrionDimens.CardCornerRadius))
-                .background(OrionColors.Surface)
+                .background(if (focused) OrionColors.SurfaceVariant else OrionColors.Surface)
+                .border(
+                    width = if (focused) OrionDimens.FocusBorderWidth else 1.dp,
+                    color = if (focused) OrionColors.Brand else OrionColors.Divider,
+                    shape = RoundedCornerShape(OrionDimens.CardCornerRadius),
+                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             BasicTextField(
@@ -135,7 +145,9 @@ private fun LoginField(
                 textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                 keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
                 visualTransformation = if (masked) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focused = it.isFocused },
                 decorationBox = { innerTextField ->
                     if (value.isEmpty()) {
                         Text(text = "请输入$label", style = OrionTextStyles.Body, color = OrionColors.TextWeak)

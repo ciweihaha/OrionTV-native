@@ -90,6 +90,8 @@ fun PlayScreen(
     positionMs: Long,
     onBack: () -> Unit,
     viewModel: PlayViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var controlsVisible by remember { mutableStateOf(true) }
@@ -114,6 +116,10 @@ fun PlayScreen(
         viewModel.init(source, id, title, episodeIndex, positionMs)
     }
     LaunchedEffect(Unit) { rootRequester.requestFocus() }
+    // C4-P1-2：NavHost 级弹窗关闭后焦点回根（控制条按钮无焦点时方向键/OK 才能唤出）。
+    LaunchedEffect(focusRestoreTick) {
+        if (focusRestoreTick > 0) rootRequester.requestFocus()
+    }
 
     // 从设置页返回 / 切回前台时刷新开播设置缓存（P2-9：轮询不再每 500ms 重读 DataStore）。
     val lifecycleOwner = LocalLifecycleOwner.current

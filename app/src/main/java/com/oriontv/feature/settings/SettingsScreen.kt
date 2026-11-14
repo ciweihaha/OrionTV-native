@@ -73,6 +73,8 @@ fun SettingsScreen(
     // P1-6：由 NavHost 传入同一个 Activity 级实例，不再自己建第二个
     //（冷启动检查与手动检查共用一份更新状态）。
     updateViewModel: UpdateViewModel,
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -89,6 +91,10 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         menuRequesters[0].requestFocus()
         viewModel.restoreRemoteInputIfEnabled()
+    }
+    // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。
+    LaunchedEffect(focusRestoreTick) {
+        if (focusRestoreTick > 0) menuRequesters[selectedMenu].requestFocus()
     }
     // Toast 2 秒消失（ui-design.md §5.8）。
     LaunchedEffect(uiState.toast) {
@@ -127,8 +133,15 @@ fun SettingsScreen(
             .fillMaxSize()
             .onKeyUp { event ->
                 if (event.key == Key.Back) {
-                    onBack()
-                    true
+                    // C4-P1-3：二维码弹窗开着时返回先关弹窗（弹窗在 Box 外，
+                    // 按键不经过这里时由弹窗自己的 BackHandler 关；这里是兜底）。
+                    if (showQrModal) {
+                        showQrModal = false
+                        true
+                    } else {
+                        onBack()
+                        true
+                    }
                 } else {
                     false
                 }

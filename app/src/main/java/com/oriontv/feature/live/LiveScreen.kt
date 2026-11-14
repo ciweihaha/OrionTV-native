@@ -104,6 +104,8 @@ fun LiveScreen(
     onNavigate: (OrionRoute) -> Unit,
     onBack: () -> Unit = {},
     viewModel: LiveViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val rootRequester = remember { FocusRequester() }
@@ -115,11 +117,13 @@ fun LiveScreen(
 
     // 关闭面板/弹窗/退出确认、或空态加载出频道后，焦点回根
     //（与 ChannelPanel 面板打开时落焦点的做法一致；面板打开时面板自己管焦点）。
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑。
     LaunchedEffect(
         uiState.panelOpen,
         uiState.epgDialogChannel,
         uiState.exitConfirmOpen,
         uiState.channels.isEmpty(),
+        focusRestoreTick,
     ) {
         if (uiState.channels.isNotEmpty() && !uiState.panelOpen &&
             uiState.epgDialogChannel == null && !uiState.exitConfirmOpen

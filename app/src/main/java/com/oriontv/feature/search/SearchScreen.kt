@@ -1,5 +1,6 @@
 package com.oriontv.feature.search
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +57,8 @@ import kotlinx.coroutines.delay
 fun SearchScreen(
     onNavigate: (OrionRoute) -> Unit,
     viewModel: SearchViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -68,8 +71,15 @@ fun SearchScreen(
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
 
+    // C4-P1-3：屏上键盘处理返回键（先关键盘；扫码弹窗开着时由弹窗自己的
+    // BackHandler 先关弹窗——它后注册、优先级更高）。
+    BackHandler(enabled = showKeyboard && !showRemoteInputModal) {
+        showKeyboard = false
+    }
+
     // P1-4：首进落搜索框；返回时恢复上次的结果卡片。
-    LaunchedEffect(Unit) {
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
+    LaunchedEffect(focusRestoreTick) {
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true

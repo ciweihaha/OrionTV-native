@@ -63,8 +63,10 @@ fun DetailScreen(
     onNavigate: (OrionRoute) -> Unit,
     onBack: () -> Unit,
     viewModel: DetailViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
-    DetailScreenContent(source, id, title, onNavigate, viewModel)
+    DetailScreenContent(source, id, title, onNavigate, viewModel, focusRestoreTick)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -75,9 +77,12 @@ private fun DetailScreenContent(
     title: String,
     onNavigate: (OrionRoute) -> Unit,
     viewModel: DetailViewModel,
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val playRequester = remember { FocusRequester() }
+    // C4-P1-4：加载失败后“重试”按钮的焦点锚点（之前失败页无任何焦点，“重试”按不到）。
+    val retryRequester = remember { FocusRequester() }
 
     LaunchedEffect(source, id) {
         viewModel.init(source, id, title.ifBlank { id })
@@ -89,8 +94,15 @@ private fun DetailScreenContent(
             viewModel.focusAnchored = true
         }
     }
+    // C4-P1-4：加载失败（current 为空且 error 非空）时焦点落到“重试”按钮。
+    LaunchedEffect(uiState.error) {
+        if (uiState.error != null && uiState.current == null) {
+            retryRequester.requestFocus()
+        }
+    }
     // P1-4：从播放页返回时重组，焦点已随旧组合处置而丢失，把焦点还给“播放”按钮。
-    LaunchedEffect(Unit) {
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑。
+    LaunchedEffect(focusRestoreTick) {
         if (viewModel.focusAnchored) playRequester.requestFocus()
     }
     // B-P0-1：收藏失败 Toast 2 秒消失（ui-design.md §5.8 同款）。
@@ -130,6 +142,7 @@ private fun DetailScreenContent(
                         SecondaryButton(
                             text = "重试",
                             onClick = { viewModel.init(source, id, title.ifBlank { id }) },
+                            modifier = Modifier.preferredFocus(retryRequester),
                         )
                     }
                 }

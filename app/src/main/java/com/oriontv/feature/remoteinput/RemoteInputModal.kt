@@ -1,6 +1,7 @@
 package com.oriontv.feature.remoteinput
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -59,6 +60,9 @@ fun RemoteInputModal(
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     val closeRequester = remember { FocusRequester() }
     val enableRequester = remember { FocusRequester() }
+
+    // C4-P1-3：扫码弹窗处理返回键（之前按返回直接走默认返回，弹窗不关、页面被 pop）。
+    BackHandler { onDismiss() }
 
     LaunchedEffect(serverUrl) {
         qrBitmap = if (serverUrl.isNullOrBlank()) {

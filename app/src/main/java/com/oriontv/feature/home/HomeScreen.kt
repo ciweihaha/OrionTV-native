@@ -62,11 +62,16 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     onNavigate: (OrionRoute) -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     // 回栈后分类选择不重置（原 remember 会丢）。
     var selectedCategory by rememberSaveable { mutableStateOf(HomeCategory.RECENT.title) }
     val firstChipRequester = remember { FocusRequester() }
+    // C4-P0-1：未配置空态“去设置”按钮的焦点锚点（空态分支在焦点请求前 return，
+    // 首装无焦点、遥控失灵；锚点与请求都放在 return 之前）。
+    val goSettingsRequester = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     // 每行横向滚动状态 + 每张卡片的焦点锚点（返回恢复用；键为 "行:卡片"）。
@@ -83,6 +88,13 @@ fun HomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // C4-P0-1：空态分支内请求焦点（必须放在下面 return 之前，否则到不了；
+    // 按钮未组合时 requestFocus 只是空操作，等 serverConfigured 变 false
+    // 的那次重组、按钮已组合时才真正落焦）。
+    LaunchedEffect(uiState.serverConfigured) {
+        if (!uiState.serverConfigured) goSettingsRequester.requestFocus()
+    }
+
     if (!uiState.serverConfigured) {
         Column(
             modifier = Modifier
@@ -93,14 +105,19 @@ fun HomeScreen(
         ) {
             Text(text = "还没有配置源地址，先去设置里添加吧", style = OrionTextStyles.Body)
             Spacer(modifier = Modifier.height(24.dp))
-            PrimaryButton(text = "去设置", onClick = { onNavigate(OrionRoute.Settings) })
+            PrimaryButton(
+                text = "去设置",
+                onClick = { onNavigate(OrionRoute.Settings) },
+                modifier = Modifier.preferredFocus(goSettingsRequester),
+            )
         }
         return
     }
 
     // P1-4：焦点默认只在首次进入时落在分类栏“最近播放”上；
     // 返回时恢复保存的焦点目标（行 index + 卡片 index），滚动到位后再请求焦点。
-    LaunchedEffect(Unit) {
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
+    LaunchedEffect(focusRestoreTick) {
         if (!viewModel.initialFocusDone) {
             firstChipRequester.requestFocus()
             viewModel.initialFocusDone = true

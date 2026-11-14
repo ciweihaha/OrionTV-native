@@ -46,6 +46,8 @@ import kotlinx.coroutines.delay
 fun FavoritesScreen(
     onNavigate: (OrionRoute) -> Unit,
     viewModel: FavoritesViewModel = hiltViewModel(),
+    /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
+    focusRestoreTick: Int = 0,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val firstCardRequester = remember { FocusRequester() }
@@ -64,7 +66,8 @@ fun FavoritesScreen(
     }
 
     // 首进落默认锚点；返回时恢复上次卡片（滚动到位后再请求焦点）。
-    LaunchedEffect(uiState.items, uiState.isLoading) {
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑。
+    LaunchedEffect(uiState.items, uiState.isLoading, focusRestoreTick) {
         if (uiState.isLoading) return@LaunchedEffect
         if (!viewModel.initialFocusDone) {
             if (uiState.items.isNotEmpty()) firstCardRequester.requestFocus()

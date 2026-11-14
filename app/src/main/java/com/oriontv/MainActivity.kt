@@ -1,6 +1,7 @@
 package com.oriontv
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -9,6 +10,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.play.PlayerManager
 import com.oriontv.feature.remoteinput.RemoteInputManager
@@ -43,13 +46,29 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var remoteInputManager: RemoteInputManager
 
+    /** C4-P1-6：热启动深链用——singleTask 下新 Intent 走 onNewIntent，交给它处理。 */
+    private var navController: NavController? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             OrionTheme {
-                OrionNavHost(modifier = Modifier.fillMaxSize())
+                val navController = rememberNavController()
+                this.navController = navController
+                OrionNavHost(
+                    modifier = Modifier.fillMaxSize(),
+                    navController = navController,
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // 热启动深链（adb/语音助手在应用已在前台/后台时发 oriontv://…）：
+        // 无此回调时 singleTask 会直接丢弃新 Intent，详情/播放深链永远到不了。
+        navController?.handleDeepLink(intent)
     }
 
     /**

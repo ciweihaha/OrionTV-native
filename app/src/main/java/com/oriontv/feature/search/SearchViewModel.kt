@@ -1,5 +1,6 @@
 package com.oriontv.feature.search
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.MoonTvApi
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
@@ -34,6 +37,8 @@ class SearchViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
     private val remoteInputManager: RemoteInputManager,
+    private val savedStateHandle: SavedStateHandle,
+    private val json: Json,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
@@ -53,6 +58,10 @@ class SearchViewModel @Inject constructor(
     var savedResultIndex: Int = -1
 
     init {
+        // C4-P1-5：搜索切走再回不丢结果——query/结果/searchedQuery 进 SavedStateHandle
+        //（导航 popUpTo(Home) 弹掉搜索页后 ViewModel 被清，只靠内存留不住）。
+        // 结果以 JSON 存（SearchResult 是 @Serializable；体量约十几 KB，远小于存档上限）。
+        restoreSearchState()
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 history = searchHistoryRepository.getLatest20(),
@@ -79,6 +88,7 @@ class SearchViewModel @Inject constructor(
             query = query,
             suggestions = suggest(query, _uiState.value.history),
         )
+        saveSearchState()
         searchJob?.cancel()
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
@@ -100,10 +110,38 @@ class SearchViewModel @Inject constructor(
         searchJob?.cancel()
         val gen = ++generation
         _uiState.value = _uiState.value.copy(query = trimmed)
+        saveSearchState()
         searchJob = viewModelScope.launch {
             if (gen != generation) return@launch
             executeSearch(trimmed, gen)
         }
+    }
+
+    /** C4-P1-5：把当前搜索态写进 SavedStateHandle（query/结果/searchedQuery）。 */
+    private fun saveSearchState() {
+        val state = _uiState.value
+        savedStateHandle[SAVED_QUERY_KEY] = state.query
+        savedStateHandle[SAVED_SEARCHED_QUERY_KEY] = state.searchedQuery
+        savedStateHandle[SAVED_RESULTS_KEY] = runCatching {
+            json.encodeToString(ListSerializer(SearchResult.serializer()), state.results)
+        }.getOrDefault("[]")
+    }
+
+    /** C4-P1-5：从 SavedStateHandle 恢复搜索态（切走再回、进程重建都不丢结果）。 */
+    private fun restoreSearchState() {
+        val query = savedStateHandle.get<String>(SAVED_QUERY_KEY).orEmpty()
+        val searchedQuery = savedStateHandle.get<String>(SAVED_SEARCHED_QUERY_KEY).orEmpty()
+        val resultsJson = savedStateHandle.get<String>(SAVED_RESULTS_KEY) ?: return
+        val results = runCatching {
+            json.decodeFromString(ListSerializer(SearchResult.serializer()), resultsJson)
+        }.getOrDefault(emptyList())
+        if (query.isBlank() && results.isEmpty()) return
+        _uiState.value = _uiState.value.copy(
+            query = query,
+            results = results,
+            searchedQuery = searchedQuery,
+            error = if (results.isEmpty() && searchedQuery.isNotBlank()) SearchError.Empty else null,
+        )
     }
 
     private suspend fun executeSearch(query: String, gen: Int = generation) {
@@ -116,6 +154,7 @@ class SearchViewModel @Inject constructor(
                 error = if (cached.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
             )
+            saveSearchState()
             return
         }
         _uiState.value = _uiState.value.copy(isLoading = true, error = null)
@@ -146,6 +185,7 @@ class SearchViewModel @Inject constructor(
                 searchedQuery = query,
                 history = searchHistoryRepository.getLatest20(),
             )
+            saveSearchState()
         } catch (e: CancellationException) {
             // B-P1-9：取消必须原样抛出；否则旧搜索被取消后仍置错误态，覆盖新搜索。
             throw e
@@ -194,6 +234,7 @@ class SearchViewModel @Inject constructor(
             isLoading = false,
             suggestions = emptyList(),
         )
+        saveSearchState()
     }
 
     /** P2-14：扫码弹窗内一键开启远程输入（存设置 + 拉起服务）。 */
@@ -207,6 +248,11 @@ class SearchViewModel @Inject constructor(
     companion object {
         /** 输入防抖 300ms（plan §3.2）。 */
         const val DEBOUNCE_MS = 300L
+
+        /** C4-P1-5：SavedStateHandle 键（搜索切走再回不丢结果）。 */
+        const val SAVED_QUERY_KEY = "search_query"
+        const val SAVED_SEARCHED_QUERY_KEY = "search_searched_query"
+        const val SAVED_RESULTS_KEY = "search_results_json"
     }
 }
 
