@@ -193,6 +193,10 @@ fun OnScreenKeyboard(
             val rows = listOf("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM")
             rows.forEachIndexed { rowIndex, row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // P2-10（第 5 轮）：各行键宽对齐——短行两侧补空白占位（权重
+                    // 按 10 键行折算），不再让短行按键更宽、跨行空间导航跳格。
+                    val sideWeight = (10 - row.length) / 2f
+                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
                     row.forEachIndexed { index, ch ->
                         KeyboardKey(
                             label = ch.toString(),
@@ -208,6 +212,7 @@ fun OnScreenKeyboard(
                                 ),
                         )
                     }
+                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

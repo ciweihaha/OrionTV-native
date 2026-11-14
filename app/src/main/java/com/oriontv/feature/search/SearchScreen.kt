@@ -20,6 +20,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +69,9 @@ fun SearchScreen(
     val resultRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
-    var showKeyboard by remember { mutableStateOf(false) }
+    // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
+    // 状态不丢（普通 remember 随组合处置而丢失）。
+    var showKeyboard by rememberSaveable { mutableStateOf(false) }
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
 
@@ -132,6 +135,9 @@ fun SearchScreen(
         }
     }
 
+    // P2-10（第 5 轮）：返回键先收屏上键盘。注册在弹窗 handler 之前，
+    // 两者都开时弹窗先关（后注册的优先）。
+    BackHandler(enabled = showKeyboard) { showKeyboard = false }
     // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
     // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
     // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
@@ -191,12 +197,17 @@ fun SearchScreen(
         }
 
         // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
+        // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
+        // 都是“搜完”，都收起，不再盖住下方结果区）。
         if (showKeyboard) {
             Spacer(modifier = Modifier.height(16.dp))
             OnScreenKeyboard(
                 query = uiState.query,
                 onQueryChange = { viewModel.onQueryChange(it) },
-                onSearch = { viewModel.searchNow(uiState.query) },
+                onSearch = {
+                    showKeyboard = false
+                    viewModel.searchNow(uiState.query)
+                },
                 onDismiss = { showKeyboard = false },
             )
         }
@@ -209,7 +220,10 @@ fun SearchScreen(
                     CategoryChip(
                         text = suggestion,
                         selected = false,
-                        onClick = { viewModel.searchNow(suggestion) },
+                        onClick = {
+                            showKeyboard = false
+                            viewModel.searchNow(suggestion)
+                        },
                     )
                 }
             }
@@ -226,7 +240,10 @@ fun SearchScreen(
                         CategoryChip(
                             text = keyword,
                             selected = false,
-                            onClick = { viewModel.searchHistory(keyword) },
+                            onClick = {
+                                showKeyboard = false
+                                viewModel.searchHistory(keyword)
+                            },
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
