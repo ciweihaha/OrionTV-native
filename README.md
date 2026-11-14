@@ -38,7 +38,8 @@ tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）
 `androidx.compose.foundation`（LazyColumn/LazyRow/LazyVerticalGrid）；**新增
 `androidx.hilt:hilt-navigation-compose:1.2.0`**（`hiltViewModel()` 所在 artifact，骨架第一版漏声明）。
 另：Coil 3 是 KMP 发布，Android 侧用 **`coil-compose-android`**（`coil-compose` 本体无 AAR，
-`AsyncImage` 解析不到）；`coil-network-okhttp` 代码里没用到，已删；
+`AsyncImage` 解析不到）；`coil-network-okhttp` 仍在用（VideoCard 豆瓣防盗链 Referer
+靠 `coil3.network.httpHeaders`，删掉会 418）；
 导航轨图标 `LiveTv` 只在 **`material-icons-extended`** 里，core 没有，已改用 extended。
 
 ## 怎么编
@@ -75,7 +76,10 @@ tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）
 - 颜色：墨黑底 `#0C0E12`、表面 `#171A20`、浮层 `#1F232C`、熔橙品牌色/焦点 `#FF6A3D`、
   LIVE 红 `#FF3B30`、正在播绿 `#34D399`；字号 22/18/15/14/12sp；
   圆角卡片 12dp / 面板 16dp / 按钮与 chip 胶囊。
-- 焦点：放大 1.08 + 2dp 品牌色描边 + 阴影 8dp，焦点永不丢失；按键只处理 KeyUp。
+- 焦点：放大 1.08 + 2dp 品牌色描边 + 阴影 8dp；各页首进有焦点锚点，返回时恢复上次焦点，
+  弹窗打开时抢焦并陷住方向键（真机待验证）；按键只处理 KeyUp。
+- 搜索输入：屏上键盘（全键 QWERTY + 9 键多击两档）与手机扫码远程输入；
+  远程输入是局域网明文服务（端口 12346），配对码 5 分钟有效，握手成功后发 24 小时会话 token。
 - 详情页左 2/5 海报 + 右 3/5 信息，选集网格每行 8 个；直播右侧 420dp 频道面板；
   播放控制条 5 秒自隐，跳过片头胶囊默认 90 秒；弹窗 640dp 宽、16dp 圆角、60% 黑遮罩。
 
