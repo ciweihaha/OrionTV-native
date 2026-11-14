@@ -17,8 +17,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
-import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 更新 ViewModel（plan §5.1/§5.5/§6 M3）：
@@ -127,6 +127,7 @@ class UpdateViewModel @Inject constructor(
                     }
                 }
             } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不转成 error 状态（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (e: Exception) {
                 _uiState.update {
@@ -147,9 +148,9 @@ class UpdateViewModel @Inject constructor(
             _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
-                downloader.cleanOldApkFiles(dir)
-                // B4-P2-9：目标文件名固定为版本名（不用时间戳）——否则每次下载
-                // 都是新文件，断点续传永不可达。
+                // D-P1-5：目标文件名按版本固定（不用时间戳），中断后再次下载能命中
+                // 同一残文件、从断点续下；D-P2-18：删掉这里重复的清旧包，
+                // downloadAndVerify 内部已在校验通过后清理。
                 val dest = File(dir, "OrionTV_v$latest.apk")
                 downloader.downloadAndVerify(latest, dest) { written, total ->
                     val progress = if (total > 0) ((written * 100 / total).toInt()) else 0
@@ -170,6 +171,9 @@ class UpdateViewModel @Inject constructor(
                     // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
                     it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
                 }
+            } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不转成 error 状态。
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -240,11 +244,10 @@ class UpdateViewModel @Inject constructor(
 /**
  * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
  * B4-P2-13：AggApi.version() 内部已 strip v 前缀（根治），这里的 strip
- * 是死防御，留着无害。
+ * 是死防御，留着无害；第 5 轮起根治点在 AggApi（先 strip 再校验），这里只留兼容委托。
  * 纯逻辑，可单测。
  */
-fun stripVersionPrefix(version: String): String =
-    version.trim().removePrefix("v").removePrefix("V")
+fun stripVersionPrefix(version: String): String = VersionUtils.stripVersionPrefix(version)
 
 data class UpdateUiState(
     val currentVersion: String = "",

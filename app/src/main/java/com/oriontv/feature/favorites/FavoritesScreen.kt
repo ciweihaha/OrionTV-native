@@ -27,6 +27,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.core.focus.requestFocusWithRetry
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.VideoCard
@@ -148,10 +149,13 @@ fun FavoritesScreen(
                         favorite.source_name,
                     ).joinToString(" · ").ifBlank { null },
                     onClick = {
+                        // D-P2-3：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
+                        // 不再用第一个 + 拆；否则段内含 + 的键拆错，且再拼回去会双重转义。
+                        val (source, id) = MoonTvApi.splitKey(key)
                         onNavigate(
                             OrionRoute.Detail(
-                                source = key.substringBefore("+", ""),
-                                id = key.substringAfter("+", ""),
+                                source = source,
+                                id = id,
                                 title = favorite.search_title,
                             ),
                         )

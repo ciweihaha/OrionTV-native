@@ -1,6 +1,11 @@
 package com.oriontv.data.api
 
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * 熔断器（plan §5.5：agg 分类体超时连续 3 次后 60 秒内不再发）。
@@ -79,6 +84,9 @@ object ApiClient {
     /** APK 下载上限 200MB，失败重试 3 次；SHA256 失败不重试。 */
     const val MAX_APK_BYTES = 200 * 1024 * 1024L
 
+    /** APK 下载读超时放宽到 60 秒（D-P1-5）：15 秒在抖动 WiFi 下一次停顿就丢掉全部进度。 */
+    const val DOWNLOAD_TIMEOUT_SECONDS = 60L
+
     /** 幂等方法：401 续期后可重试一次。 */
     fun isIdempotent(method: String): Boolean =
         method.equals("GET", ignoreCase = true) ||
@@ -100,3 +108,62 @@ object ApiClient {
         .followSslRedirects(true)
         .retryOnConnectionFailure(false) // 重试由上层按规则控制，不靠 OkHttp 盲重试
 }
+
+/** 响应体超限（>limit）：确定性失败，调用方按各自异常类型转译后不重试。 */
+class BodyTooLargeException(message: String) : IOException(message)
+
+/**
+ * 流式限量读响应体（D-P2-9）：声明 Content-Length 先行拒绝；再流式读，
+ * 累计超限立即停（最多缓冲 limit 字节），不整包进内存（服务端谎报小体积时
+ * `body.string()` 会把未封顶的体读进内存）。
+ * 体读取超时（SocketTimeoutException）原样抛出，由调用方记熔断/做重试判定。
+ */
+internal fun readBodyBytesLimited(response: okhttp3.Response, limitBytes: Long): ByteArray {
+    val declared = response.header("Content-Length")?.toLongOrNull()
+    if (declared != null && declared > limitBytes) {
+        throw BodyTooLargeException("响应体超限（>$limitBytes 字节）")
+    }
+    val body = response.body ?: return ByteArray(0)
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(64 * 1024)
+    body.byteStream().use { input ->
+        while (true) {
+            val read = input.read(buf)
+            if (read < 0) break
+            if (out.size() + read > limitBytes) {
+                throw BodyTooLargeException("响应体超限（>$limitBytes 字节）")
+            }
+            out.write(buf, 0, read)
+        }
+    }
+    return out.toByteArray()
+}
+
+/**
+ * 可取消的同步执行（D-P2-2）：协程取消时调 `Call.cancel()`，在途请求立即停，
+ * 不等到 15 秒 socket 超时；取消导致的 IOException 转成 CancellationException，
+ * 不被各 execute 的 IOException 重试分支当成可重试网络错。
+ * 调用方须在 IO 线程调用（各 Api 已在 `withContext(ioDispatcher)` 内）。
+ */
+internal suspend fun okhttp3.Call.executeCancellable(): okhttp3.Response =
+    suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { runCatching { cancel() } }
+        try {
+            val response = execute()
+            if (cont.isActive) {
+                cont.resume(response)
+            } else {
+                // 取消与成功返回竞态：resume 会被忽略，顺手关掉 Response，不漏连接。
+                response.close()
+            }
+        } catch (e: Exception) {
+            if (cont.isCancelled) {
+                cont.resumeWithException(
+                    e as? CancellationException
+                        ?: CancellationException("请求已取消").apply { initCause(e) },
+                )
+            } else {
+                cont.resumeWithException(e)
+            }
+        }
+    }

@@ -44,6 +44,19 @@ class InMemoryCookieJarTest {
     }
 
     @Test
+    fun `same name different path cookies are both kept`() {
+        // D-P2-6：去重按 name+domain+path，同名不同 path 的 cookie 不再被误杀。
+        val jar = InMemoryCookieJar()
+        val url = "https://example.com/".toHttpUrl()
+        jar.saveFromResponse(
+            url,
+            listOf(cookie("s", "v1", path = "/api"), cookie("s", "v2", path = "/other")),
+        )
+        assertEquals("v1", jar.loadForRequest("https://example.com/api/x".toHttpUrl()).first().value)
+        assertEquals("v2", jar.loadForRequest("https://example.com/other/x".toHttpUrl()).first().value)
+    }
+
+    @Test
     fun `clear removes all cookies`() {
         val jar = InMemoryCookieJar()
         val url = "https://example.com/".toHttpUrl()

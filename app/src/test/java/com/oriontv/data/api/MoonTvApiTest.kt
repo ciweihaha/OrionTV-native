@@ -192,6 +192,15 @@ class MoonTvApiTest {
     }
 
     @Test
+    fun `getFavorites returns empty map for json array body`() {
+        // D-P2-15：数组体不再静默空表（现在还记一条可见日志，行为仍是返回空表）。
+        val body = """[{"cover":"","title":"单片","source_name":"源","total_episodes":3,"search_title":"单片"}]"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        val favs = runBlocking { api(client).getFavorites("https://example.com") }
+        assertEquals(emptyMap<String, Favorite>(), favs)
+    }
+
+    @Test
     fun `getDoubanData encodes type parameter`() {
         val (client, _, lastUrl) = countingClient { request ->
             responseFor(request, 200, """{"code":1,"list":[]}""")

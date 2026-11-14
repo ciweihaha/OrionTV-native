@@ -94,4 +94,23 @@ class LiveCacheCodecTest {
         val decoded = LiveCacheCodec.decodeM3u(dirty, json)
         assertEquals(listOf("CCTV-1"), decoded?.channels?.map { it.name })
     }
+
+    @Test
+    fun `prune removes stale m3u cache files but keeps current and others`() {
+        // D-P2-14：换 m3u 地址后旧缓存文件不再永久残留。
+        val dir = java.nio.file.Files.createTempDirectory("oriontv-prune-test").toFile()
+        try {
+            java.io.File(dir, "m3u_cache_aaa.json").writeText("{}")
+            java.io.File(dir, "m3u_cache_bbb.json").writeText("{}")
+            java.io.File(dir, "epg_cache.json").writeText("{}")
+            java.io.File(dir, "other.txt").writeText("x")
+            pruneStaleM3uCacheFiles(dir, keepFileName = "m3u_cache_aaa.json")
+            assertTrue(java.io.File(dir, "m3u_cache_aaa.json").exists())
+            assertTrue(!java.io.File(dir, "m3u_cache_bbb.json").exists())
+            assertTrue(java.io.File(dir, "epg_cache.json").exists())
+            assertTrue(java.io.File(dir, "other.txt").exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

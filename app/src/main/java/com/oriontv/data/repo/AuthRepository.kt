@@ -1,8 +1,10 @@
 package com.oriontv.data.repo
 
+import com.oriontv.core.util.AppLog
+import com.oriontv.data.api.AuthApi
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.UnauthorizedException
-import com.oriontv.data.local.CredentialsStore
+import com.oriontv.data.local.CredentialStore
 import com.oriontv.di.InMemoryCookieJar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -30,9 +32,9 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 @Singleton
 class AuthRepository @Inject constructor(
-    private val moonTvApi: MoonTvApi,
-    private val settingsRepository: SettingsRepository,
-    private val credentialsStore: CredentialsStore,
+    private val moonTvApi: AuthApi,
+    private val settingsRepository: AuthSettings,
+    private val credentialsStore: CredentialStore,
     private val cookieJar: InMemoryCookieJar,
 ) {
     private val _isLoggedIn = MutableStateFlow(false)
@@ -65,7 +67,12 @@ class AuthRepository @Inject constructor(
         return try {
             when (val result = moonTvApi.login(baseUrl, username, password)) {
                 MoonTvApi.LoginResult.Success -> {
-                    credentialsStore.save(username, password)
+                    // D-P2-17：凭据保存失败（Keystore 异常）不再误报“登录失败”——
+                    // 服务端会话已建、Cookie 已在 Jar 里，本次登录成功；下次冷启动
+                    // 静默重登会失败、再提示登录，日志里留一条可见记录。
+                    runCatching { credentialsStore.save(username, password) }.onFailure { e ->
+                        AppLog.w("AuthRepository", "登录成功但凭据保存失败，下次冷启动需重新登录：${e.message}")
+                    }
                     settingsRepository.setAuthCookies("1")
                     _isLoggedIn.value = true
                     _showLoginModal.value = false
@@ -115,6 +122,9 @@ class AuthRepository @Inject constructor(
      * 有效才算已登录，过期走静默重登；
      * 无标记 → 有保存凭据就静默重登（localstorage 无密码服务传空密码也算一次尝试），
      * 重登失败才弹登录框。
+     *
+     * 注：第 5 轮 D-P2-7（先读标记、server-config 放后台刷新）已被 B-P1-8 的设计取代：
+     * 同步拉一次配置（30 秒失败缓存）+ 失败时 31 秒后延迟重试，不再双通道刷新。
      */
     suspend fun checkLoginStatus() {
         val baseUrl = settingsRepository.currentApiBaseUrl()

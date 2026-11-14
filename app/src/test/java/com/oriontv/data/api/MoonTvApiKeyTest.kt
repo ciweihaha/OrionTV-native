@@ -39,6 +39,24 @@ class MoonTvApiKeyTest {
     }
 
     @Test
+    fun `splitKey is the inverse of generateKey`() {
+        // D-P2-3：splitKey 按最后一个 + 切分并反转义，是 generateKey 的逆运算；
+        // 直接拼回去不再双重转义。
+        assertEquals("a+b" to "c+d", MoonTvApi.splitKey(MoonTvApi.generateKey("a+b", "c+d")))
+        assertEquals("a%b" to "c", MoonTvApi.splitKey(MoonTvApi.generateKey("a%b", "c")))
+        assertEquals("agg" to "123", MoonTvApi.splitKey("agg+123"))
+        assertEquals("src" to "", MoonTvApi.splitKey("src+"))
+        assertEquals("only-source" to "", MoonTvApi.splitKey("only-source"))
+    }
+
+    @Test
+    fun `splitKey splits legacy unescaped keys at last plus`() {
+        // 旧数据里段内可能有未转义 +：按最后一个 + 切，与文档约定一致
+        //（之前 FavoritesScreen/HomeModels 用第一个 + 拆，会得出不同的 source/id）。
+        assertEquals("a+b" to "c", MoonTvApi.splitKey("a+b+c"))
+    }
+
+    @Test
     fun `empty segments still produce a key`() {
         assertEquals("+", MoonTvApi.generateKey("", ""))
         assertEquals("src+", MoonTvApi.generateKey("src", ""))

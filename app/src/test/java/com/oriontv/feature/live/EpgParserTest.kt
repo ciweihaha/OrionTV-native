@@ -3,6 +3,7 @@ package com.oriontv.feature.live
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -132,6 +133,74 @@ class EpgParserTest {
         """.trimIndent()
         val data = EpgParser.parse(xml)
         assertEquals("新闻联播", data.programmesByChannel["cctv1"]?.first()?.title)
+    }
+
+    @Test
+    fun `rejects billion laughs style internal entity expansion`() {
+        // D-P1-3：9 层嵌套内部实体（经典 billion laughs 结构），预扫描在进解析器前拒绝。
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE tv [
+              <!ENTITY lol "lollollollollollollollollollol">
+              <!ENTITY lol1 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+              <!ENTITY lol2 "&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;">
+              <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+              <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+              <!ENTITY lol5 "&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;">
+              <!ENTITY lol6 "&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;">
+              <!ENTITY lol7 "&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;">
+              <!ENTITY lol8 "&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;">
+              <!ENTITY lol9 "&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;">
+            ]>
+            <tv>
+              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
+              <programme channel="cctv1" start="20261114120000 +0800" stop="20261114130000 +0800">
+                <title>&lol9;</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+        assertThrows(EpgParser.EpgSecurityException::class.java) {
+            EpgParser.parse(xml)
+        }
+    }
+
+    @Test
+    fun `allows a small number of benign internal entities`() {
+        // 少量内部实体（上限内）不误伤：正常解析、实体正常展开。
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE tv [
+              <!ENTITY greeting "新闻联播">
+            ]>
+            <tv>
+              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
+              <programme channel="cctv1" start="20261114120000 +0800" stop="20261114130000 +0800">
+                <title>&greeting;</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+        val data = EpgParser.parse(xml)
+        assertEquals("新闻联播", data.programmesByChannel["cctv1"]?.first()?.title)
+    }
+
+    @Test
+    fun `does not expand external general entities in titles`() {
+        // 外部通用实体（如 file://）出现在 <title> 里：不展开、不拉取、不进标题。
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE tv [
+              <!ENTITY xxe SYSTEM "file:///etc/passwd">
+            ]>
+            <tv>
+              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
+              <programme channel="cctv1" start="20261114120000 +0800" stop="20261114130000 +0800">
+                <title>&xxe;</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+        val data = EpgParser.parse(xml)
+        val title = data.programmesByChannel["cctv1"]?.first()?.title.orEmpty()
+        assertFalse(title.contains("root:"))
     }
 
     @Test

@@ -1,8 +1,8 @@
 package com.oriontv.data.api
 
+import com.oriontv.core.util.AppLog
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -27,6 +27,19 @@ import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
+ * 登录会话口（D-P1-4）：AuthRepository 只依赖登录/登出/401 续期三个成员，
+ * 单测可用内存假实现，不用 MockK、不用真网。
+ * getFavorites 供 B-P2-16 冷启动轻量会话校验用（只判 401/网络错，不读内容）。
+ */
+interface AuthApi {
+    var onUnauthorized: (suspend () -> Boolean)?
+    /** B4-P1-2：分型返回（见 [MoonTvApi.LoginResult]），只有 WrongCredentials 才算密码错。 */
+    suspend fun login(baseUrl: String, username: String?, password: String?): MoonTvApi.LoginResult
+    suspend fun logout(baseUrl: String)
+    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite>
+}
+
+/**
  * 用户 MoonTV 服务（{baseURL}，设置里填，默认空串）。接口路径与 plan §5.2 原样一致。
  * 除注明外 GET、15 秒超时、响应体 2MB 上限；401 时用已保存凭据重登后仅对幂等请求
  * （GET/DELETE/HEAD）重试一次，POST 不自动重试；超时/网络错/5xx 最多重试 3 次，退避 1 秒。
@@ -41,22 +54,18 @@ class MoonTvApi @Inject constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** 重试退避（毫秒），默认 1 秒固定；单测可注入 0 以免真睡。 */
     private val retryBackoffMs: Long = ApiClient.RETRY_BACKOFF_MS,
-) {
+ ) : AuthApi {
     /** B4-P2-1：按超时分档缓存的 OkHttpClient（见 execute）。 */
     private val clientsByTimeout = ConcurrentHashMap<Long, OkHttpClient>()
-
     /**
      * 401 续期回调：由 Auth 层注入（用已保存凭据重登）。
      * 返回 true 表示续期成功，可对幂等请求重试一次。
      */
-    var onUnauthorized: (suspend () -> Boolean)? = null
+    override var onUnauthorized: (suspend () -> Boolean)? = null
 
-    /**
-     * 播放记录/收藏键在 URL 里的转义：`%`→`%25`、`+`→`%2B`（plan §5.2）。
-     * 旧整键转义（会误转分隔符 `+`），已由伴生对象 [generateKey] 取代，仅保留兼容；
-     * 请求方法不再对整键调用它，只做一次 URLEncoder.encode。
-     */
-    fun escapeKey(key: String): String = key.replace("%", "%25").replace("+", "%2B")
+    // 播放记录/收藏键的转义只在 [generateKey] 里按段做；整键转义 escapeKey
+    // 已删除（D-P2-12）：零调用方，留着只会让后来人误用、把 P1-1
+    // （整键转义误转分隔符 `+`）重新引入。
 
     // ---- 登录 / 配置 ----
 
@@ -75,7 +84,7 @@ class MoonTvApi @Inject constructor(
         data class Transient(val cause: Throwable) : LoginResult
     }
 
-    suspend fun login(baseUrl: String, username: String?, password: String?): LoginResult =
+    override suspend fun login(baseUrl: String, username: String?, password: String?): LoginResult =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/login"
             val body = buildJsonObject {
@@ -84,10 +93,11 @@ class MoonTvApi @Inject constructor(
             }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url(url).post(body).build()
             // 超时/5xx 做一次重试（401 与 ok=false 不重试，那是密码错）。
+            // D-P2-2：可取消执行，协程取消时取消底层 Call（不是裸 execute）。
             var lastError: Throwable? = null
             repeat(2) { attempt ->
                 try {
-                    okHttpClient.newCall(request).execute().use { response ->
+                    okHttpClient.newCall(request).executeCancellable().use { response ->
                         when {
                             response.isSuccessful -> {
                                 val text = readBodyLimited(response)
@@ -116,12 +126,12 @@ class MoonTvApi @Inject constructor(
             return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
         }
 
-    suspend fun logout(baseUrl: String) {
+    override suspend fun logout(baseUrl: String) {
         withContext(ioDispatcher) {
             val request = Request.Builder()
                 .url("${baseUrl.trimEnd('/')}/api/logout")
                 .post("{}".toRequestBody("application/json".toMediaType())).build()
-            runCatching { okHttpClient.newCall(request).execute().close() }
+            runCatching { okHttpClient.newCall(request).executeCancellable().close() }
             // finally 里无条件清登录标记（由调用方清 StorageKeys.AUTH_COOKIES）
         }
     }
@@ -206,7 +216,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 收藏（服务端模式） ----
 
-    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
+    override suspend fun getFavorites(baseUrl: String, key: String?): Map<String, Favorite> =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
@@ -219,6 +229,12 @@ class MoonTvApi @Inject constructor(
             runCatching { json.decodeFromString<Map<String, Favorite>>(body) }.getOrElse {
                 val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
                 if (raw == null) {
+                    // D-P2-15：体是 JSON 数组时之前静默返回空表（收藏页空白、无任何日志）；
+                    // 现在记一条可见日志再返回空表，服务端改 shape 时能在线上排查。
+                    if (runCatching { json.parseToJsonElement(body) }.getOrNull() is JsonArray) {
+                        AppLog.w("MoonTvApi", "getFavorites 收到 JSON 数组体（期望对象表），返回空表")
+                        return@withContext emptyMap()
+                    }
                     runCatching {
                         val single = json.decodeFromString<Favorite>(body)
                         mapOf((key ?: "") to single)
@@ -349,12 +365,7 @@ class MoonTvApi @Inject constructor(
         val context = coroutineContext
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
-                val call = client.newCall(request)
-                // B4-P2-15：同 AggApi——协程取消时取消底层 OkHttp 调用。
-                // （coroutines 1.11 无 Job.invokeOnCancellation，用公开的
-                // 单参数 invokeOnCompletion；正常完成时 cancel 是空操作。）
-                context[Job]?.invokeOnCompletion { call.cancel() }
-                call.execute().use { response ->
+                client.newCall(request).executeCancellable().use { response ->
                     if (response.code == 401) {
                         if (!refreshAttempted) {
                             refreshAttempted = true
@@ -413,17 +424,14 @@ class MoonTvApi @Inject constructor(
         return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
-    /** 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验）。 */
+    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。 */
     private fun readBodyLimited(response: okhttp3.Response): String {
-        val declared = response.header("Content-Length")?.toLongOrNull()
-        if (declared != null && declared > ApiClient.MAX_BODY_BYTES) {
+        val bytes = try {
+            readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
+        } catch (e: BodyTooLargeException) {
             throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
-        val body = response.body?.string().orEmpty()
-        if (body.toByteArray(Charsets.UTF_8).size > ApiClient.MAX_BODY_BYTES) {
-            throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
-        }
-        return body
+        return bytes.toString(Charsets.UTF_8)
     }
 
     companion object {
@@ -437,7 +445,7 @@ class MoonTvApi @Inject constructor(
 
         /**
          * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
-         * 拆键时按最后一个 + 切分（见 PlayViewModel.retry）。
+         * 拆键时按最后一个 + 切分（见 [splitKey]）。
          * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
          */
         fun generateKey(source: String, id: String): String =
@@ -463,9 +471,25 @@ class MoonTvApi @Inject constructor(
             title.lowercase().replace(Regex("\\s+"), "").replace("+", "").replace("%", "")
                 .ifBlank { "unknown" }
 
-        /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
+        /** 键段转义：%→%25、+→%2B（与 [unescapeKeySegment] 配对，按段做）。 */
         private fun escapeKeySegment(segment: String): String =
             segment.replace("%", "%25").replace("+", "%2B")
+
+        /** 键段反转义：%2B→+、%25→%（顺序不能反，见 RN storage.ts 的 unescapeKeyPart）。 */
+        fun unescapeKeySegment(segment: String): String =
+            segment.replace("%2B", "+").replace("%25", "%")
+
+        /**
+         * 拆记录键（D-P2-3）：按最后一个 `+` 切分后反转义，与 [generateKey] 配对；
+         * 之前 FavoritesScreen/HomeModels 用第一个 `+` 拆，与文档约定漂移。
+         * 返回 (source, id)；无分隔符时整个键当 source、id 为空。
+         */
+        fun splitKey(key: String): Pair<String, String> {
+            val sep = key.lastIndexOf("+")
+            if (sep < 0) return unescapeKeySegment(key) to ""
+            return unescapeKeySegment(key.substring(0, sep)) to
+                unescapeKeySegment(key.substring(sep + 1))
+        }
     }
 }
 
