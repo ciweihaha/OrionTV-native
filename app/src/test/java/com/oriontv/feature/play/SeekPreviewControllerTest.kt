@@ -51,4 +51,35 @@ class SeekPreviewControllerTest {
         assertFalse(controller.hasPending)
         assertNull(controller.commit())
     }
+
+    @Test
+    fun `nudge returns null while duration unknown`() {
+        // P1-3：时长未出时不产生预览，不会造一个 00:00 落点再 2 秒后 seek 回片头
+        val controller = SeekPreviewController(durationMs = 0)
+        assertNull(controller.nudge(0, 1))
+        assertNull(controller.nudge(0, -1))
+        assertFalse(controller.hasPending)
+        val negative = SeekPreviewController(durationMs = -1)
+        assertNull(negative.nudge(0, 1))
+    }
+
+    @Test
+    fun `reverse past start cancels preview instead of jumping`() {
+        // P2-2：落点已在 0 再反向按即取消（按类注释实现），不是跳变到“播头-10s”
+        val controller = SeekPreviewController(durationMs = 60_000)
+        assertEquals(0L, controller.nudge(5_000, -1))
+        assertTrue(controller.hasPending)
+        assertNull(controller.nudge(5_000, -1))
+        assertFalse(controller.hasPending)
+        // 取消后从播头重新起步
+        assertEquals(0L, controller.nudge(5_000, -1))
+    }
+
+    @Test
+    fun `reverse from zero steps forward from current position`() {
+        // P2-2 只取消“反向按过起点”：落点在 0 时按右仍从播头重新起步（旧行为保留）
+        val controller = SeekPreviewController(durationMs = 60_000)
+        assertEquals(0L, controller.nudge(5_000, -1))
+        assertEquals(45_000L, controller.nudge(35_000, 1))
+    }
 }
