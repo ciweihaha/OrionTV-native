@@ -103,6 +103,12 @@ class HomeViewModel @Inject constructor(
             return HomeRow(
                 title = category.title,
                 items = records.map { (key, record) -> mapPlayRecord(key, record) },
+                // B-P2-20：服务端拉取失败时展示的是上次成功结果，行尾给一句提示。
+                error = if (playRecordsRepository.loadFailed.value) {
+                    "播放记录加载失败，显示上次内容"
+                } else {
+                    null
+                },
             )
         }
         cache.get(category.title)?.let { return HomeRow(category.title, it) }

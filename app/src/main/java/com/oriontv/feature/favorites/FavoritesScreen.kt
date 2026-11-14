@@ -92,7 +92,11 @@ fun FavoritesScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(text = "还没有收藏，去首页逛逛吧", style = OrionTextStyles.Body)
+            // B-P2-20：拉取失败时空列表≠没收藏，别误导用户。
+            Text(
+                text = if (uiState.loadFailed) "收藏加载失败，请检查网络后重试" else "还没有收藏，去首页逛逛吧",
+                style = OrionTextStyles.Body,
+            )
             Spacer(modifier = Modifier.height(24.dp))
             PrimaryButton(
                 text = "去首页",
@@ -106,6 +110,15 @@ fun FavoritesScreen(
     Column(modifier = Modifier.fillMaxSize().padding(OrionDimens.ContentPadding)) {
         Text(text = "我的收藏", style = OrionTextStyles.PageTitle)
         Spacer(modifier = Modifier.height(16.dp))
+        // B-P2-20：拉取失败时展示的是上次成功结果，给一句提示。
+        if (uiState.loadFailed) {
+            Text(
+                text = "加载失败，显示上次内容",
+                style = OrionTextStyles.Small,
+                color = OrionColors.TextSecondary,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         if (uiState.isLoading) {
             Text(
                 text = "正在加载…",

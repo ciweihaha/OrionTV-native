@@ -186,7 +186,8 @@ fun HomeScreen(
                     Text(text = row.title, style = OrionTextStyles.SectionTitle)
                     Spacer(modifier = Modifier.height(12.dp))
                     // P2-9：单行失败留占位行，用户能看到哪一行挂了。
-                    if (row.error != null && row.items.isEmpty()) {
+                    // B-P2-20：有旧数据时也显示 error（“显示上次内容”的提示），不只空行才显示。
+                    if (row.error != null) {
                         Text(
                             text = row.error,
                             style = OrionTextStyles.Body,

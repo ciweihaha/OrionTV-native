@@ -9,8 +9,13 @@ import com.oriontv.data.local.FavoriteEntity
 import com.oriontv.data.local.PlayRecordEntity
 import com.oriontv.data.local.PlayerSettingEntity
 import com.oriontv.data.local.SearchHistoryEntity
+import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -18,6 +23,8 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * 服务端调用失败时回落默认值，但协程取消必须原样抛出（不吞 CancellationException，P2）。
  * 各仓库的 runCatching{...}.getOrDefault(...) 都走这里。
+ * 第 3 轮收尾 B-P2-20：列表拉取失败不再回落空数据——三个仓库各自保留上次成功
+ * 结果（lastGood*）并置 loadFailed 标记，调用方保留旧展示 + 提示。
  */
 private suspend fun <T> runOrDefault(default: T, block: suspend () -> T): T {
     return try {
@@ -45,12 +52,28 @@ class FavoritesRepository @Inject constructor(
 ) {
     private val writeMutex = Mutex()
 
+    /** B-P2-20：上次成功拉到的服务端收藏（失败时保留展示用）；失败标记供 UI 提示。 */
+    private var lastGoodFavorites: Map<String, Favorite>? = null
+    private val _loadFailed = MutableStateFlow(false)
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
     /** 全部收藏（最新在前），附带记录键（导航到详情页要 source+id）。 */
     suspend fun getAllWithKeys(): List<Pair<String, Favorite>> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runOrDefault(emptyMap()) { moonTvApi.getFavorites(baseUrl) }
-                .entries
+            val favorites = try {
+                moonTvApi.getFavorites(baseUrl).also {
+                    lastGoodFavorites = it
+                    _loadFailed.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B-P2-20：拉取失败≠用户没收藏，返回上次成功结果，不清空。
+                _loadFailed.value = true
+                lastGoodFavorites ?: emptyMap()
+            }
+            return favorites.entries
                 .sortedByDescending { it.value.save_time ?: 0L }
                 .map { it.key to it.value }
         }
@@ -72,10 +95,16 @@ class FavoritesRepository @Inject constructor(
             val baseUrl = settingsRepository.currentApiBaseUrl()
             val exists = runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
             if (exists) {
-                moonTvApi.deleteFavorite(baseUrl, key)
+                // B-P2-8/B-P0-1：服务端写失败（网络抛错或解码失败返回 false）
+                // 不再当成功：抛 IOException 由 DetailViewModel 接住提示，收藏态不变。
+                if (!moonTvApi.deleteFavorite(baseUrl, key)) {
+                    throw IOException("取消收藏失败：服务端未确认")
+                }
                 false
             } else {
-                moonTvApi.addFavorite(baseUrl, key, favorite)
+                if (!moonTvApi.addFavorite(baseUrl, key, favorite)) {
+                    throw IOException("收藏失败：服务端未确认")
+                }
                 true
             }
         } else {
@@ -120,12 +149,28 @@ class PlayRecordsRepository @Inject constructor(
 ) {
     private val writeMutex = Mutex()
 
+    /** B-P2-20：上次成功拉到的服务端播放记录（失败时保留展示用）；失败标记供 UI 提示。 */
+    private var lastGoodRecords: Map<String, PlayRecord>? = null
+    private val _loadFailed = MutableStateFlow(false)
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
     /** 全部播放记录（最新在前），附带记录键。 */
     suspend fun getAllWithKeys(): List<Pair<String, PlayRecord>> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runOrDefault(emptyMap()) { moonTvApi.getPlayRecords(baseUrl) }
-                .entries
+            val records = try {
+                moonTvApi.getPlayRecords(baseUrl).also {
+                    lastGoodRecords = it
+                    _loadFailed.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B-P2-20：拉取失败≠用户没记录，返回上次成功结果，不清空。
+                _loadFailed.value = true
+                lastGoodRecords ?: emptyMap()
+            }
+            return records.entries
                 .sortedByDescending { it.value.save_time }
                 .map { it.key to it.value }
         }
@@ -137,17 +182,33 @@ class PlayRecordsRepository @Inject constructor(
     suspend fun getByKey(key: String): PlayRecord? {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runOrDefault<PlayRecord?>(null) { moonTvApi.getPlayRecords(baseUrl)[key] }
+            return try {
+                moonTvApi.getPlayRecords(baseUrl).also {
+                    lastGoodRecords = it
+                    _loadFailed.value = false
+                }[key]
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B-P2-20：拉取失败时用上次成功结果里的断点，不丢断点续播。
+                _loadFailed.value = true
+                lastGoodRecords?.get(key)
+            }
         }
         return db.playRecordDao().getByKey(key)?.toPlayRecord()
     }
 
-    /** 断点续播：进度 10 秒节流保存（由调用方节流，这里只写库）。 */
-    suspend fun save(key: String, record: PlayRecord) = writeMutex.withLock {
+    /**
+     * 断点续播：进度 10 秒节流保存（由调用方节流，这里只写库）。
+     * 第 3 轮收尾 B-P2-19：返回是否写成功；服务端写失败记日志，不再静默丢弃
+     *（调用方 PlayViewModel 周期性保存，下次保存即重试）。
+     */
+    suspend fun save(key: String, record: PlayRecord): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runOrDefault(false) { moonTvApi.savePlayRecord(baseUrl, key, record) }
-            return@withLock
+            val ok = runOrDefault(false) { moonTvApi.savePlayRecord(baseUrl, key, record) }
+            if (!ok) Log.w("PlayRecordsRepository", "服务端保存播放记录失败 key=$key")
+            return@withLock ok
         }
         db.playRecordDao().insert(
             PlayRecordEntity(
@@ -164,15 +225,19 @@ class PlayRecordsRepository @Inject constructor(
             ),
         )
         db.playRecordDao().trimToLatest200()
+        true
     }
 
-    suspend fun delete(key: String) = writeMutex.withLock {
+    /** B-P2-19：返回是否删成功；服务端失败记日志，不再静默丢弃。 */
+    suspend fun delete(key: String): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            runOrDefault(false) { moonTvApi.deletePlayRecord(baseUrl, key) }
-            return@withLock
+            val ok = runOrDefault(false) { moonTvApi.deletePlayRecord(baseUrl, key) }
+            if (!ok) Log.w("PlayRecordsRepository", "服务端删除播放记录失败 key=$key")
+            return@withLock ok
         }
         db.playRecordDao().deleteByKey(key)
+        true
     }
 
     private fun PlayRecordEntity.toPlayRecord() = PlayRecord(
@@ -196,11 +261,22 @@ class SearchHistoryRepository @Inject constructor(
 ) {
     private val writeMutex = Mutex()
 
+    /** B-P2-20：上次成功拉到的服务端搜索历史（失败时保留展示用）。 */
+    private var lastGoodHistory: List<String>? = null
+
     /** 搜索历史最新 20 条，新词插头部、去重。 */
     suspend fun getLatest20(): List<String> {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            return runOrDefault(emptyList()) { moonTvApi.getSearchHistory(baseUrl) }.take(20)
+            val history = try {
+                moonTvApi.getSearchHistory(baseUrl).also { lastGoodHistory = it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B-P2-20：拉取失败≠用户没历史，返回上次成功结果，不清空。
+                lastGoodHistory ?: emptyList()
+            }
+            return history.take(20)
         }
         return db.searchHistoryDao().getLatest20().map { it.keyword }
     }
