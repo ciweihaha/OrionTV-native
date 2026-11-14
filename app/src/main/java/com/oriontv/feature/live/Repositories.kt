@@ -1,6 +1,8 @@
 package com.oriontv.feature.live
 
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.executeCancellable
+import com.oriontv.data.api.readBodyBytesLimited
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -48,11 +50,11 @@ class M3uRepository @Inject constructor(
                 .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
             val request = Request.Builder().url(m3uUrl).get().build()
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).executeCancellable().use { response ->
                 if (!response.isSuccessful) return@withContext emptyList()
-                val body = response.body?.string().orEmpty()
-                if (body.toByteArray().size > ApiClient.MAX_M3U_BYTES) return@withContext emptyList()
-                M3uParser.parse(body)
+                // D-P2-9：流式限量读（超 5MB 立即停，不整包进内存；字符集显式 UTF-8）。
+                val bytes = readBodyBytesLimited(response, ApiClient.MAX_M3U_BYTES)
+                M3uParser.parse(bytes.toString(Charsets.UTF_8))
             }
         } catch (e: CancellationException) {
             throw e
@@ -111,11 +113,11 @@ class EpgRepository @Inject constructor(
                 .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
             val request = Request.Builder().url(EPG_URL).get().build()
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).executeCancellable().use { response ->
                 if (!response.isSuccessful) return@withContext null
-                val body = response.body?.string().orEmpty()
-                if (body.toByteArray().size > ApiClient.MAX_CACHE_BYTES) return@withContext null
-                EpgParser.parse(body)
+                // D-P2-9：流式限量读（超 3MB 立即停，不整包进内存；字符集显式 UTF-8）。
+                val bytes = readBodyBytesLimited(response, ApiClient.MAX_CACHE_BYTES)
+                EpgParser.parse(bytes.toString(Charsets.UTF_8))
             }
         } catch (e: CancellationException) {
             throw e
