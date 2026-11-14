@@ -57,6 +57,8 @@ fun PlayerControls(
     isPlaying: Boolean,
     playbackRate: Float = 1f,
     seekPreviewMs: Long,
+    /** 预览方向（-1 快退 / +1 快进 / 0 未知）：气泡的方向标识用（P2-1）。 */
+    seekPreviewDirection: Int = 0,
     seekPreviewThumbnail: android.graphics.Bitmap? = null,
     posterUrl: String = "",
     showSkipIntro: Boolean,
@@ -134,7 +136,7 @@ fun PlayerControls(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
-                Text(text = formatTime(seekPreviewMs), style = OrionTextStyles.SectionTitle)
+                Text(text = seekPreviewLabel(seekPreviewDirection, seekPreviewMs), style = OrionTextStyles.SectionTitle)
             }
         }
 
@@ -268,6 +270,19 @@ private fun SeekableProgressBar(
                 )
             }
         }
+    }
+}
+
+/**
+ * 快进预览气泡文案（可单测，P2-1）：方向 + 目标时间。
+ * 只标方向不标固定“10 秒”：连按多下累计的步数不是 10 秒，标 10 秒会误导。
+ */
+internal fun seekPreviewLabel(direction: Int, targetMs: Long): String {
+    val time = formatTime(targetMs)
+    return when {
+        direction < 0 -> "◀ 快退 · $time"
+        direction > 0 -> "快进 ▶ · $time"
+        else -> time
     }
 }
 
