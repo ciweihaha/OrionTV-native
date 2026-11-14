@@ -73,7 +73,12 @@ class AuthRepository @Inject constructor(
                     runCatching { credentialsStore.save(username, password) }.onFailure { e ->
                         AppLog.w("AuthRepository", "登录成功但凭据保存失败，下次冷启动需重新登录：${e.message}")
                     }
-                    settingsRepository.setAuthCookies("1")
+                    // B6-P2-5：setAuthCookies 抛错不再报成“登录失败”——服务端会话
+                    // 已建、Cookie 已在 Jar 里，本次登录成功；标记丢了只影响下次
+                    // 冷启动静默恢复（会再提示登录），与凭据保存失败同款处理。
+                    runCatching { settingsRepository.setAuthCookies("1") }.onFailure { e ->
+                        AppLog.w("AuthRepository", "登录成功但登录标记保存失败，下次冷启动需重新登录：${e.message}")
+                    }
                     _isLoggedIn.value = true
                     _showLoginModal.value = false
                     Result.success(Unit)

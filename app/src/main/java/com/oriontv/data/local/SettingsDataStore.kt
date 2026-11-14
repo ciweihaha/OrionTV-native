@@ -52,6 +52,12 @@ class SettingsDataStore @Inject constructor(
         val AUTH_COOKIES = stringPreferencesKey(StorageKeys.AUTH_COOKIES)
         /** server-config 的 StorageType 缓存："localstorage" | "redis"。 */
         val STORAGE_TYPE = stringPreferencesKey("storageType")
+        /**
+         * B6-P1-2：server-config 是否成功拉取过（独立标记）——服务端不返回
+         * StorageType 时 StorageType 仍是 ""，旧实现拿 "" 当“未知”，每次
+         * 数据访问都重拉；拉取成功即置 true（无论 StorageType 是否返回）。
+         */
+        val SERVER_CONFIG_FETCHED = booleanPreferencesKey("serverConfigFetched")
         /** 上次直播频道 JSON（plan §5.4：mytv_live_last_channel，{url, name}）。 */
         val LIVE_LAST_CHANNEL = stringPreferencesKey(StorageKeys.LIVE_LAST_CHANNEL)
 
@@ -75,6 +81,7 @@ class SettingsDataStore @Inject constructor(
     val updateSkipVersion: Flow<String> = context.settingsDataStore.data.map { it[Keys.UPDATE_SKIP_VERSION].orEmpty() }
     val authCookies: Flow<String> = context.settingsDataStore.data.map { it[Keys.AUTH_COOKIES].orEmpty() }
     val storageType: Flow<String> = context.settingsDataStore.data.map { it[Keys.STORAGE_TYPE].orEmpty() }
+    val serverConfigFetched: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.SERVER_CONFIG_FETCHED] ?: false }
     val liveLastChannel: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_LAST_CHANNEL].orEmpty() }
     val liveFavChannels: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_FAV_CHANNELS].orEmpty() }
     val rnMigrationDone: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.RN_MIGRATION_DONE] ?: false }
@@ -85,6 +92,10 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setStorageType(value: String) {
         context.settingsDataStore.edit { it[Keys.STORAGE_TYPE] = value }
+    }
+
+    suspend fun setServerConfigFetched(value: Boolean) {
+        context.settingsDataStore.edit { it[Keys.SERVER_CONFIG_FETCHED] = value }
     }
 
     suspend fun setApiBaseUrl(value: String) {

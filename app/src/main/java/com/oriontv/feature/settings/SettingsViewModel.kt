@@ -46,9 +46,12 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            // 显式类型参数：9 条流元素类型不一（String/Boolean/Int），Kotlin 2.4 起
-            // 不再允许把 reified 类型参数推断为交集类型。
-            combine<Any?, SettingsUiState>(
+            // B6-P2-9：combine/collect 加 try/catch——DataStore 流抛错时旧实现
+            // 让协程直接死掉，isLoading 恒 true、设置页永久空白；现在落错误态。
+            try {
+                // 显式类型参数：9 条流元素类型不一（String/Boolean/Int），Kotlin 2.4 起
+                // 不再允许把 reified 类型参数推断为交集类型。
+                combine<Any?, SettingsUiState>(
                 settingsRepository.apiBaseUrl,
                 settingsRepository.m3uUrl,
                 settingsRepository.nextEpisodeOverlayEnabled,
@@ -91,6 +94,13 @@ class SettingsViewModel @Inject constructor(
                     loaded.copy(apiUrl = draftApi, m3uUrl = draftM3u)
                 }
             }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isLoading = false, error = "设置加载失败：${e.message ?: "未知错误"}")
+                }
+            }
         }
     }
 
@@ -102,9 +112,12 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(m3uUrl = value) }
     }
 
-    /** 源地址是否被改过（保存按钮门控：没改不可点）。 */
+    /** 源地址是否被改过（保存按钮门控：没改不可点）。
+     * B6-P2-10：按 trim 后比较——只改空格不算改过，不会亮起保存按钮、更不会误登出。 */
     val isDirty: Boolean
-        get() = _uiState.value.let { it.apiUrl != it.savedApiUrl || it.m3uUrl != it.savedM3uUrl }
+        get() = _uiState.value.let {
+            it.apiUrl.trim() != it.savedApiUrl.trim() || it.m3uUrl.trim() != it.savedM3uUrl.trim()
+        }
 
     /**
      * 保存源地址：立即生效并清除登录态。
@@ -114,10 +127,21 @@ class SettingsViewModel @Inject constructor(
     fun saveSourceAddresses() {
         val state = _uiState.value
         if (state.isSaving || !isDirty) return
+        // B6-P1-1：非法地址直接拒绝保存——旧实现照单全收还先登出清掉登录态，
+        // 用户填错一个字符就丢登录。空地址允许（= 不配服务器，本地模式）。
+        if (state.apiUrl.trim().isNotBlank() &&
+            ApiUrlPolicy.check(state.apiUrl.trim()) is ApiUrlPolicy.Check.Invalid
+        ) {
+            _uiState.update {
+                it.copy(toast = nextToastEvent("服务器地址无效，请输入 http(s):// 开头的地址"))
+            }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, error = null) }
             try {
-                val apiChanged = state.apiUrl != state.savedApiUrl
+                // B6-P2-10：按 trim 后比较——只改空格不算换地址，不误登出。
+                val apiChanged = state.apiUrl.trim() != state.savedApiUrl.trim()
                 if (apiChanged) {
                     authRepository.logout()
                     // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
@@ -133,7 +157,13 @@ class SettingsViewModel @Inject constructor(
                     settingsRepository.clearStorageType()
                 }
                 if (state.apiUrl.trim().isNotBlank()) {
-                    if (settingsRepository.refreshServerConfig() == null && apiChanged) {
+                    // B6-P2-10：30 秒失败缓存内的 null 不是“本次拉取失败”——
+                    // 缓存期内不发请求、不报配置失败，下次数据访问越过缓存再试。
+                    val failureCached =
+                        settingsRepository.isConfigFailureCachedFor(state.apiUrl.trim())
+                    if (!failureCached &&
+                        settingsRepository.refreshServerConfig() == null && apiChanged
+                    ) {
                         configFailed = true
                     }
                 }

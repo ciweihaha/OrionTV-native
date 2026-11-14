@@ -237,6 +237,21 @@ fun SettingsScreen(
             }
         }
 
+        // B6-P2-9：加载中给明确 UI——旧实现 isLoading 无任何 UI，加载失败时
+        // 页面一片空白、用户不知道在等什么。
+        if (uiState.isLoading) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "正在加载设置…",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.TextSecondary,
+                )
+            }
+        }
+
         // Toast：底部居中，2 秒消失。
         val toast = uiState.toast ?: updateState.toast
         if (toast != null) {

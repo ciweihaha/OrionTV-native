@@ -60,8 +60,14 @@ class SettingsRepository @Inject constructor(
     /** 是否配了服务器地址（首页空态门控用）。 */
     suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
 
-    /** server-config 是否从未成功拉取过（"" = 未知，不是“本地模式”）。 */
-    override suspend fun isServerConfigUnknown(): Boolean = currentStorageType().isBlank()
+    /**
+     * server-config 是否从未成功拉取过。
+     * B6-P1-2：按独立的“已拉取过”标记判，不按 StorageType 是否为空——
+     * 服务端不返回 StorageType 时旧实现每次数据访问都重拉一次。
+     * （已装机用户首次升级后标记为 false，会多拉一次，随即置位。）
+     */
+    override suspend fun isServerConfigUnknown(): Boolean =
+        !settingsDataStore.serverConfigFetched.first()
 
     /**
      * 第 3 轮收尾 B-P1-8：StorageType 未知时先拉一次 server-config（失败有 30 秒
@@ -95,6 +101,9 @@ class SettingsRepository @Inject constructor(
     override suspend fun refreshServerConfig(): ServerConfig? = refreshMutex.withLock {
         val baseUrl = currentApiBaseUrl()
         if (baseUrl.isBlank()) return null
+        // B6-P2-7：锁内复核已知态——并发的两路都通过 ensureServerConfig 的
+        // 未知检查后，先拿到锁的那路已拉取成功，后进锁的不再重复发请求。
+        if (!isServerConfigUnknown()) return null
         if (baseUrl == lastConfigFailureUrl &&
             System.currentTimeMillis() - lastConfigFailureAtMs < 30_000L
         ) {
@@ -105,6 +114,8 @@ class SettingsRepository @Inject constructor(
             if (currentApiBaseUrl() != baseUrl) return null // 地址已变，丢弃旧结果
             lastConfigFailureAtMs = 0L
             config.StorageType?.let { settingsDataStore.setStorageType(it) }
+            // B6-P1-2：拉取成功即记“已拉取过”，无论服务端是否返回 StorageType。
+            settingsDataStore.setServerConfigFetched(true)
             config
         } catch (e: CancellationException) {
             throw e
@@ -115,6 +126,15 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    /**
+     * B6-P2-10：该地址的拉取失败是否还在 30 秒缓存内——在缓存内时
+     * refreshServerConfig() 返回的 null 不是“本次拉取失败”，调用方
+     * 不应把它报成配置失败。
+     */
+    suspend fun isConfigFailureCachedFor(url: String): Boolean =
+        url.isNotBlank() && url == lastConfigFailureUrl &&
+            System.currentTimeMillis() - lastConfigFailureAtMs < 30_000L
+
     override suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
@@ -123,8 +143,12 @@ class SettingsRepository @Inject constructor(
      * B4-P1-3：把 StorageType 清为空（未知态）——换源地址时先清，旧服务
      * 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次数据访问
      * 自动重拉（ensureServerConfig），成功前按本地模式兜底。
+     * B6-P1-2：“已拉取过”标记一起清，否则新地址沿用旧标记、不再拉取。
      */
-    suspend fun clearStorageType() = settingsDataStore.setStorageType("")
+    suspend fun clearStorageType() {
+        settingsDataStore.setStorageType("")
+        settingsDataStore.setServerConfigFetched(false)
+    }
     suspend fun setRemoteInputEnabled(value: Boolean) = settingsDataStore.setRemoteInputEnabled(value)
     suspend fun setAutoSkipIntro(value: Boolean) = settingsDataStore.setAutoSkipIntro(value)
     suspend fun setIntroSkipSeconds(value: Int) = settingsDataStore.setIntroSkipSeconds(value)
