@@ -169,4 +169,12 @@ object DetailSearchLogic {
         }
         return groups
     }
+
+    /**
+     * 第 3 轮收尾 B-P2-5：0-based 集号所属的分组下标（每组 [groupSize] 集）。
+     * 分组边界只由组大小定，与总集数无关（详情页展示时再按实际组数钳制），
+     * 所以断点集号在搜索结果回来前就能算出分组。
+     */
+    fun groupIndexForEpisode(episodeIndex: Int, groupSize: Int = 20): Int =
+        episodeIndex.coerceAtLeast(0) / groupSize.coerceAtLeast(1)
 }

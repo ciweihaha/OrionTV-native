@@ -94,4 +94,15 @@ class DetailSearchLogicTest {
         assertEquals(listOf(1 to 12), DetailSearchLogic.episodeGroups(12))
         assertEquals(emptyList<Pair<Int, Int>>(), DetailSearchLogic.episodeGroups(0))
     }
+
+    // 第 3 轮收尾 B-P2-5：断点集所属分组。
+    @Test
+    fun `groupIndexForEpisode maps resume episode to its group`() {
+        assertEquals(0, DetailSearchLogic.groupIndexForEpisode(0))
+        assertEquals(0, DetailSearchLogic.groupIndexForEpisode(19))
+        assertEquals(1, DetailSearchLogic.groupIndexForEpisode(20))
+        assertEquals(1, DetailSearchLogic.groupIndexForEpisode(24))
+        assertEquals(2, DetailSearchLogic.groupIndexForEpisode(40))
+        assertEquals(0, DetailSearchLogic.groupIndexForEpisode(-3))
+    }
 }

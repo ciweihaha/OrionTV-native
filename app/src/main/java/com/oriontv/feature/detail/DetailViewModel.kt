@@ -6,6 +6,7 @@ import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.repo.DetailRepository
+import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.data.repo.FavoritesRepository
 import com.oriontv.data.repo.PlayRecordsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -13,7 +14,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /**
@@ -54,6 +57,9 @@ class DetailViewModel @Inject constructor(
             val startEpisode = record?.index ?: 0
             _uiState.value = _uiState.value.copy(
                 selectedEpisode = startEpisode,
+                // B-P2-5：断点集所属分组也一并置好，否则分组视图仍停在 1-20 集，
+                // 断点集（第 25 集起）不可见、焦点也不在它上面。
+                selectedGroup = DetailSearchLogic.groupIndexForEpisode(startEpisode),
                 resumeEpisode = record?.index,
                 resumePositionSeconds = record?.play_time,
             )
@@ -74,6 +80,10 @@ class DetailViewModel @Inject constructor(
                         error = null,
                     )
                 }
+            } catch (e: CancellationException) {
+                // B-P1-9：取消必须原样抛出；否则旧搜索任务被取消后仍会把错误态
+                // 写回，覆盖新搜索的状态（B-P2-23② 亦由此解决）。
+                throw e
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
@@ -106,19 +116,31 @@ class DetailViewModel @Inject constructor(
         val state = _uiState.value
         val current = state.current ?: return
         viewModelScope.launch {
-            val favorite = Favorite(
-                cover = current.poster,
-                title = current.title,
-                source_name = current.source_name,
-                total_episodes = current.episodes.size,
-                search_title = currentTitle,
-                year = current.year,
-            )
-            // P2-16：收藏键以当前源为准（切源后再收藏，不再存进入时的源）。
-            val key = MoonTvApi.generateKey(current.source, current.id.orEmpty())
-            val nowFavorite = favoritesRepository.toggle(key, favorite)
-            _uiState.value = _uiState.value.copy(isFavorite = nowFavorite)
+            try {
+                val favorite = Favorite(
+                    cover = current.poster,
+                    title = current.title,
+                    source_name = current.source_name,
+                    total_episodes = current.episodes.size,
+                    search_title = currentTitle,
+                    year = current.year,
+                )
+                // P2-16：收藏键以当前源为准（切源后再收藏，不再存进入时的源）。
+                val key = MoonTvApi.generateKey(current.source, current.id.orEmpty())
+                // B-P0-1：服务端写失败时 toggle 抛错（见 FavoritesRepository），
+                // 这里接住给失败提示、不崩溃，收藏态保持原值。
+                val nowFavorite = favoritesRepository.toggle(key, favorite)
+                _uiState.value = _uiState.value.copy(isFavorite = nowFavorite, favoriteError = null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(favoriteError = "收藏失败，请检查网络后重试")
+            }
         }
+    }
+
+    fun consumeFavoriteError() {
+        _uiState.update { it.copy(favoriteError = null) }
     }
 
     /** 播放失败时标记当前源失败（供播放页自动换源用；详情页内标灰）。 */
@@ -163,6 +185,8 @@ data class DetailUiState(
     val selectedEpisode: Int = 0,
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
+    /** B-P0-1：收藏切换失败时的一次性提示（2 秒 Toast，UI 消费后清掉）。 */
+    val favoriteError: String? = null,
     /** P1-2：断点记录的集号（null = 无断点）；只有选中它时“播放”才带位置。 */
     val resumeEpisode: Int? = null,
     /** P1-2：断点记录的已播秒数（null = 无断点）。 */

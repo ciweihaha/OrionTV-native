@@ -31,12 +31,14 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.delay
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
+import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.posterImageRequest
@@ -50,20 +52,9 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 源切换 chip 行、“播放”主按钮 + “收藏”次按钮；
  * 下方选集网格每行 8 个，长剧折叠成 “1-20 / 21-40 …” 分组 chip；
  * 失效源置灰仍可切换；换源保留集数。
+ * 第 3 轮收尾 B-P2-24：三参旧入口已删（全仓零调用，唯一调用走四参），
+ * title 为空时仍用 id 兜底（见 DetailScreenContent 的 init 调用）。
  */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun DetailScreen(
-    source: String,
-    id: String,
-    onNavigate: (OrionRoute) -> Unit,
-    onBack: () -> Unit,
-    viewModel: DetailViewModel = hiltViewModel(),
-) {
-    DetailScreenContent(source, id, "", onNavigate, viewModel)
-}
-
-/** 带标题的详情页入口（导航路由传 title；骨架旧入口的 title 为空时用 id 兜底）。 */
 @Composable
 fun DetailScreen(
     source: String,
@@ -102,9 +93,17 @@ private fun DetailScreenContent(
     LaunchedEffect(Unit) {
         if (viewModel.focusAnchored) playRequester.requestFocus()
     }
+    // B-P0-1：收藏失败 Toast 2 秒消失（ui-design.md §5.8 同款）。
+    LaunchedEffect(uiState.favoriteError) {
+        if (uiState.favoriteError != null) {
+            delay(2000)
+            viewModel.consumeFavoriteError()
+        }
+    }
 
     // P2-7：选集已改 LazyVerticalGrid（按列数均分），不再手动算卡宽；
     // 旧公式里的 96.dp 只是左右边距之和（48×2）的巧合值，与导航轨宽同值，删掉。
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = OrionDimens.ContentPadding,
@@ -322,4 +321,17 @@ private fun DetailScreenContent(
                 }
             }
         }
+    // B-P0-1：收藏失败 Toast，底部居中。
+    if (uiState.favoriteError != null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            OrionToast(
+                message = uiState.favoriteError ?: "",
+                modifier = Modifier.padding(bottom = 48.dp),
+            )
+        }
+    }
+    }
 }
