@@ -12,7 +12,19 @@ sealed interface OrionRoute {
     data object Live : OrionRoute
 
     @Serializable
-    data class Detail(val source: String, val id: String, val title: String = "") : OrionRoute
+    data class Detail(
+        val source: String,
+        val id: String,
+        val title: String = "",
+        /**
+         * 第 7 轮（Jewel）：首页来源的豆瓣评分透传（HomeRowItem.rate，
+         * 如 "8.5"）——只改导航参数 + 详情展示，不新增网络调用、不改数据层
+         * 模型。首页 agg/豆瓣卡片自带评分才传；搜索/收藏/深链入口没有评分，
+         * 保持 null、不显示（搜索来源仍堵，见审计延期项）。
+         * 带默认值的可空字段：旧版保存的回栈（无 rate 参数）解析时落默认 null。
+         */
+        val rate: String? = null,
+    ) : OrionRoute
 
     @Serializable
     data class Play(
