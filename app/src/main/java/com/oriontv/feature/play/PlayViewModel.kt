@@ -134,7 +134,7 @@ class PlayViewModel @Inject constructor(
     }
 
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
-    private suspend fun startEpisode(result: SearchResult, episodeIndex: Int) {
+    private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
         val episodes = result.episodes
         if (episodes.isEmpty() || episodeIndex !in episodes.indices) {
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
@@ -146,15 +146,18 @@ class PlayViewModel @Inject constructor(
         // 倍速记忆关掉时一律 1×（阶段 4）；开着才恢复该片保存的倍速。
         val speedMemory = settingsRepository.currentSpeedMemory()
         val rate = if (speedMemory) settings?.playbackRate ?: 1f else 1f
-        // 断点：路由带来的位置优先，否则取该集的播放记录。
-        val startPosition = if (routePositionMs > 0) {
-            routePositionMs.also { routePositionMs = 0L }
-        } else {
-            val record = playRecordsRepository.getByKey(key)
-            if (record?.index == episodeIndex && record.play_time > 0) {
-                record.play_time * 1000
-            } else {
-                0L
+        // 断点：显式起点（换源/自动换源传当前进度）优先，其次路由带来的位置，
+        // 最后取该集的播放记录（看完的集从 0 播，见 resolveRecordStartMs）。
+        val startPosition = when {
+            startPositionMs != null -> startPositionMs
+            routePositionMs > 0 -> routePositionMs.also { routePositionMs = 0L }
+            else -> {
+                val record = playRecordsRepository.getByKey(key)
+                if (record?.index == episodeIndex) {
+                    resolveRecordStartMs(record.play_time, record.total_time)
+                } else {
+                    0L
+                }
             }
         }
         introSkippedThisEpisode = false
@@ -220,7 +223,7 @@ class PlayViewModel @Inject constructor(
                     )
                 }
                 viewModelScope.launch {
-                    startEpisode(next, state.episodeIndex)
+                    startEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
                 }
                 return
             }
@@ -267,11 +270,13 @@ class PlayViewModel @Inject constructor(
                         bufferedMs = buffered,
                         isPlaying = playing,
                         isBuffering = playerManager.isBuffering,
-                        // 首帧/时长一到就解除加载态（就绪超时随之取消）。
-                        isLoading = if (duration > 0 || playing) false else it.isLoading,
+                        // 就绪判据：只有真正开始播（首帧已出）才解除加载态；
+                        // 光出时长（duration>0）不算——分片全死的流一直 STATE_BUFFERING，
+                        // 旧实现一出时长就清 isLoading 并取消 20 秒超时，永远走不到自动换源。
+                        isLoading = if (isPlaybackReady(playing)) false else it.isLoading,
                     )
                 }
-                if (wasLoading && (duration > 0 || playing)) readyTimeoutJob?.cancel()
+                if (wasLoading && isPlaybackReady(playing)) readyTimeoutJob?.cancel()
                 // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失。
                 updateSkipIntroVisibility(position)
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
@@ -417,13 +422,13 @@ class PlayViewModel @Inject constructor(
         viewModelScope.launch { startEpisode(current, index) }
     }
 
-    /** 换源：不丢集数（集号不变），保进度续播。 */
+    /** 换源：不丢集数（集号不变），保进度续播（从当前进度开始，不从 0 播）。 */
     fun selectSource(source: String) {
         val state = _uiState.value
         val next = state.results.firstOrNull { it.source == source } ?: return
         val episode = state.episodeIndex.coerceAtMost((next.episodes.size - 1).coerceAtLeast(0))
         _uiState.update { it.copy(drawer = null) }
-        viewModelScope.launch { startEpisode(next, episode) }
+        viewModelScope.launch { startEpisode(next, episode, playerManager.currentPositionMs) }
     }
 
     fun setPlaybackSpeed(rate: Float) {
@@ -485,6 +490,8 @@ class PlayViewModel @Inject constructor(
         val position = playerManager.currentPositionMs
         val duration = playerManager.durationMs
         if (duration <= 0 || position <= 0) return
+        // 看完一集不存断点：否则下次打开 position==duration，立即“播完”。
+        if (isNearEnd(position, duration)) return
         lastSavedPositionMs = position
         lastSavedAtMs = System.currentTimeMillis()
         scope.launch {
@@ -530,6 +537,29 @@ class PlayViewModel @Inject constructor(
     companion object {
         /** 播错自动换源最多 2 次（ui-design.md §5.3）。 */
         const val MAX_AUTO_SWITCH = 2
+
+        /** 临近片尾阈值（复用下一集预告的 10 秒窗口）：距片尾不到它即视为看完。 */
+        const val END_THRESHOLD_MS = 10_000L
+
+        /**
+         * VOD 就绪判据（可单测）：只有真正开始播（首帧已出）才算就绪；
+         * 光出时长不算——分片全死的流一直 STATE_BUFFERING。
+         */
+        internal fun isPlaybackReady(isPlaying: Boolean): Boolean = isPlaying
+
+        /**
+         * 断点恢复（可单测）：看完的集（play_time >= total_time）从 0 播，
+         * 不恢复到片尾导致打开即“播完”。
+         */
+        internal fun resolveRecordStartMs(recordPlayTimeSec: Long, recordTotalTimeSec: Long): Long {
+            if (recordPlayTimeSec <= 0) return 0L
+            if (recordTotalTimeSec > 0 && recordPlayTimeSec >= recordTotalTimeSec) return 0L
+            return recordPlayTimeSec * 1000
+        }
+
+        /** 是否临近片尾（可单测）：距片尾不到阈值即视为看完，不存断点。 */
+        internal fun isNearEnd(positionMs: Long, durationMs: Long): Boolean =
+            durationMs > 0 && positionMs >= durationMs - END_THRESHOLD_MS
     }
 }
 
