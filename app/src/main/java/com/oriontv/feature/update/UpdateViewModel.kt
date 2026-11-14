@@ -118,6 +118,8 @@ class UpdateViewModel @Inject constructor(
                             }
                             return@launch
                         }
+                        // P2-12：新版卡片弹出时复位安装守卫（上一次安装流程已结束）。
+                        installInFlight = false
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -237,21 +239,33 @@ class UpdateViewModel @Inject constructor(
             }
             if (intent.resolveActivity(context.packageManager) == null) {
                 _uiState.update { it.copy(error = "安装失败：找不到系统安装器") }
+                installInFlight = false
                 return
             }
             context.startActivity(intent)
-            // B4-P2-12：调起安装器后不立即清路径/关卡片——取消安装后已下载
-            // 的 APK 还在，卡片仍显示“立即安装”可再次安装；不失联。
+            _uiState.update { it.copy(showUpdateCard = false) }
+            // P2-12（第 5 轮）：成功调起后守卫保持 armed，不在 finally 里复位——
+            // 第二次点按是另一个独立事件，发生在 finally 之后，原来的同步
+            // 置 true 又置 false 恒放行。卡片已关闭，复位点在 dismissCard() /
+            // skipVersion() / 下次检查出新版时；调起失败时下面 catch 里复位，
+            // 允许用户重试。
+            // 注意（rebase 合并取舍，见报告）：B4-P2-12 曾让卡片调起后保持打开、
+            // 以便取消安装后直接重试，但与 P2-12 的跨事件守卫不兼容——卡片开着
+            // 时守卫 armed，再点“立即安装”会被静默拦掉，重试点成死按钮。
+            // 两害相权取其轻：保 P2-12（防重复调起安装器是正确性问题），
+            // 取消安装后重试走“重新检查更新”（新版卡片弹出时复位守卫）。
+            // B4-P2-12 的另一半仍保留：不立即清 downloadedFilePath，取消安装
+            // 后重查仍显示“立即安装”，不用重新下载。
         } catch (e: Exception) {
-            _uiState.update { it.copy(error = "安装失败：${e.message ?: "无法调起安装器"}") }
-        } finally {
             installInFlight = false
+            _uiState.update { it.copy(error = "安装失败：${e.message ?: "无法调起安装器"}") }
         }
     }
 
     /** 跳过此版：记下来，下次检查不再弹卡。 */
     fun skipVersion() {
         val latest = _uiState.value.latestVersion ?: return
+        installInFlight = false
         viewModelScope.launch {
             settingsRepository.setUpdateSkipVersion(latest)
             _uiState.update {
@@ -261,6 +275,7 @@ class UpdateViewModel @Inject constructor(
     }
 
     fun dismissCard() {
+        installInFlight = false
         _uiState.update { it.copy(showUpdateCard = false) }
     }
 
