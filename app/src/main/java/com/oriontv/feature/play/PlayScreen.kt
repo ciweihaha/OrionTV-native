@@ -22,6 +22,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,7 +33,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -59,6 +63,15 @@ internal fun shouldShowPlayerControls(
 ): Boolean = (controlsVisible || showNextEpisode) && !hasError
 
 /**
+ * 左/右键是否由预览拦截（可单测，P1-2）：
+ * 控制条实际显示且抽屉关闭时，左/右恒为快进预览（预览阶段拦截，焦点移动收不到）；
+ * 按钮间移动改用上/下进出 + OK。抽屉打开或控制条未显示时不拦截，
+ * 左/右仍交给焦点移动（抽屉内横向移动、错误页重试/返回切换）。
+ */
+internal fun shouldInterceptSeekKeys(controlsShown: Boolean, drawerOpen: Boolean): Boolean =
+    controlsShown && !drawerOpen
+
+/**
  * 播放页（ui-design.md §5.3）：
  * 全屏视频（Media3 PlayerView）；OK/方向键唤出控制条，5 秒无操作自动隐藏；
  * 左右键移动落点预览（T6/T7：10 秒一步，OK 提交，2 秒无操作自动提交），
@@ -82,13 +95,19 @@ fun PlayScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var controlsTick by remember { mutableLongStateOf(0L) }
     val previewController = remember(uiState.durationMs) {
-        SeekPreviewController(uiState.durationMs.coerceAtLeast(1L))
+        // 时长未出时按 durationMs=0 构建：nudge() 返回 null、不产生预览（P1-3），
+        // 不再用 coerceAtLeast(1L) 造一个 00:00 落点。
+        SeekPreviewController(uiState.durationMs)
     }
     var previewTargetMs by remember { mutableLongStateOf(-1L) }
+    // 预览方向（-1 快退 / +1 快进 / 0 无预览）：气泡的方向标识用（P2-1）。
+    var previewDirection by remember { mutableIntStateOf(0) }
     var previewThumbnail by remember { mutableStateOf<Bitmap?>(null) }
     val rootRequester = remember { FocusRequester() }
     // 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。
     val controlsFirstButtonRequester = remember { FocusRequester() }
+    // 播放错误页“重试”按钮的焦点：错误出现时默认落到它（P2-3，与直播失败页一致）。
+    val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
 
     LaunchedEffect(source, id) {
@@ -123,7 +142,14 @@ fun PlayScreen(
     // 落点曾双份存放，控制器重建丢落点但 previewTargetMs 仍 >=0 会一直残留预览气泡。
     LaunchedEffect(previewController) {
         previewTargetMs = -1L
+        previewDirection = 0
         previewThumbnail = null
+    }
+
+    // 播放错误页出现时焦点默认落到“重试”（P2-3）：否则焦点停在根部/原控制条按钮上，
+    // 首次按 OK 只会 pokeControls，用户需先用方向键盲找按钮。
+    LaunchedEffect(uiState.error) {
+        if (uiState.error != null) errorRetryRequester.requestFocus()
     }
 
     // 下一集预告出时强制唤出控制条（P1-3）：播完时控制条可能已 5 秒自动隐藏，
@@ -152,12 +178,15 @@ fun PlayScreen(
         }
     }
     // 落点预览 2 秒无操作自动提交（T6/T7）。
+    // 只有 previewTargetMs >= 0 才起定时器：时长未出时 nudge() 返回 null，
+    // 从不产生预览，也就不会启用提交定时器（P1-3）。
     LaunchedEffect(previewTargetMs) {
         if (previewTargetMs >= 0) {
             delay(SeekPreviewController.AUTO_COMMIT_MS)
             viewModel.seekTo(previewTargetMs)
             previewController.cancel()
             previewTargetMs = -1L
+            previewDirection = 0
             previewThumbnail = null
             pokeControls()
         }
@@ -178,11 +207,25 @@ fun PlayScreen(
         if (target != null) {
             viewModel.seekTo(target)
             previewTargetMs = -1L
+            previewDirection = 0
             previewThumbnail = null
             pokeControls()
             return true
         }
         return false
+    }
+
+    /** 左/右快进预览一步（P1-2/P1-3/P2-2 共用）：时长未出或反向按过起点时清掉预览。 */
+    fun nudgePreview(dir: Int) {
+        val target = previewController.nudge(uiState.positionMs, dir)
+        if (target == null) {
+            previewTargetMs = -1L
+            previewDirection = 0
+            previewThumbnail = null
+        } else {
+            previewTargetMs = target
+            previewDirection = dir
+        }
     }
 
     Box(
@@ -191,6 +234,29 @@ fun PlayScreen(
             .background(OrionColors.Background)
             .focusable()
             .focusRequester(rootRequester)
+            .onPreviewKeyEvent { event ->
+                // P1-2：控制条可见时左/右恒为快进预览——在预览（隧道）阶段拦截，
+                // 焦点移动收不到左/右 KeyDown，按钮间移动改用上/下进出 + OK。
+                // 只拦截非重复的 KeyDown（一次按键一步，与旧的松键触发同频；长按快进未实现，见 P2-9）；
+                // 抽屉打开或错误页时不拦截，左/右仍交给焦点移动。
+                if (event.type != KeyEventType.KeyDown ||
+                    event.nativeKeyEvent.repeatCount != 0 ||
+                    !shouldInterceptSeekKeys(
+                        shouldShowPlayerControls(controlsVisible, uiState.error != null, uiState.showNextEpisode),
+                        uiState.drawer != null,
+                    )
+                ) {
+                    return@onPreviewKeyEvent false
+                }
+                when (event.key) {
+                    Key.DirectionLeft, Key.DirectionRight -> {
+                        pokeControls()
+                        nudgePreview(if (event.key == Key.DirectionLeft) -1 else 1)
+                        true
+                    }
+                    else -> false
+                }
+            }
             .onKeyUp { event ->
                 when (event.key) {
                     Key.Back -> {
@@ -198,6 +264,7 @@ fun PlayScreen(
                             previewTargetMs >= 0 -> {
                                 previewController.cancel()
                                 previewTargetMs = -1L
+                                previewDirection = 0
                                 previewThumbnail = null
                                 pokeControls()
                                 true
@@ -223,12 +290,8 @@ fun PlayScreen(
                             pokeControls() // 控制条隐藏时方向键只唤出，不 seek
                             true
                         } else {
-                            pokeControls()
-                            val dir = if (event.key == Key.DirectionLeft) -1 else 1
-                            previewTargetMs = previewController.nudge(
-                                uiState.positionMs,
-                                dir,
-                            )
+                            // 控制条可见时左/右已在预览阶段做过快进（P1-2），
+                            // 这里只消费、不再重复 nudge。
                             true
                         }
                     }
@@ -281,7 +344,11 @@ fun PlayScreen(
                     Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                     Spacer(modifier = Modifier.height(24.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        PrimaryButton(text = "重试", onClick = { viewModel.retry() })
+                        PrimaryButton(
+                            text = "重试",
+                            onClick = { viewModel.retry() },
+                            modifier = Modifier.preferredFocus(errorRetryRequester),
+                        )
                         SecondaryButton(text = "返回", onClick = onBack)
                     }
                 }
@@ -301,6 +368,7 @@ fun PlayScreen(
                 isPlaying = uiState.isPlaying,
                 playbackRate = uiState.playbackRate,
                 seekPreviewMs = previewTargetMs,
+                seekPreviewDirection = previewDirection,
                 seekPreviewThumbnail = previewThumbnail,
                 posterUrl = uiState.current?.poster.orEmpty(),
                 showSkipIntro = uiState.skipIntroVisible,
@@ -311,11 +379,11 @@ fun PlayScreen(
                 onMarkOutro = { viewModel.markOutroStart(); pokeControls() },
                 onPlayPause = { viewModel.togglePlayPause(); pokeControls() },
                 onSeekBack = {
-                    previewTargetMs = previewController.nudge(uiState.positionMs, -1)
+                    nudgePreview(-1)
                     pokeControls()
                 },
                 onSeekForward = {
-                    previewTargetMs = previewController.nudge(uiState.positionMs, 1)
+                    nudgePreview(1)
                     pokeControls()
                 },
                 onSkipIntro = { viewModel.skipIntro(); pokeControls() },

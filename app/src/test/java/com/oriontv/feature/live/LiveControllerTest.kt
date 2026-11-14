@@ -125,15 +125,46 @@ class LiveControllerTest {
     }
 
     @Test
-    fun `playback success resets fail count and tried lines`() {
+    fun `playback success only resets after ten seconds stable`() {
+        // P1-6：短暂播出不再立即清零；连续稳定播出满 10 秒才清零
         val c = LiveController(threeChannels)
         c.onPlaybackError(panelOpen = false) // 试了备用线路
         assertEquals(1, c.lineIndex)
-        c.onPlaybackSuccess()
+        c.onPlaybackSuccess(nowMs = 1_000L)
+        assertEquals(1, c.failCount) // 未满 10 秒不清零
+        assertFalse(c.confirmStablePlayback(nowMs = 5_000L))
+        assertEquals(1, c.failCount)
+        assertTrue(c.confirmStablePlayback(nowMs = 11_000L))
         assertEquals(0, c.failCount)
         // 已试集合清零：下次失败应重新从备用线路试起
         val action = c.onPlaybackError(panelOpen = false)
         assertTrue(action is LiveErrorAction.TryLine)
+    }
+
+    @Test
+    fun `short success then error voids stable window`() {
+        // P1-6：播 1 秒就断流不算稳定，失败计数继续累加，不被清零
+        val c = LiveController(threeChannels)
+        c.onPlaybackError(panelOpen = false)
+        c.onPlaybackSuccess(nowMs = 1_000L)
+        c.onPlaybackError(panelOpen = false) // 2 秒后又断
+        assertEquals(2, c.failCount)
+        assertFalse(c.confirmStablePlayback(nowMs = 11_000L))
+        assertEquals(2, c.failCount)
+    }
+
+    @Test
+    fun `short plays across channels keep accumulating failures`() {
+        // P1-6：A 台播 1 秒断流→跳 B 台播 1 秒断流……计数不再清零，终会 >5 停手
+        val c = LiveController(threeChannels)
+        var last: LiveErrorAction = c.onPlaybackError(panelOpen = false)
+        repeat(5) {
+            c.onPlaybackSuccess(nowMs = 1_000L)
+            c.nextChannel(isAuto = true)
+            last = c.onPlaybackError(panelOpen = false)
+        }
+        assertTrue(last is LiveErrorAction.GiveUp)
+        assertEquals(6, c.failCount)
     }
 
     // ---- 数字键换台 ----
@@ -236,6 +267,36 @@ class LiveControllerTest {
         // 恢复不到的 URL 落回第 0 台
         c.setChannels(threeChannels, restoreUrl = "http://a/none.m3u8")
         assertEquals(0, c.currentIndex)
+    }
+
+    @Test
+    fun `restore last channel by url and name`() {
+        // P2-4：同 URL 两条台，恢复时按 (url, name) 落到对的那条
+        val dup = listOf(
+            channel("台A", listOf("http://a/shared.m3u8")),
+            channel("台B", listOf("http://a/shared.m3u8")),
+        )
+        val c = LiveController()
+        c.setChannels(dup, restoreUrl = "http://a/shared.m3u8", restoreName = "台B")
+        assertEquals(1, c.currentIndex)
+        assertEquals("台B", c.currentChannel?.name)
+        // 只给 URL 时仍按 URL 恢复到第一条（兼容旧行为）
+        c.setChannels(dup, restoreUrl = "http://a/shared.m3u8")
+        assertEquals(0, c.currentIndex)
+    }
+
+    @Test
+    fun `index of channel distinguishes duplicate urls by identity`() {
+        // P2-4：同 URL 出现两次时，点第二条不再落到第一条
+        val first = channel("卫视", listOf("http://a/shared.m3u8"))
+        val second = channel("卫视", listOf("http://a/shared.m3u8"))
+        val list = listOf(first, second)
+        assertEquals(0, LiveController.indexOfChannel(list, first))
+        assertEquals(1, LiveController.indexOfChannel(list, second))
+        // 同名同 URL 的另一对象按 (url, name) 回退到第一条
+        val copy = channel("卫视", listOf("http://a/shared.m3u8"))
+        assertEquals(0, LiveController.indexOfChannel(list, copy))
+        assertEquals(-1, LiveController.indexOfChannel(list, channel("其他", listOf("http://a/other.m3u8"))))
     }
 
     // ---- 节目进度 ----
