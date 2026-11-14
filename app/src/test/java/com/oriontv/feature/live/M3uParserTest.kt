@@ -103,6 +103,10 @@ class M3uParserTest {
         val channel = M3uParser.Channel(id = "x", name = "X", urls = emptyList())
         assertEquals("", channel.url)
     }
+
+    @Test
+    fun `duplicate urls are dropped before merging`() {
+        // 同一 URL 只留第一次出现：sample 里 CCTV1 的 cctv1.m3u8 出现两次，合并后只剩 3 条不重复地址
         val channels = M3uParser.parse(sample)
         val allUrls = channels.flatMap { it.urls }
         assertEquals(3, allUrls.size)
