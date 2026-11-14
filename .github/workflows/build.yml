@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # 恢复后的仓库从未跑过 Build（push 事件未触发）；没有 push 时可手动跑。
+  workflow_dispatch:
 
 jobs:
   build:
