@@ -33,6 +33,16 @@ class VersionUtilsTest {
     }
 
     @Test
+    fun `stripVersionPrefix removes v prefix for AggApi validation`() {
+        // D-P2-4：根治点在 AggApi，strip 在校验之前。
+        assertEquals("2.0.0", VersionUtils.stripVersionPrefix("v2.0.0"))
+        assertEquals("2.0.0", VersionUtils.stripVersionPrefix("V2.0.0"))
+        assertEquals("2.0.0", VersionUtils.stripVersionPrefix("  v2.0.0  "))
+        assertEquals("2.0.0", VersionUtils.stripVersionPrefix("2.0.0"))
+        assertTrue(VersionUtils.isValidVersion(VersionUtils.stripVersionPrefix("v2.0.0")))
+    }
+
+    @Test
     fun `isOlderThan detects need for update`() {
         assertTrue(VersionUtils.isOlderThan("1.7.2", "2.0.0"))
         assertFalse(VersionUtils.isOlderThan("2.0.0", "2.0.0"))
