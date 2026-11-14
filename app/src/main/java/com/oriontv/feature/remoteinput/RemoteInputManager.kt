@@ -185,6 +185,12 @@ class RemoteInputManager @Inject constructor() {
     fun release() {
         // B4-P2-24：先停 HTTP 服务（轮换任务、server.stop()、清配对码）
         // 再取消 scope——之前只取消 scope，server 还在后台跑着。
+        // P2-7（第 5 轮）：stop() 是 scope.launch 的异步停服，onDestroy 时
+        // 若 scope 先被取消，stopLocked() 永远跑不到，NanoHTTPD 会继续占着
+        // 12346 端口直到进程被杀。release() 只在真退出时调，直接同步停服；
+        // 先把 desiredRunning 置 false，排队的停服协程进锁后不再因
+        // B5-P1-5 的复核而跳过停服。
+        desiredRunning = false
         stopLocked()
         scope.cancel()
     }
