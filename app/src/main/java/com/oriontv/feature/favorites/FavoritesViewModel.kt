@@ -1,5 +1,6 @@
 package com.oriontv.feature.favorites
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.Favorite
@@ -15,13 +16,31 @@ import javax.inject.Inject
 @HiltViewModel
 class FavoritesViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(FavoritesUiState(isLoading = true))
     val uiState: StateFlow<FavoritesUiState> = _uiState.asStateFlow()
 
-    /** P1-3/P1-4：首进才落默认锚点；返回时恢复 savedFocusIndex。 */
-    var initialFocusDone: Boolean = false
-    var savedFocusIndex: Int = -1
+    /**
+     * 第 5 轮：P1-3/P1-4 首进落默认锚点、返回恢复上次卡片——这两个值原来是
+     * ViewModel 里的普通变量。导航轨切走（popUpTo(Home) 弹掉收藏页）后
+     * ViewModel 被清，只靠内存留不住；再切回来新建的 ViewModel 从头开始，
+     * 焦点回到首张卡片、网格回到顶部（第 4 轮 C4-P1-5 搜索页同款问题）。
+     * 改成 SavedStateHandle 承载：导航保存的返回栈状态里跟着走，
+     * 切走再回、进程重建都不丢；收藏页本身不用改（同名属性照常读写）。
+     * Hilt 给 @HiltViewModel 自动注入 SavedStateHandle，第 4 轮搜索页已验证过这条路。
+     */
+    var initialFocusDone: Boolean
+        get() = savedStateHandle[SAVED_INITIAL_FOCUS_DONE] ?: false
+        set(value) {
+            savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
+        }
+
+    var savedFocusIndex: Int
+        get() = savedStateHandle[SAVED_FOCUS_INDEX] ?: -1
+        set(value) {
+            savedStateHandle[SAVED_FOCUS_INDEX] = value
+        }
 
     init {
         refresh()
@@ -37,6 +56,14 @@ class FavoritesViewModel @Inject constructor(
                 loadFailed = favoritesRepository.loadFailed.value,
             )
         }
+    }
+
+    companion object {
+        /** SavedStateHandle 键：是否已落过默认锚点。 */
+        const val SAVED_INITIAL_FOCUS_DONE = "favorites_initial_focus_done"
+
+        /** SavedStateHandle 键：上次所在的卡片下标（-1 = 未记录）。 */
+        const val SAVED_FOCUS_INDEX = "favorites_saved_focus_index"
     }
 }
 
