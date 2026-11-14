@@ -83,6 +83,14 @@ class UpdateDownloader @Inject constructor(
                 val request = Request.Builder().url(url).get().build()
                 okHttpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
+                        if (!ApiClient.shouldRetryOnStatus(response.code)) {
+                            // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
+                            // UpdateDownloadException 有专用 catch，直接重抛不重试。
+                            throw UpdateDownloadException(
+                                UpdateError.Network,
+                                "下载失败：HTTP ${response.code}，不重试",
+                            )
+                        }
                         throw IOException("下载失败：HTTP ${response.code}")
                     }
                     val body = response.body ?: throw IOException("下载失败：响应体为空")
