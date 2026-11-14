@@ -23,8 +23,8 @@ class PlaybackGeneration {
     /** 认领播放，返回本代 token。 */
     fun claim(): Long = ++generation
 
-    /** 该 token 是否仍是当前代（即认领者仍是最新所有者）。 */
-    fun isCurrent(token: Long): Boolean = token == generation
+    /** 该 token 是否仍是当前代（即认领者仍是最新所有者）。0 号 token 从未发放过，永远不算当前代。 */
+    fun isCurrent(token: Long): Boolean = token != 0L && token == generation
 }
 
 /**
