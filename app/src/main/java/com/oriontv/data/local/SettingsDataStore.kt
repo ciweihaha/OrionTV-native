@@ -56,6 +56,9 @@ class SettingsDataStore @Inject constructor(
 
         /** 收藏直播频道 JSON（plan §5.4：mytv_live_fav_channels，List<LiveFavChannel>）。 */
         val LIVE_FAV_CHANNELS = stringPreferencesKey(StorageKeys.LIVE_FAV_CHANNELS)
+
+        /** RN 首启迁移已跑过（D-P1-6）：跑完置 true，失败不置位、下次启动重试。 */
+        val RN_MIGRATION_DONE = booleanPreferencesKey("rnMigrationDone")
     }
 
     val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL].orEmpty() }
@@ -73,6 +76,7 @@ class SettingsDataStore @Inject constructor(
     val storageType: Flow<String> = context.settingsDataStore.data.map { it[Keys.STORAGE_TYPE].orEmpty() }
     val liveLastChannel: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_LAST_CHANNEL].orEmpty() }
     val liveFavChannels: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_FAV_CHANNELS].orEmpty() }
+    val rnMigrationDone: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.RN_MIGRATION_DONE] ?: false }
 
     suspend fun setAuthCookies(value: String) {
         context.settingsDataStore.edit { it[Keys.AUTH_COOKIES] = value }
@@ -132,5 +136,9 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setLiveFavChannels(value: String) {
         context.settingsDataStore.edit { it[Keys.LIVE_FAV_CHANNELS] = value }
+    }
+
+    suspend fun setRnMigrationDone(value: Boolean) {
+        context.settingsDataStore.edit { it[Keys.RN_MIGRATION_DONE] = value }
     }
 }
