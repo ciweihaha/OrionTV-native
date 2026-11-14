@@ -49,7 +49,6 @@ fun VideoCard(
     remainingLabel: String? = null,
     isLive: Boolean = false,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
     /** 焦点落到本卡时回调（供各页做返回焦点恢复；不接时行为不变）。 */
     onFocused: (() -> Unit)? = null,
     modifier: Modifier = Modifier,

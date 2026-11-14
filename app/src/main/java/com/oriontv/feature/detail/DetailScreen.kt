@@ -61,7 +61,6 @@ fun DetailScreen(
     id: String,
     title: String,
     onNavigate: (OrionRoute) -> Unit,
-    onBack: () -> Unit,
     viewModel: DetailViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,

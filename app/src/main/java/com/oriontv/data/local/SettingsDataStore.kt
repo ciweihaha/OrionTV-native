@@ -2,9 +2,11 @@ package com.oriontv.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -16,8 +18,11 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// C4-P2-6：偏好文件损坏时用空偏好重建（默认值兜底），不再抛 CorruptionException
+// 导致 onStart 的 .first() 崩溃、启动即崩溃循环。
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = StorageKeys.SETTINGS,
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
 )
 
 /**

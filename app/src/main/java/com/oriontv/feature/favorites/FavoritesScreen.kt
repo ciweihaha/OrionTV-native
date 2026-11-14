@@ -26,13 +26,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
-import kotlinx.coroutines.delay
 
 /**
  * 收藏页（ui-design.md §5.6）：
@@ -77,8 +77,10 @@ fun FavoritesScreen(
             val saved = viewModel.savedFocusIndex
             if (saved in uiState.items.indices) {
                 gridState.scrollToItem(saved)
-                delay(120)
-                cardRequesters[saved]?.requestFocus()
+                // C4-P2-2：目标卡片尚未组合完成时重试请求，仍失败才回首张卡片，
+                // 不再静默丢焦点。
+                val restored = cardRequesters[saved]?.requestFocusWithRetry() ?: false
+                if (!restored) firstCardRequester.requestFocus()
             } else if (uiState.items.isNotEmpty()) {
                 firstCardRequester.requestFocus()
             } else {

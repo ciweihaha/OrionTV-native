@@ -178,7 +178,6 @@ fun OrionNavHost(
                         id = route.id,
                         title = route.title,
                         onNavigate = { navController.navigate(it) },
-                        onBack = { navController.popBackStack() },
                         focusRestoreTick = focusRestoreTick,
                     )
                 }

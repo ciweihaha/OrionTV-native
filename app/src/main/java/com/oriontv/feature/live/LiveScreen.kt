@@ -148,7 +148,8 @@ fun LiveScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            // C4-P2-3：根背景用设计稿墨黑，不用纯黑（设计稿禁用纯黑）。
+            .background(OrionColors.Background)
             .focusable()
             .focusRequester(rootRequester)
             .onKeyUp { event ->

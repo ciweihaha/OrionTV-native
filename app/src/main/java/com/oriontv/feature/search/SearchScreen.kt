@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.feature.remoteinput.RemoteInputModal
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
@@ -44,7 +45,6 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
-import kotlinx.coroutines.delay
 
 /**
  * 搜索页（ui-design.md §5.5）：
@@ -87,8 +87,10 @@ fun SearchScreen(
             val saved = viewModel.savedResultIndex
             if (saved in uiState.results.indices) {
                 gridState.scrollToItem(saved)
-                delay(120)
-                resultRequesters[saved]?.requestFocus()
+                // C4-P2-2/B4-P2-23：目标卡片尚未组合完成时重试请求，仍失败才回搜索框，
+                // 不再靠 120ms 固定延时猜时序、也不再静默丢焦点。
+                val restored = resultRequesters[saved]?.requestFocusWithRetry() ?: false
+                if (!restored) searchRequester.requestFocus()
             } else {
                 searchRequester.requestFocus()
             }

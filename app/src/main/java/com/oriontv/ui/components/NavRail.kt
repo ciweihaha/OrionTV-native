@@ -17,12 +17,15 @@ import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -62,20 +65,33 @@ fun NavRail(
     onNavigate: (OrionRoute) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val requesters = remember { List(NavRailItems.size) { FocusRequester() } }
+    // C4-P2-7：左键回导航轨的显式焦点交接——刚从内容区进来（整轨 hasFocus
+    // 由假变真）时把焦点交给当前页对应的轨项，不靠空间导航随缘落点；
+    // 轨内上下移动时 hasFocus 不变，不触发、不干扰。
+    var railHasFocus by remember { mutableStateOf(false) }
+    val currentIndex = NavRailItems.indexOfFirst { it.route == currentRoute }
+    LaunchedEffect(railHasFocus) {
+        if (railHasFocus && currentIndex >= 0) {
+            requesters[currentIndex].requestFocus()
+        }
+    }
     Column(
         modifier = modifier
             .width(OrionDimens.NavRailWidth)
             .fillMaxHeight()
             .background(OrionColors.Background)
+            .onFocusChanged { railHasFocus = it.hasFocus }
             .padding(vertical = OrionDimens.ContentPadding.calculateTopPadding()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for (item in NavRailItems) {
+        for ((index, item) in NavRailItems.withIndex()) {
             NavRailEntry(
                 item = item,
                 selected = currentRoute == item.route,
                 onClick = { onNavigate(item.route) },
+                focusRequester = requesters[index],
             )
         }
         Spacer(modifier = Modifier.weight(1f))
@@ -87,12 +103,14 @@ private fun NavRailEntry(
     item: NavRailItem,
     selected: Boolean,
     onClick: () -> Unit,
+    focusRequester: FocusRequester,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .width(72.dp)
             .focusable()
+            .focusRequester(focusRequester)
             .onFocusChanged { focused = it.isFocused }
             .onKeyUp {
                 if (it.key == Key.DirectionCenter || it.key == Key.Enter) {

@@ -40,7 +40,9 @@ jobs:
 
       - name: Build debug APK and run unit tests
         run: |
-          ./gradlew assembleDebug testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
+          # C4-P1-8：同时编 assembleRelease——R8/混淆问题到打 tag 才暴露太晚，
+          # 每次 main 推送都提前编 release（无 Secrets 时出未签名包，只校验构建）。
+          ./gradlew assembleDebug assembleRelease testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
           if [ "${BUILD_FAILED:-0}" = "1" ]; then
             # 日志文件只能在 Actions 界面下载；把关键错误行打成 check-run 注解，
             # 这样不用进界面也能从 API 读到失败原因（见注解）。
@@ -58,6 +60,10 @@ jobs:
             exit 1
           fi
 
+      # C4-P2-11：lint 进 CI（之前两个工作流都没有，静态问题到真机才暴露）。
+      - name: Lint debug
+        run: ./gradlew lintDebug --stacktrace
+
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -71,6 +77,13 @@ jobs:
         with:
           name: oriontv-debug
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+      - name: Upload release APK (unsigned, R8 check only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: oriontv-release-unsigned
+          path: app/build/outputs/apk/release/*.apk
           retention-days: 7
 
 # 2026-11-14 注：仓库误删后由用户在 GitHub 恢复；此次提交用于重新注册工作流。

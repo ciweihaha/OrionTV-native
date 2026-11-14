@@ -40,7 +40,6 @@ import com.oriontv.BuildConfig
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.feature.remoteinput.QrCodeGenerator
 import com.oriontv.feature.remoteinput.RemoteInputModal
-import com.oriontv.feature.update.UpdateCard
 import com.oriontv.feature.update.UpdateViewModel
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
@@ -84,8 +83,7 @@ fun SettingsScreen(
     val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
     val rightRequester = remember { FocusRequester() }
     val qrTriggerRequester = remember { FocusRequester() }
-    // 更新卡片 / 二维码弹窗关闭后焦点还给触发点（P1-5）。
-    var updateCardWasShown by remember { mutableStateOf(false) }
+    // 二维码弹窗关闭后焦点还给触发点（P1-5）。
     var qrModalWasOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -107,15 +105,6 @@ fun SettingsScreen(
         if (updateState.toast != null) {
             delay(2000)
             updateViewModel.consumeToast()
-        }
-    }
-    // P1-5：更新卡片关闭后焦点还给右栏首控件（“检查更新”按钮所在处）。
-    LaunchedEffect(updateState.showUpdateCard) {
-        if (updateState.showUpdateCard) {
-            updateCardWasShown = true
-        } else if (updateCardWasShown) {
-            updateCardWasShown = false
-            rightRequester.requestFocus()
         }
     }
     // P1-5：二维码弹窗关闭后焦点还给“放大二维码”触发按钮。
@@ -267,22 +256,8 @@ fun SettingsScreen(
         }
     }
 
-    // 更新卡片：版本号 / 大小 / 更新说明 / 立即更新 / 跳过此版。
-    if (updateState.showUpdateCard && updateState.latestVersion != null) {
-        UpdateCard(
-            currentVersion = updateState.currentVersion,
-            latestVersion = updateState.latestVersion ?: "",
-            apkSizeBytes = updateState.apkSizeBytes,
-            downloading = updateState.downloading,
-            downloadProgress = updateState.downloadProgress,
-            downloaded = updateState.downloadedFilePath != null,
-            error = updateState.error,
-            onUpdate = { updateViewModel.startDownload() },
-            onInstall = { updateViewModel.installUpdate() },
-            onSkip = { updateViewModel.skipVersion() },
-            onDismiss = { updateViewModel.dismissCard() },
-        )
-    }
+    // 更新卡片只由 NavHost 渲染（C4-P2-1：这里曾与 NavHost 用同一条件渲染
+    // 同一张卡，两卡精确重叠；关闭后焦点由 NavHost 的 focusRestoreTick 恢复）。
 
     // 远程输入二维码弹窗。
     if (showQrModal) {

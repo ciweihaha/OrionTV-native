@@ -36,6 +36,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.PrimaryButton
@@ -44,7 +45,6 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -127,10 +127,11 @@ fun HomeScreen(
             val rows = uiState.rows
             if (row in rows.indices && card in 0 until rows[row].items.size) {
                 listState.scrollToItem(row + 1)
-                delay(120)
                 rowListStates[rows[row].title]?.scrollToItem(card)
-                delay(120)
-                cardRequesters["$row:$card"]?.requestFocus()
+                // C4-P2-2：目标卡片尚未组合完成时重试请求，仍失败才回默认锚点，
+                // 不再静默丢焦点；固定 120ms 延时已去掉（B4-P2-23 同款问题）。
+                val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry() ?: false
+                if (!restored) firstChipRequester.requestFocus()
             } else {
                 firstChipRequester.requestFocus()
             }

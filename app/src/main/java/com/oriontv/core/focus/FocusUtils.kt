@@ -7,6 +7,7 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import kotlinx.coroutines.delay
 
 /**
  * 焦点工具，照抄 plan §3.3 的焦点规则。
@@ -38,6 +39,22 @@ fun Modifier.onKeyUp(onKeyUp: (KeyEvent) -> Boolean): Modifier = this.onKeyEvent
 /** 首选焦点锚点：挂到“当前项”上，打开时 requestFocus 到它。 */
 fun Modifier.preferredFocus(requester: FocusRequester): Modifier =
     this.focusRequester(requester)
+
+/**
+ * 可靠的焦点请求（C4-P2-2/B4-P2-23）：目标尚未组合完成时 requestFocus()
+ * 静默返回 false——固定延时 120ms 猜时序不可靠；循环重试直到成功或耗尽。
+ * 返回是否最终落上焦点（调用方据此决定是否回退到默认锚点）。
+ */
+suspend fun FocusRequester.requestFocusWithRetry(
+    attempts: Int = 5,
+    delayMs: Long = 100L,
+): Boolean {
+    repeat(attempts) {
+        if (requestFocus()) return true
+        delay(delayMs)
+    }
+    return false
+}
 
 /**
  * 长按挡误触：长按后松手会跟一次 onClick，用 1 秒时间窗挡掉
