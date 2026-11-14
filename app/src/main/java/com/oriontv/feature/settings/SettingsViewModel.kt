@@ -3,6 +3,7 @@ package com.oriontv.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.core.util.ApiUrlPolicy
+import com.oriontv.core.util.AppLog
 import com.oriontv.data.local.CredentialsStore
 import com.oriontv.data.repo.AuthRepository
 import com.oriontv.data.repo.SettingsRepository
@@ -137,18 +138,43 @@ class SettingsViewModel @Inject constructor(
             }
             return
         }
+        // B7-P2-3：isSaving 守卫必须在 launch 前同步置位——旧实现在 launch
+        // 体内才置位，快速双击两次调用都通过守卫、并发跑两路保存。
+        _uiState.update { it.copy(isSaving = true, error = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isSaving = true, error = null) }
             try {
                 // B6-P2-10：按 trim 后比较——只改空格不算换地址，不误登出。
                 val apiChanged = state.apiUrl.trim() != state.savedApiUrl.trim()
                 if (apiChanged) {
-                    authRepository.logout()
+                    // B7-P2-9：登出失败（旧服务器不可达）不再中止保存——logout
+                    // 的 finally 里本地凭据已清，继续写新地址；否则一次网络
+                    // 抖动就丢登录态、新地址也没存上。
+                    // 注：不能改成“先写新地址再登出”——logout() 读
+                    // currentApiBaseUrl()，先写会让登出打到新服务器上。
+                    try {
+                        authRepository.logout()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        AppLog.w("SettingsViewModel", "保存源地址：登出旧服务器失败，继续保存：${e.message}")
+                    }
                     // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
                     try { credentialsStore.clear() } catch (_: Exception) { }
                 }
-                settingsRepository.setApiBaseUrl(state.apiUrl.trim())
-                settingsRepository.setM3uUrl(state.m3uUrl.trim())
+                try {
+                    settingsRepository.setApiBaseUrl(state.apiUrl.trim())
+                    settingsRepository.setM3uUrl(state.m3uUrl.trim())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // B7-P2-9：写新地址失败时回滚旧地址（登出已无法回滚，
+                    // 至少地址不丢），再按原路报“保存失败”。
+                    runCatching {
+                        settingsRepository.setApiBaseUrl(state.savedApiUrl)
+                        settingsRepository.setM3uUrl(state.savedM3uUrl)
+                    }
+                    throw e
+                }
                 // B4-P1-3：换源地址先把 storageType 清为空（未知态），旧服务
                 // 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次
                 // 数据访问自动重拉，成功前按本地模式兜底并提示用户。
@@ -206,37 +232,48 @@ class SettingsViewModel @Inject constructor(
 
     // ---- 播放设置：即改即存 ----
 
-    fun setNextEpisodeOverlay(value: Boolean) {
-        viewModelScope.launch { settingsRepository.setNextEpisodeOverlayEnabled(value) }
+    /**
+     * B7-P2-8：即改即存的写操作统一走这里——DataStore 写失败时记日志、不崩溃；
+     * 旧实现每个 setter 都是裸 launch，写失败即未捕获异常、整个协程崩掉。
+     */
+    private fun saveSetting(tag: String, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("SettingsViewModel", "保存设置失败：$tag：${e.message}")
+            }
+        }
     }
 
-    fun setAutoSkipIntro(value: Boolean) {
-        viewModelScope.launch { settingsRepository.setAutoSkipIntro(value) }
-    }
+    fun setNextEpisodeOverlay(value: Boolean) =
+        saveSetting("nextEpisodeOverlay") { settingsRepository.setNextEpisodeOverlayEnabled(value) }
 
-    fun setSpeedMemory(value: Boolean) {
-        viewModelScope.launch { settingsRepository.setSpeedMemory(value) }
-    }
+    fun setAutoSkipIntro(value: Boolean) =
+        saveSetting("autoSkipIntro") { settingsRepository.setAutoSkipIntro(value) }
 
-    fun setIncognitoMode(value: Boolean) {
-        viewModelScope.launch { settingsRepository.setIncognitoMode(value) }
-    }
+    fun setSpeedMemory(value: Boolean) =
+        saveSetting("speedMemory") { settingsRepository.setSpeedMemory(value) }
 
-    fun setBackgroundPlayback(value: Boolean) {
-        viewModelScope.launch { settingsRepository.setBackgroundPlayback(value) }
-    }
+    fun setIncognitoMode(value: Boolean) =
+        saveSetting("incognitoMode") { settingsRepository.setIncognitoMode(value) }
+
+    fun setBackgroundPlayback(value: Boolean) =
+        saveSetting("backgroundPlayback") { settingsRepository.setBackgroundPlayback(value) }
 
     /** 片头时长：点按循环切换档位（0/30/60/90/120 秒，0=不跳）。 */
     fun cycleIntroSkipSeconds() {
         val current = _uiState.value.introSkipSeconds
         val idx = INTRO_SKIP_OPTIONS.indexOf(current)
         val next = INTRO_SKIP_OPTIONS[(idx + 1) % INTRO_SKIP_OPTIONS.size]
-        viewModelScope.launch { settingsRepository.setIntroSkipSeconds(next) }
+        saveSetting("introSkipSeconds") { settingsRepository.setIntroSkipSeconds(next) }
     }
 
     /** 远程输入开关：存设置，随启随停 12346 服务。 */
     fun setRemoteInputEnabled(value: Boolean) {
-        viewModelScope.launch {
+        saveSetting("remoteInputEnabled") {
             settingsRepository.setRemoteInputEnabled(value)
             if (value) {
                 remoteInputManager.start()
@@ -248,7 +285,7 @@ class SettingsViewModel @Inject constructor(
 
     /** 开机恢复：如果设置里开着远程输入，把服务拉起来（失败时设置页红字提示）。 */
     fun restoreRemoteInputIfEnabled() {
-        viewModelScope.launch {
+        saveSetting("restoreRemoteInput") {
             if (settingsRepository.remoteInputEnabled.first()) {
                 remoteInputManager.start()
             }
