@@ -340,8 +340,6 @@ class MoonTvApi @Inject constructor(
      * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
      * 4xx 不重试；401 时调 onUnauthorized 重登，成功且请求幂等则重试一次；
      * 响应体超 2MB 拒绝。
-     * [maxRetries] 供 getResources 的外层重试用（D-P2-1）：外层第 2 次调内层时传 0，
-     * 不让内层 3 次重试被重复执行一遍。
      *
      * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
      * 两者都由专用 catch 原样抛出，不会被下面的 `catch (e: IOException)` 接住重跑
@@ -351,7 +349,6 @@ class MoonTvApi @Inject constructor(
     private suspend fun execute(
         request: Request,
         timeoutSeconds: Long = ApiClient.DEFAULT_TIMEOUT_SECONDS,
-        maxRetries: Int = ApiClient.MAX_RETRIES,
     ): String {
         // B4-P2-1：按超时分档缓存 client——每次 newBuilder().build() 都会新建
         // 连接池与线程池；超时档位有限（默认 15s / 搜索 60s / 版本检查 20s），缓存复用。
@@ -364,7 +361,7 @@ class MoonTvApi @Inject constructor(
         }
         var lastError: Exception? = null
         var refreshAttempted = false
-        repeat(maxRetries + 1) { attempt ->
+        repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
                 client.newCall(request).executeCancellable().use { response ->
                     if (response.code == 401) {
@@ -402,7 +399,7 @@ class MoonTvApi @Inject constructor(
                 // IOException），在这里重抛 CE，不再重试。
                 context.ensureActive()
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
-                if (attempt < maxRetries) delay(retryBackoffMs)
+                if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
             }
         }
         throw lastError ?: IOException("请求失败")
