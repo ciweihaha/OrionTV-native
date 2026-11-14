@@ -71,6 +71,15 @@ import kotlinx.coroutines.delay
 private fun isMenuKey(event: KeyEvent): Boolean =
     event.nativeKeyEvent.keyCode == android.view.KeyEvent.KEYCODE_MENU
 
+/** 面板焦点落点（可单测）：分组含当前台落当前台行，否则落该分组第 0 行。 */
+internal fun resolvePanelFocusIndex(
+    filtered: List<M3uParser.Channel>,
+    currentUrl: String?,
+): Int = filtered.indexOfFirst { it.url == currentUrl }.coerceAtLeast(0)
+
+/** 频道行是否消费按键（可单测）：EPG 弹窗打开时不消费，焦点事件交给弹窗处理。 */
+internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
+
 /**
  * 直播页（ui-design.md §5.4）：
  * 全屏视频（Media3 PlayerView）；OK 打开右侧频道面板（420dp，从右滑入 180ms，浮层底）；
@@ -94,6 +103,21 @@ fun LiveScreen(
     LaunchedEffect(Unit) {
         viewModel.init()
         rootRequester.requestFocus()
+    }
+
+    // 关闭面板/弹窗/退出确认、或空态加载出频道后，焦点回根
+    //（与 ChannelPanel 面板打开时落焦点的做法一致；面板打开时面板自己管焦点）。
+    LaunchedEffect(
+        uiState.panelOpen,
+        uiState.epgDialogChannel,
+        uiState.exitConfirmOpen,
+        uiState.channels.isEmpty(),
+    ) {
+        if (uiState.channels.isNotEmpty() && !uiState.panelOpen &&
+            uiState.epgDialogChannel == null && !uiState.exitConfirmOpen
+        ) {
+            rootRequester.requestFocus()
+        }
     }
 
     // 数字键：Compose 的 Key 没有 Digit0..9 常量，用原生 keyCode 映射
@@ -247,7 +271,10 @@ fun LiveScreen(
         // 断流且自动处理耗尽：失败页（重试 / 打开频道面板手动换台）。
         if (uiState.playbackFailed && uiState.channels.isNotEmpty()) {
             PlaybackFailedOverlay(
-                onRetry = { viewModel.retryCurrent() },
+                onRetry = {
+                    viewModel.retryCurrent()
+                    rootRequester.requestFocus()
+                },
                 onOpenPanel = { viewModel.openPanel() },
             )
         }
@@ -314,6 +341,7 @@ fun LiveScreen(
                 channelIndex = uiState.channels.indexOfFirst { it.url == channel.url },
                 epg = uiState.epg,
                 nowMs = uiState.nowMs,
+                onClose = { viewModel.closeEpgDialog() },
             )
         }
 
@@ -503,10 +531,11 @@ private fun ChannelPanel(
     val listState = rememberLazyListState()
     val currentRequester = remember { FocusRequester() }
 
-    // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）。
+    // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）；
+    // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
     LaunchedEffect(uiState.panelOpen, uiState.selectedGroup) {
         if (uiState.panelOpen) {
-            val idx = filtered.indexOfFirst { it.url == currentChannel?.url }.coerceAtLeast(0)
+            val idx = resolvePanelFocusIndex(filtered, currentChannel?.url)
             listState.scrollToItem(idx)
             delay(100)
             currentRequester.requestFocus()
@@ -580,12 +609,13 @@ private fun ChannelPanel(
                 )
             }
         } else {
+            val hasCurrentInGroup = filtered.any { it.url == currentChannel?.url }
             LazyColumn(
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.weight(1f),
             ) {
-                itemsIndexed(filtered, key = { _, channel -> channel.url }) { _, channel ->
+                itemsIndexed(filtered, key = { _, channel -> channel.url }) { index, channel ->
                     val globalIndex = uiState.channels.indexOfFirst { it.url == channel.url }
                     val isCurrent = channel.url == currentChannel?.url
                     ChannelRow(
@@ -595,7 +625,13 @@ private fun ChannelPanel(
                         isFavorite = uiState.favorites.any { it.url == channel.url },
                         epg = uiState.epg,
                         nowMs = uiState.nowMs,
-                        focusRequester = if (isCurrent) currentRequester else null,
+                        // 当前台在分组里落当前行；不在时落第 0 行（与上面滚动落点一致）。
+                        focusRequester = if (isCurrent || (!hasCurrentInGroup && index == 0)) {
+                            currentRequester
+                        } else {
+                            null
+                        },
+                        epgDialogOpen = uiState.epgDialogChannel != null,
                         onClick = { onSelectChannel(globalIndex) },
                         onFocus = { onFocusChannel(globalIndex) },
                         onLongPress = { onToggleFavorite(channel) },
@@ -640,6 +676,7 @@ private fun ChannelRow(
     epg: EpgParser.EpgData?,
     nowMs: Long,
     focusRequester: FocusRequester?,
+    epgDialogOpen: Boolean = false,
     onClick: () -> Unit,
     onFocus: () -> Unit,
     onLongPress: () -> Unit,
@@ -656,6 +693,9 @@ private fun ChannelRow(
             if (it.isFocused) onFocus()
         }
         .onKeyEvent { event ->
+            // EPG 弹窗打开时行不消费任何键：否则弹窗无可聚焦行、焦点留在行上，
+            // OK 会被行优先消费成选台。返回 false 交给根 Box 的弹窗分支处理。
+            if (!shouldConsumeChannelRowKey(epgDialogOpen)) return@onKeyEvent false
             when (event.key) {
                 Key.DirectionCenter, Key.Enter -> {
                     when (event.type) {
@@ -770,6 +810,7 @@ private fun EpgDialog(
     channelIndex: Int,
     epg: EpgParser.EpgData?,
     nowMs: Long,
+    onClose: () -> Unit = {},
 ) {
     val programmes = remember(epg, channel) {
         epg?.let { EpgParser.programmesFor(it, channel.tvgId, channel.name) }.orEmpty()
@@ -777,14 +818,19 @@ private fun EpgDialog(
     val currentIndex = programmes.indexOfFirst { it.startAt <= nowMs && nowMs < it.endAt }
     val listState = rememberLazyListState()
     val currentRequester = remember { FocusRequester() }
+    val closeRequester = remember { FocusRequester() }
 
     // 打开 / 切台时滚到正在播的节目并落焦点；无正在播节目时落第一行（plan §3.3 第 2 条）。
+    // 无节目单时落“关闭”按钮：否则弹窗无可聚焦行，焦点留在面板行上，OK 会误切台。
     LaunchedEffect(channel.url) {
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)
             delay(100)
             currentRequester.requestFocus()
+        } else {
+            delay(100)
+            closeRequester.requestFocus()
         }
     }
 
@@ -846,11 +892,22 @@ private fun EpgDialog(
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "← → 切换频道 · OK / 返回 关闭",
-                style = OrionTextStyles.Small,
-                color = OrionColors.TextWeak,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "← → 切换频道 · OK / 返回 关闭",
+                    style = OrionTextStyles.Small,
+                    color = OrionColors.TextWeak,
+                )
+                SecondaryButton(
+                    text = "关闭",
+                    onClick = onClose,
+                    modifier = Modifier.preferredFocus(closeRequester),
+                )
+            }
         }
     }
 }
