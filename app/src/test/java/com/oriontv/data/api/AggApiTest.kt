@@ -16,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -176,4 +177,12 @@ class AggApiTest {
             runBlocking { api(client).version() }
         }
     }
+    @Test
+    fun `only timeout trips the breaker`() {
+        // 体超时（OkHttp 读/连接超时）才记熔断；DNS 失败、其他 IO 错只重试（第 6 轮 fa348ad）
+        assertTrue(AggApi.isBodyTimeout(SocketTimeoutException("timeout")))
+        assertFalse(AggApi.isBodyTimeout(UnknownHostException("ysp.ciweihaha.win")))
+        assertFalse(AggApi.isBodyTimeout(IOException("connection reset")))
+    }
+
 }
