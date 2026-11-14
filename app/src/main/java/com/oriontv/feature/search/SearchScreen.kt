@@ -148,23 +148,24 @@ fun SearchScreen(
                 )
             }
             uiState.error != null -> {
+                val error = uiState.error
                 // 无结果提示 + “换个关键词”；其他错误也给分型文案 + 重试。
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    Text(text = uiState.error.message, style = OrionTextStyles.Body)
+                    Text(text = error?.message ?: "", style = OrionTextStyles.Body)
                     Spacer(modifier = Modifier.height(24.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         PrimaryButton(text = "换个关键词", onClick = { viewModel.clearQuery() })
-                        if (uiState.error !is SearchError.Empty) {
+                        if (error !is SearchError.Empty) {
                             SecondaryButton(
                                 text = "重试",
                                 onClick = { viewModel.searchNow(uiState.searchedQuery) },
                             )
                         }
-                        if (uiState.error is SearchError.NotConfigured) {
+                        if (error is SearchError.NotConfigured) {
                             SecondaryButton(
                                 text = "去设置",
                                 onClick = { onNavigate(OrionRoute.Settings) },

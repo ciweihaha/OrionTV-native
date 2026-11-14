@@ -220,9 +220,10 @@ fun PlayScreen(
         }
 
         if (uiState.error != null) {
+            val errorMessage = uiState.error
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = uiState.error, style = OrionTextStyles.Body)
+                    Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                     Spacer(modifier = Modifier.height(24.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         PrimaryButton(text = "重试", onClick = { viewModel.retry() })

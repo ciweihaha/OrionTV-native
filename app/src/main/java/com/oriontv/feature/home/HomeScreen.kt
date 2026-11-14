@@ -131,9 +131,10 @@ fun HomeScreen(
                 }
             }
             if (uiState.error != null && uiState.rows.isEmpty()) {
+                val errorMessage = uiState.error
                 item {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = uiState.error, style = OrionTextStyles.Body)
+                        Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                         Spacer(modifier = Modifier.height(24.dp))
                         SecondaryButton(text = "重试", onClick = { viewModel.refresh() })
                     }

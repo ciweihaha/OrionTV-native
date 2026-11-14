@@ -121,6 +121,8 @@ dependencies {
     // 图片
     implementation(libs.coil3.compose)
     implementation(libs.coil3.compose.core.android)
+    // Coil 3 核心默认不加载网络图，必须加网络 fetcher，否则远程海报全空白
+    implementation(libs.coil3.network.okhttp)
 
     // 本地存储
     implementation(libs.room.runtime)

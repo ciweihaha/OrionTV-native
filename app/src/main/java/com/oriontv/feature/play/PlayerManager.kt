@@ -113,8 +113,6 @@ class PlayerManager @Inject constructor(
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
                 PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED -> PlayerError.Network
-                PlaybackException.ERROR_CODE_IO_SSL,
-                PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED -> PlayerError.Ssl
                 else -> PlayerError.Other(error.message)
             }
         }

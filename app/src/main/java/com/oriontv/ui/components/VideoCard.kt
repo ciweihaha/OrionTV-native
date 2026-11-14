@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
+import coil3.network.NetworkHeaders
+import coil3.network.httpHeaders
 import coil3.request.ImageRequest
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.ui.theme.OrionColors
@@ -147,7 +149,11 @@ fun posterImageRequest(url: String): ImageRequest {
         .apply {
             val host = runCatching { java.net.URL(url).host.lowercase() }.getOrDefault("")
             if (host.endsWith(".doubanio.com")) {
-                addHeader("Referer", "https://movie.douban.com/")
+                httpHeaders(
+                    NetworkHeaders.Builder()
+                        .add("Referer", "https://movie.douban.com/")
+                        .build(),
+                )
             }
         }
         .build()

@@ -48,6 +48,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 coil3-compose = { group = "io.coil-kt.coil3", name = "coil-compose-android", version.ref = "coil3" }
 # AsyncImage 在 core-android 里（包名是 coil3.compose，没有 io 前缀）
 coil3-compose-core-android = { group = "io.coil-kt.coil3", name = "coil-compose-core-android", version.ref = "coil3" }
+# Coil 3 核心默认不加载网络图，必须显式加网络 fetcher（骨架删掉它是错的，
+# 删了之后所有远程海报都加载不出来）；httpHeaders 扩展也在 network-core 里。
+coil3-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil3" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
