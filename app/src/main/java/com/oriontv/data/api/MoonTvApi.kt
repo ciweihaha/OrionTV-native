@@ -29,12 +29,14 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * 登录会话口（D-P1-4）：AuthRepository 只依赖登录/登出/401 续期三个成员，
  * 单测可用内存假实现，不用 MockK、不用真网。
+ * getFavorites 供 B-P2-16 冷启动轻量会话校验用（只判 401/网络错，不读内容）。
  */
 interface AuthApi {
     var onUnauthorized: (suspend () -> Boolean)?
     /** B4-P1-2：分型返回（见 [MoonTvApi.LoginResult]），只有 WrongCredentials 才算密码错。 */
     suspend fun login(baseUrl: String, username: String?, password: String?): MoonTvApi.LoginResult
     suspend fun logout(baseUrl: String)
+    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite>
 }
 
 /**
@@ -216,7 +218,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 收藏（服务端模式） ----
 
-    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
+    override suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
