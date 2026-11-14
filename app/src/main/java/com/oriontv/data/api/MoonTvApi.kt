@@ -23,6 +23,16 @@ import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
+ * 登录会话口（D-P1-4）：AuthRepository 只依赖登录/登出/401 续期三个成员，
+ * 单测可用内存假实现，不用 MockK、不用真网。
+ */
+interface AuthApi {
+    var onUnauthorized: (suspend () -> Boolean)?
+    suspend fun login(baseUrl: String, username: String?, password: String?): Boolean
+    suspend fun logout(baseUrl: String)
+}
+
+/**
  * 用户 MoonTV 服务（{baseURL}，设置里填，默认空串）。接口路径与 plan §5.2 原样一致。
  * 除注明外 GET、15 秒超时、响应体 2MB 上限；401 时用已保存凭据重登后仅对幂等请求
  * （GET/DELETE/HEAD）重试一次，POST 不自动重试；超时/网络错/5xx 最多重试 3 次，退避 1 秒。
@@ -37,12 +47,12 @@ class MoonTvApi @Inject constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** 重试退避（毫秒），默认 1 秒固定；单测可注入 0 以免真睡。 */
     private val retryBackoffMs: Long = ApiClient.RETRY_BACKOFF_MS,
-) {
+) : AuthApi {
     /**
      * 401 续期回调：由 Auth 层注入（用已保存凭据重登）。
      * 返回 true 表示续期成功，可对幂等请求重试一次。
      */
-    var onUnauthorized: (suspend () -> Boolean)? = null
+    override var onUnauthorized: (suspend () -> Boolean)? = null
 
     // 播放记录/收藏键的转义只在 [generateKey] 里按段做；整键转义 escapeKey
     // 已删除（D-P2-12）：零调用方，留着只会让后来人误用、把 P1-1
@@ -50,7 +60,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 登录 / 配置 ----
 
-    suspend fun login(baseUrl: String, username: String?, password: String?): Boolean =
+    override suspend fun login(baseUrl: String, username: String?, password: String?): Boolean =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/login"
             val body = buildJsonObject {
@@ -66,7 +76,7 @@ class MoonTvApi @Inject constructor(
             }
         }
 
-    suspend fun logout(baseUrl: String) {
+    override suspend fun logout(baseUrl: String) {
         withContext(ioDispatcher) {
             val request = Request.Builder()
                 .url("${baseUrl.trimEnd('/')}/api/logout")
