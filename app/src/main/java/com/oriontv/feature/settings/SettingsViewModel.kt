@@ -42,7 +42,9 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            combine(
+            // 显式类型参数：9 条流元素类型不一（String/Boolean/Int），Kotlin 2.4 起
+            // 不再允许把 reified 类型参数推断为交集类型。
+            combine<Any?, SettingsUiState>(
                 settingsRepository.apiBaseUrl,
                 settingsRepository.m3uUrl,
                 settingsRepository.nextEpisodeOverlayEnabled,

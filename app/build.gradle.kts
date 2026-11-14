@@ -8,6 +8,16 @@ plugins {
     alias(libs.plugins.room)
 }
 
+// Hilt 2.58 自带的 kotlin-metadata-jvm 2.2.20 最高只读 metadata 2.3.0，
+// Kotlin 2.4 编译器产出的 metadata 是 2.4.0，hiltJavaCompile 会炸
+//（"maximum supported version is 2.3.0"）。强制全配置用与 Kotlin 编译器
+// 同版的 kotlin-metadata-jvm；升 Kotlin 时同步改这里。
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.21")
+    }
+}
+
 android {
     namespace = "com.oriontv"
     // compileSdk/targetSdk 35：CONTRACT 写的是 34，但 CONTRACT 指定的依赖本身要求 35
@@ -78,8 +88,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
     buildFeatures {
         compose = true
