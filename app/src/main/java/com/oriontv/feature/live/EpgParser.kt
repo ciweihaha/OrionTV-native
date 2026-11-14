@@ -4,6 +4,7 @@ import com.oriontv.core.util.TimeUtils
 import kotlinx.serialization.Serializable
 import java.io.StringReader
 import java.util.logging.Logger
+import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
@@ -45,16 +46,15 @@ object EpgParser {
         factory.isXIncludeAware = false
         // 防 XXE：真实节目单以 `<!DOCTYPE tv SYSTEM "xmltv.dtd">` 开头，
         // disallow-doctype-decl 会直接拒掉整份 EPG（P0-1），故不禁用 DOCTYPE；
-        // 改为禁止拉取外部 DTD/Schema（JAXP 属性名用字符串常量——Android 的
-        // javax.xml.XMLConstants 没有 ACCESS_EXTERNAL_DTD/SCHEMA 这两个字段），
+        // 改为禁止拉取外部 DTD/Schema（ACCESS_EXTERNAL_DTD/SCHEMA=""），
         // 再关外部实体与外部 DTD 加载。特性逐项记日志，真机行为仍待用户验证。
         val features = linkedMapOf<String, Boolean>()
         features["ACCESS_EXTERNAL_DTD"] = runCatching {
-            factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "")
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
             true
         }.getOrDefault(false)
         features["ACCESS_EXTERNAL_SCHEMA"] = runCatching {
-            factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalSchema", "")
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
             true
         }.getOrDefault(false)
         features["external-general-entities"] = runCatching {
