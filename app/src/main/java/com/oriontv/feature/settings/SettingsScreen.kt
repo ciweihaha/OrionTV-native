@@ -34,7 +34,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.Text
@@ -369,6 +374,16 @@ private fun SettingsInputRow(
     focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
+    // P2-1（第 5 轮）：输入框内部用 TextFieldValue，才能知道光标位置。
+    // 左键行为：光标不在行首时只移光标（消费掉松键，不冒泡到父级回菜单）；
+    // 光标已在行首时放行，冒泡到父级回左菜单。光标移动发生在 KeyDown，
+    // 这里只拦 KeyUp，不影响光标移动本身。真机待验证。
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+    LaunchedEffect(value) {
+        if (value != textFieldValue.text) {
+            textFieldValue = TextFieldValue(value, TextRange(value.length))
+        }
+    }
     Column {
         Text(text = label, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         Spacer(modifier = Modifier.height(8.dp))
@@ -385,15 +400,26 @@ private fun SettingsInputRow(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
+                value = textFieldValue,
+                onValueChange = {
+                    textFieldValue = it
+                    onValueChange(it.text)
+                },
                 textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                    .onFocusChanged { focused = it.isFocused },
+                    .onFocusChanged { focused = it.isFocused }
+                    .onKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionLeft) {
+                            // 光标不在行首：消费松键，只移光标，不回菜单。
+                            textFieldValue.selection.start > 0
+                        } else {
+                            false
+                        }
+                    },
                 decorationBox = { innerTextField ->
-                    if (value.isEmpty()) {
+                    if (textFieldValue.text.isEmpty()) {
                         Text(text = "请输入$label", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
                     }
                     innerTextField()
