@@ -43,7 +43,12 @@ class FavoritesFocusPersistenceTest {
             ),
         )
         assertTrue(restored[FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE] ?: false)
-        assertEquals(12, restored[FavoritesViewModel.SAVED_FOCUS_INDEX] ?: -1)
+        // 注意：不能直接写 assertEquals(12, restored[...] ?: -1)——
+        // elvis 里的 -1 字面量会让重载解析走到 assertEquals(long, long)，
+        // 取指被推断成 Long，存的 Int 在运行时转 Long 抛 ClassCastException。
+        // 先读进定型 Int 变量再断言（第 5 轮测试 bug 的单行修复，生产代码不动）。
+        val restoredIndex: Int = restored[FavoritesViewModel.SAVED_FOCUS_INDEX] ?: -1
+        assertEquals(12, restoredIndex)
     }
 
     @Test
