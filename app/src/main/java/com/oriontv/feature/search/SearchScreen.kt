@@ -2,6 +2,7 @@ package com.oriontv.feature.search
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -40,6 +42,7 @@ import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.feature.remoteinput.RemoteInputModal
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
+import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.VideoCard
@@ -67,6 +70,9 @@ fun SearchScreen(
     val searchRequester = remember { FocusRequester() }
     val scanButtonRequester = remember { FocusRequester() }
     val resultRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+    // C6-P1-1：搜索框获焦态（焦点描边用；首进默认落点却无任何焦点态时，
+    // 用户分不清焦点在搜索框还是在旁边的按钮上）。
+    var searchBoxFocused by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
     // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
@@ -122,6 +128,21 @@ fun SearchScreen(
         }
     }
 
+    // B6-P2-12：requester map 只增不减——结果数缩减时清掉越界下标的旧
+    // FocusRequester，不让 map 随每次搜索无限长（下标只作组合内锚点，
+    // 返回恢复走条目键，不冲突）。
+    LaunchedEffect(uiState.results.size) {
+        resultRequesters.keys.removeAll { it < 0 || it >= uiState.results.size }
+    }
+
+    // B6-P2-11：Toast 2 秒消失（ui-design.md §5.8，与播放页/设置页同款）。
+    LaunchedEffect(uiState.toast?.id) {
+        if (uiState.toast != null) {
+            delay(2000)
+            viewModel.consumeToast()
+        }
+    }
+
     // 配对成功后自动关弹窗（RN RemoteControlModal 的 onHandshake 同款）。
     LaunchedEffect(Unit) {
         viewModel.remoteInputHandshakes.collect { showRemoteInputModal = false }
@@ -155,6 +176,13 @@ fun SearchScreen(
                     .weight(1f)
                     .clip(RoundedCornerShape(OrionDimens.CapsuleRadius))
                     .background(OrionColors.Surface)
+                    // C6-P1-1：获焦时 2dp 品牌色描边（设计稿焦点三件套：描边），
+                    // 未获焦 1dp 分隔线——搜索框是首进默认落点，必须看得见焦点。
+                    .border(
+                        width = if (searchBoxFocused) 2.dp else 1.dp,
+                        color = if (searchBoxFocused) OrionColors.Brand else OrionColors.Divider,
+                        shape = RoundedCornerShape(OrionDimens.CapsuleRadius),
+                    )
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
                 BasicTextField(
@@ -163,7 +191,8 @@ fun SearchScreen(
                     textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .preferredFocus(searchRequester),
+                        .preferredFocus(searchRequester)
+                        .onFocusChanged { searchBoxFocused = it.isFocused },
                     decorationBox = { innerTextField ->
                         if (uiState.query.isEmpty()) {
                             Text(text = "输入关键词搜索", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
@@ -243,11 +272,23 @@ fun SearchScreen(
                             onClick = {
                                 showKeyboard = false
                                 viewModel.searchHistory(keyword)
+                                // C6-P1-3：点历史 chip 后整行被卸载（query 非空即
+                                // 不渲染历史行），焦点无处可去；先回搜索框——
+                                // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
+                                searchRequester.requestFocus()
                             },
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
-                        SecondaryButton(text = "删除", onClick = { viewModel.deleteHistory(keyword) })
+                        SecondaryButton(
+                            text = "删除",
+                            onClick = {
+                                viewModel.deleteHistory(keyword)
+                                // C6-P1-3：删掉的 chip 行被卸载，焦点回搜索框，
+                                // 不留在已卸载的按钮上。
+                                searchRequester.requestFocus()
+                            },
+                        )
                     }
                 }
             }
@@ -328,6 +369,19 @@ fun SearchScreen(
                     text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字，也可以打开屏上键盘输入。",
                     style = OrionTextStyles.Body,
                     color = OrionColors.TextSecondary,
+                )
+            }
+        }
+
+        // B6-P2-11：Toast 底部居中。
+        if (uiState.toast != null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                OrionToast(
+                    message = uiState.toast?.message ?: "",
+                    modifier = Modifier.padding(bottom = 48.dp),
                 )
             }
         }

@@ -10,6 +10,8 @@ import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.repo.SearchHistoryRepository
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.remoteinput.RemoteInputManager
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -54,12 +57,26 @@ class SearchViewModel @Inject constructor(
     private var searchJob: Job? = null
     private var generation = 0
 
-    /** P1-4：首进才落搜索框锚点；返回时恢复 savedResultKey。 */
-    var initialFocusDone: Boolean = false
+    /**
+     * P1-4：首进才落搜索框锚点；返回时恢复 savedResultKey。
+     * C6-P1-2：原来是 plain var——导航轨切走后 ViewModel 被清、锚点就丢了，
+     * 回来又落搜索框；改 SavedStateHandle（与首页/详情/收藏同款），
+     * 进程重建也不丢。
+     */
+    var initialFocusDone: Boolean
+        get() = savedStateHandle[SAVED_INITIAL_FOCUS_DONE] ?: false
+        set(value) {
+            savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
+        }
 
     /** P2-9（第 5 轮）：返回焦点恢复按条目键（source+id）锚定，不按 index——
-     * 搜索结果刷新后 index 对应的已是另一张卡。 */
-    var savedResultKey: String? = null
+     * 搜索结果刷新后 index 对应的已是另一张卡。
+     * C6-P1-2：同上，plain var 改 SavedStateHandle。 */
+    var savedResultKey: String?
+        get() = savedStateHandle[SAVED_RESULT_KEY]
+        set(value) {
+            savedStateHandle[SAVED_RESULT_KEY] = value
+        }
 
     init {
         // C4-P1-5：搜索切走再回不丢结果——query/结果/searchedQuery 进 SavedStateHandle
@@ -193,8 +210,11 @@ class SearchViewModel @Inject constructor(
             // P2-11：空结果不缓存（服务端刚上新内容时用户不再持续看到空结果）。
             if (shouldCacheSearchResults(results)) cache.put(query, results)
             // 无痕模式不写搜索历史（阶段 4）。
+            // B6-P2-11：服务端写失败的返回值不再丢弃——写失败时给一次 Toast，
+            // 不假装已写进历史（展示用的 history 仍从服务端重读，不会“幽灵出现”）。
+            var historySaved = true
             if (!settingsRepository.incognitoMode.first()) {
-                searchHistoryRepository.add(query)
+                historySaved = searchHistoryRepository.add(query)
             }
             // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
             // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
@@ -205,6 +225,11 @@ class SearchViewModel @Inject constructor(
                 error = if (results.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
                 history = searchHistoryRepository.getLatest20(),
+                toast = if (!historySaved) {
+                    nextToastEvent("搜索历史保存失败，本次搜索不受影响")
+                } else {
+                    null
+                },
             )
             saveSearchState()
         } catch (e: TimeoutCancellationException) {
@@ -284,6 +309,11 @@ class SearchViewModel @Inject constructor(
         saveSearchState()
     }
 
+    /** B6-P2-11：Toast 消费后清掉（与 PlayScreen/SettingsScreen 同款 2 秒机制）。 */
+    fun consumeToast() {
+        _uiState.update { it.copy(toast = null) }
+    }
+
     /** P2-14：扫码弹窗内一键开启远程输入（存设置 + 拉起服务）。 */
     fun enableRemoteInput() {
         viewModelScope.launch {
@@ -300,6 +330,10 @@ class SearchViewModel @Inject constructor(
         const val SAVED_QUERY_KEY = "search_query"
         const val SAVED_SEARCHED_QUERY_KEY = "search_searched_query"
         const val SAVED_RESULTS_KEY = "search_results_json"
+
+        /** C6-P1-2：焦点锚点键（首进标记 + 上次结果条目键，导航轨切走/进程重建也不丢）。 */
+        const val SAVED_INITIAL_FOCUS_DONE = "search_initial_focus_done"
+        const val SAVED_RESULT_KEY = "search_saved_result_key"
     }
 }
 
@@ -394,4 +428,6 @@ data class SearchUiState(
     val suggestions: List<String> = emptyList(),
     /** 最近一次真正执行搜索的词（用于无结果提示）。 */
     val searchedQuery: String = "",
+    /** 一次性提示（B6-P2-11：搜索历史服务端写失败，Toast，2 秒消失）。 */
+    val toast: ToastEvent? = null,
 )

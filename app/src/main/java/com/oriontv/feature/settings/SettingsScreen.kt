@@ -90,6 +90,10 @@ fun SettingsScreen(
     // 与焦点恢复（focusRestoreTick 用 menuRequesters[selectedMenu]）对不上；
     // 改 rememberSaveable，首进焦点也落 menuRequesters[selectedMenu]。
     var selectedMenu by rememberSaveable { mutableStateOf(0) }
+    // C6-P2-4：selectedMenu 经 rememberSaveable 恢复后未钳制——将来菜单缩减
+    // （如某项下线），恢复出的旧下标越界，menuRequesters[selectedMenu] 直接
+    // 崩溃；读侧一律走钳制后的 menuIndex，写侧（onClick）只产生合法下标。
+    val menuIndex = selectedMenu.coerceIn(0, (SettingsMenu.size - 1).coerceAtLeast(0))
     var showQrModal by remember { mutableStateOf(false) }
     val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
     val rightRequester = remember { FocusRequester() }
@@ -98,12 +102,12 @@ fun SettingsScreen(
     var qrModalWasOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        menuRequesters[selectedMenu].requestFocus()
+        menuRequesters[menuIndex].requestFocus()
         viewModel.restoreRemoteInputIfEnabled()
     }
     // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。
     LaunchedEffect(focusRestoreTick) {
-        if (focusRestoreTick > 0) menuRequesters[selectedMenu].requestFocus()
+        if (focusRestoreTick > 0) menuRequesters[menuIndex].requestFocus()
     }
     // Toast 2 秒消失（ui-design.md §5.8）。
     // B5-P2-11：以事件 id 为 key——同文案连续两次时 id 不同，effect 一定重跑。
@@ -171,7 +175,7 @@ fun SettingsScreen(
                 SettingsMenu.forEachIndexed { index, label ->
                     SettingsMenuItem(
                         label = label,
-                        selected = selectedMenu == index,
+                        selected = menuIndex == index,
                         modifier = Modifier.focusRequester(menuRequesters[index]),
                         onClick = { selectedMenu = index },
                         onRight = { rightRequester.requestFocus() },
@@ -186,14 +190,14 @@ fun SettingsScreen(
                     .padding(start = 48.dp)
                     .onKeyUp { event ->
                         if (event.key == Key.DirectionLeft) {
-                            menuRequesters[selectedMenu].requestFocus()
+                            menuRequesters[menuIndex].requestFocus()
                             true
                         } else {
                             false
                         }
                     },
             ) {
-                when (selectedMenu) {
+                when (menuIndex) {
                     0 -> SourceSettings(
                         apiUrl = uiState.apiUrl,
                         onApiUrlChange = { viewModel.onApiUrlChange(it) },

@@ -60,6 +60,13 @@ fun FavoritesScreen(
     val cardRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     val gridState = rememberLazyGridState()
 
+    // B6-P2-12：requester map 只增不减——条目数缩减时清掉越界下标的旧
+    // FocusRequester，不让 map 随每次刷新无限长（下标只作组合内锚点，
+    // 返回恢复走记录键，不冲突）。
+    LaunchedEffect(uiState.items.size) {
+        cardRequesters.keys.removeAll { it < 0 || it >= uiState.items.size }
+    }
+
     // 每次回页都刷新（详情页取消收藏后返回即不残留）。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
