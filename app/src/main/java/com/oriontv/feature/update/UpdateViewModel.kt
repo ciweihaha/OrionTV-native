@@ -133,8 +133,10 @@ class UpdateViewModel @Inject constructor(
             _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
-                downloader.cleanOldApkFiles(dir)
-                val dest = File(dir, "OrionTV_v${System.currentTimeMillis()}.apk")
+                // D-P1-5：目标文件名按版本固定（不用时间戳），中断后再次下载能命中
+                // 同一残文件、从断点续下；D-P2-18：删掉这里重复的清旧包，
+                // downloadAndVerify 内部已在校验通过后清理。
+                val dest = File(dir, "OrionTV_v$latest.apk")
                 downloader.downloadAndVerify(latest, dest) { written, total ->
                     val progress = if (total > 0) ((written * 100 / total).toInt()) else 0
                     _uiState.update { it.copy(downloadProgress = progress.coerceIn(0, 100)) }
