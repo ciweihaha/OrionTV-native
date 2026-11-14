@@ -1,9 +1,5 @@
 package com.oriontv.feature.update
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -41,9 +37,13 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 三个按钮间方向键循环，不会移到背后页面；关闭后焦点由调用方还给触发点。
  * 焦点（P1-2，第 5 轮）：焦点随卡片状态走，不只打开瞬间抢一次——
  * 下载完成变“立即安装”时落回主按钮；超限包打开时主按钮禁用，直接落
- * 到“跳过此版”；下载中主按钮禁用，落到“稍后”（下载继续在后台跑）。
+ * 到“跳过此版”；下载中主按钮禁用，落到“取消下载”（下载继续在后台跑
+ * 的是“稍后”，不是取消——见 B6-P1-3 语义）。
  * P2-21：旧写死通用“更新说明”已去掉（服务端不返回 changelog 时不编文案）。
  * P2-22：安装包超 200MB 时禁用更新按钮并提示（下载层原有拦截，卡片层提前拦）。
+ * B6-P1-3：下载中卡片上有“取消下载”按钮（接 UpdateViewModel.cancelDownload）——
+ * 取消只停本次下载，卡片保持打开，可点“立即更新”重新下载；“稍后”是关卡、
+ * 下载继续在后台跑，两者语义不同，不可互相替代。
  */
 @Composable
 fun UpdateCard(
@@ -58,37 +58,38 @@ fun UpdateCard(
     onInstall: () -> Unit,
     onSkip: () -> Unit,
     onDismiss: () -> Unit,
+    onCancelDownload: () -> Unit = {},
 ) {
     val primaryRequester = remember { FocusRequester() }
     val skipRequester = remember { FocusRequester() }
     val dismissRequester = remember { FocusRequester() }
+    val cancelRequester = remember { FocusRequester() }
 
     // P2-22：超 200MB 的包卡片层直接禁用更新按钮（不让用户点进去才报 TooLarge）。
     val apkTooLarge = apkSizeBytes != null && apkSizeBytes > UpdateDownloader.MAX_APK_BYTES
 
     // P1-2（第 5 轮）：焦点随卡片状态走，不只打开瞬间抢一次。
     // 下载完成变“立即安装”时落回主按钮；超限包打开时主按钮禁用，直接落
-    // 到“跳过此版”；下载中主按钮禁用，落到“稍后”（下载继续在后台跑）。
+    // 到“跳过此版”；下载中主按钮禁用，落到“取消下载”（B6-P1-3，下载中
+    // 可取消是首要操作；“稍后”在它左边，仍可方向键到达）。
     LaunchedEffect(downloading, downloaded, apkTooLarge) {
         when {
             downloaded -> primaryRequester.requestFocus()
-            downloading -> dismissRequester.requestFocus()
+            downloading -> cancelRequester.requestFocus()
             apkTooLarge -> skipRequester.requestFocus()
             else -> primaryRequester.requestFocus()
         }
     }
 
-    AnimatedVisibility(
-        visible = true,
-        enter = fadeIn(animationSpec = tween(150)),
-        exit = fadeOut(animationSpec = tween(150)),
+    // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——卡片由调用方
+    // `if (showUpdateCard)` 条件组合，卸载时整棵子树直接移除，exit 动画
+    // 永远跑不到；留着只是死代码。
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(OrionColors.Background.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(OrionColors.Background.copy(alpha = 0.6f)),
-            contentAlignment = Alignment.Center,
-        ) {
             Column(
                 modifier = Modifier
                     .width(OrionDimens.DialogWidth)
@@ -136,7 +137,7 @@ fun UpdateCard(
                 }
                 Spacer(modifier = Modifier.height(24.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // P1-5 焦点陷阱：三按钮左右循环，上下回主按钮，不出弹窗。
+                    // P1-5 焦点陷阱：按钮左右循环，上下回主按钮，不出弹窗。
                     when {
                         downloaded -> PrimaryButton(
                             text = "立即安装",
@@ -210,15 +211,31 @@ fun UpdateCard(
                             .focusRequester(dismissRequester)
                             .focusProperties {
                                 left = skipRequester
-                                right = primaryRequester
+                                right = if (downloading) cancelRequester else primaryRequester
                                 up = primaryRequester
                                 down = primaryRequester
                             },
                     )
+                    // B6-P1-3：下载中才出现“取消下载”——停本次下载，卡片保持打开，
+                    // 可点“立即更新”重新下载；与“稍后”（关卡、后台继续下）语义不同。
+                    if (downloading) {
+                        Spacer(modifier = Modifier.width(16.dp))
+                        SecondaryButton(
+                            text = "取消下载",
+                            onClick = onCancelDownload,
+                            modifier = Modifier
+                                .focusRequester(cancelRequester)
+                                .focusProperties {
+                                    left = dismissRequester
+                                    right = primaryRequester
+                                    up = primaryRequester
+                                    down = primaryRequester
+                                },
+                        )
+                    }
                 }
             }
         }
-    }
 }
 
 private fun formatApkSize(bytes: Long): String = when {

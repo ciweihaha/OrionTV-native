@@ -290,6 +290,8 @@ fun OrionNavHost(
                 onInstall = { updateViewModel.installUpdate() },
                 onSkip = { updateViewModel.skipVersion() },
                 onDismiss = { updateViewModel.dismissCard() },
+                // B6-P1-3：下载中卡片上的“取消下载”入口（之前 cancelDownload() 零调用方）。
+                onCancelDownload = { updateViewModel.cancelDownload() },
             )
         }
         // C4-P1-1：首页双按退出的第一次提示。

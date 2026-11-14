@@ -164,10 +164,14 @@ class UpdateViewModel @Inject constructor(
     fun startDownload() {
         val latest = _uiState.value.latestVersion ?: return
         if (_uiState.value.downloading) return
+        // B6-P2-3：双发守卫必须在协程体外就生效——旧实现只在 launch 体内
+        // 置 downloading=true，两次快速连点都通过守卫、起两个下载任务，
+        // 后一个覆盖 downloadJob，前一个泄漏且 cancelDownload 停不掉。
+        // 这里同步置位，第二次调用直接 return。
+        _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
         // B5-P2-6：下载任务留 Job + 取消入口；取消后 downloading 清掉，
         // 否则 startDownload 开头的 downloading 守卫会一直拦、再也下不了。
         downloadJob = viewModelScope.launch {
-            _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
                 // D-P1-5：目标文件名按版本固定（不用时间戳），中断后再次下载能命中
@@ -194,9 +198,6 @@ class UpdateViewModel @Inject constructor(
                     // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
                     it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
                 }
-            } catch (e: CancellationException) {
-                // D-P2-2：取消原样抛出，不转成 error 状态。
-                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(

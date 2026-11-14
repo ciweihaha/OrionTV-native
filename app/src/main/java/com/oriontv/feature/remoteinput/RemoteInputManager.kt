@@ -44,6 +44,13 @@ data class RemoteInputState(
 class RemoteInputManager @Inject constructor() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startMutex = Mutex()
+    /**
+     * B6-P2-1：启停共享状态的同步——stopLocked() 只能在持 startMutex 时进
+     * （stop() 的排队协程、start() 的停服分支），release() 是单线程退出
+     * 路径；再加 synchronized 兜底，防住 start() 锁外路径与 release()
+     * 并发重入（两次 server.stop()/轮换任务取消交错）。
+     */
+    private val stopLock = Any()
     private val router = RemoteInputRouter(
         onMessage = { message ->
             scope.launch {
@@ -70,9 +77,16 @@ class RemoteInputManager @Inject constructor() {
     private val _handshakes = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     val handshakes: SharedFlow<Unit> = _handshakes.asSharedFlow()
 
+    // B6-P2-1：启停共享状态跨线程读写（start() 是 suspend、stop() 调
+    // scope.launch、轮换任务读 desiredRunning），plain var 有可见性问题，
+    // 改 @Volatile；临界区本身仍由 startMutex/stopLock 守。
+    @Volatile
     private var server: RemoteInputServer? = null
+    @Volatile
     private var starting = false
+    @Volatile
     private var stopRequestedDuringStart = false
+    @Volatile
     private var desiredRunning = false
     /** 配对码定期轮换任务（P1-10：每 5 分钟换一次码并刷新 state 里的显示）。 */
     private var rotationJob: Job? = null
@@ -87,6 +101,9 @@ class RemoteInputManager @Inject constructor() {
         }
         // B-P1-9：取消不重启（finally 里的重起只针对正常失败路径）。
         var cancelled = false
+        // B6-P2-1：本轮启动的 server（局部变量）——发布到共享字段前先在
+        // startMutex 内与停服标志一起复核，见下面的发布点。
+        var startedServer: RemoteInputServer? = null
         try {
             // B4-P2-8：网络枚举 + 端口绑定是阻塞操作，切 IO 线程做，不占主线程。
             val ip = withContext(Dispatchers.IO) { RemoteInputServer.localIpAddress() }
@@ -95,10 +112,17 @@ class RemoteInputManager @Inject constructor() {
             }
             val newServer = RemoteInputServer(router)
             withContext(Dispatchers.IO) { newServer.start() }
+            startedServer = newServer
             val code = router.rotatePairingCode()
-            server = newServer
-            if (stopRequestedDuringStart) {
-                stopLocked()
+            // B6-P2-1：发布 server 与读停服标志放同一把锁里——之前 server 在
+            // 锁外赋值，stop() 的停服协程可能刚把 server 置 null，随后这里
+            // 又把已启动的 server 赋回去，服务漏跑、状态却显示已停。
+            val stopNow = startMutex.withLock {
+                server = startedServer
+                stopRequestedDuringStart
+            }
+            if (stopNow) {
+                startMutex.withLock { stopLocked() }
                 return
             }
             startRotationJob()
@@ -127,8 +151,10 @@ class RemoteInputManager @Inject constructor() {
                     )
                 }
             }
-            runCatching { server?.stop() }
-            server = null
+            // B6-P2-1：只停本轮起的 server（局部变量），不碰共享字段里
+            // 可能已是新一轮的 server；共享字段只在仍是本轮 server 时才清。
+            runCatching { startedServer?.stop() }
+            startMutex.withLock { if (server === startedServer) server = null }
             router.clearPairingCode()
         } finally {
             startMutex.withLock {
@@ -162,19 +188,24 @@ class RemoteInputManager @Inject constructor() {
 
     /** 同步停服（供 stop() 内部与启动后立刻停的路径用，调用方须已持锁或在单线程路径）。 */
     private fun stopLocked() {
-        rotationJob?.cancel()
-        rotationJob = null
-        runCatching { server?.stop() }
-        server = null
-        router.clearPairingCode()
-        _state.update {
-            it.copy(
-                isRunning = false,
-                serverUrl = null,
-                pairingCode = null,
-                error = null,
-                pairingCodeRemainingSeconds = null,
-            )
+        // B6-P2-1：synchronized 兜底并发重入——正常路径调用方已持 startMutex，
+        // 但 release() 是锁外直接调，并发时两次 stopLocked 会交错停 server、
+        // 取消轮换任务；锁内保证一次只跑一个停服。
+        synchronized(stopLock) {
+            rotationJob?.cancel()
+            rotationJob = null
+            runCatching { server?.stop() }
+            server = null
+            router.clearPairingCode()
+            _state.update {
+                it.copy(
+                    isRunning = false,
+                    serverUrl = null,
+                    pairingCode = null,
+                    error = null,
+                    pairingCodeRemainingSeconds = null,
+                )
+            }
         }
     }
 
