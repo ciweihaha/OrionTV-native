@@ -86,7 +86,8 @@ class LiveCacheStore @Inject constructor(
             json,
         ) ?: return // 超 5MB 不落盘（与拉取上限对齐）
         val file = m3uFile(m3uUrl)
-        runCatching { file.writeText(encoded) }
+        // D6-P2-10：原子写（临时文件 + 重命名），写一半被杀也不留撕裂缓存。
+        runCatching { writeTextAtomically(file, encoded) }
         // D-P2-14：换 m3u 地址后删掉旧地址的孤儿缓存文件（只留当前这一个）。
         runCatching { pruneStaleM3uCacheFiles(context.filesDir, keepFileName = file.name) }
     }
@@ -102,17 +103,39 @@ class LiveCacheStore @Inject constructor(
             EpgCache(ts = System.currentTimeMillis(), data = data),
             json,
         ) ?: return // 超 3MB 不落盘
-        runCatching { epgFile().writeText(encoded) }
+        // D6-P2-10：原子写（临时文件 + 重命名），写一半被杀也不留撕裂缓存。
+        runCatching { writeTextAtomically(epgFile(), encoded) }
+    }
+}
+
+/**
+ * 第 6 轮 D6-P2-10：原子写文本文件——先写同目录临时文件，再重命名覆盖目标；
+ * 同目录 rename 在 Android/Linux 上是原子操作，写一半被杀时目标要么是旧的
+ * 完整内容、要么是新的完整内容，永不出现半截文件。重命名失败时删临时文件
+ * 并抛错（调用方 runCatching 吞掉，只丢一次缓存，不崩溃）。纯函数，可单测。
+ */
+internal fun writeTextAtomically(file: File, text: String) {
+    val dir = file.parentFile ?: throw java.io.IOException("缓存文件无父目录：${file.path}")
+    val tmp = File(dir, "${file.name}.tmp-${System.nanoTime()}")
+    try {
+        tmp.writeText(text)
+        if (!tmp.renameTo(file)) {
+            throw java.io.IOException("缓存原子重命名失败：${tmp.path} -> ${file.path}")
+        }
+    } catch (e: Exception) {
+        runCatching { tmp.delete() }
+        throw e
     }
 }
 
 /**
  * 删掉除当前文件外的 `m3u_cache_*.json`（D-P2-14：换 m3u 地址后旧缓存文件
- * 永久残留）。纯函数逻辑，可单测；其他文件不动。
+ * 永久残留），以及原子写崩溃后残留的 `m3u_cache_*.json.tmp-*` 临时文件。
+ * 纯函数逻辑，可单测；其他文件不动。
  */
 internal fun pruneStaleM3uCacheFiles(dir: File, keepFileName: String) {
     dir.listFiles { f ->
-        f.isFile && f.name.startsWith("m3u_cache_") && f.name.endsWith(".json") &&
-            f.name != keepFileName
+        f.isFile && f.name.startsWith("m3u_cache_") && f.name != keepFileName &&
+            (f.name.endsWith(".json") || ".tmp-" in f.name)
     }?.forEach { runCatching { it.delete() } }
 }

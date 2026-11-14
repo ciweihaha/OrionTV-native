@@ -3,6 +3,7 @@ package com.oriontv.data.api
 import com.oriontv.core.util.VersionUtils
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -42,6 +43,14 @@ class AggApi @Inject constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** 重试退避（毫秒），默认 [ApiClient.backoffMs]；单测可注入 0 以免真睡。 */
     private val retryBackoffMs: (attempt: Int) -> Long = { ApiClient.backoffMs(it) },
+    /** videoList 专用的体超时熔断器（与 version 分开）；单测可注入假时钟。 */
+    val videoListCircuitBreaker: CircuitBreaker = CircuitBreaker(),
+    /** version 专用的体超时熔断器（与 videoList 分开）；单测可注入假时钟。 */
+    val versionCircuitBreaker: CircuitBreaker = CircuitBreaker(),
+    /** 第 6 轮 D6-P2-1：主版本端点单独预算（毫秒）；单测可注入小值。 */
+    private val primaryVersionTimeoutMs: Long = PRIMARY_VERSION_TIMEOUT_MS,
+    /** 第 6 轮 D6-P2-1：版本检查总预算（毫秒），主备合计封顶。 */
+    private val totalVersionTimeoutMs: Long = TOTAL_VERSION_TIMEOUT_MS,
 ) {
     companion object {
         const val BASE_URL = "https://ysp.ciweihaha.win/agg"
@@ -49,13 +58,16 @@ class AggApi @Inject constructor(
         /** 是否体超时：OkHttp 读/连接超时抛 SocketTimeoutException，才记熔断（第 6 轮 fa348ad）。 */
         internal fun isBodyTimeout(e: IOException): Boolean =
             e is java.net.SocketTimeoutException
+
+        /**
+         * 第 6 轮 D6-P2-1：主端点单独预算 25 秒——主端点挂起时 25 秒即走备用，
+         * 不再被 60 秒总超时卡在第 3 次尝试中途、备用根本跑不到。
+         */
+        const val PRIMARY_VERSION_TIMEOUT_MS = 25_000L
+
+        /** 版本检查总预算 60 秒（主备合计封顶，不变）。 */
+        const val TOTAL_VERSION_TIMEOUT_MS = 60_000L
     }
-
-    /** videoList 专用的体超时熔断器（与 version 分开）。 */
-    val videoListCircuitBreaker = CircuitBreaker()
-
-    /** version 专用的体超时熔断器（与 videoList 分开）。 */
-    val versionCircuitBreaker = CircuitBreaker()
 
     /** B4-P2-1：按读超时分档缓存的 OkHttpClient（见 executeWithRetry）。 */
     private val clientsByTimeout = ConcurrentHashMap<Long, OkHttpClient>()
@@ -110,23 +122,31 @@ class AggApi @Inject constructor(
      * 主端点 `agg?ac=oriontv-version` 失败后调备用端点 `agg/oriontv-version.json`，
      * 备用版本同样过 [VersionUtils.isValidVersion]，两者都失败才报错（P1-2）。
      * 解码/校验异常包成 [AggInvalidResponseException]，与 videoList 一致（P1-7）。
+     * D6-P2-1：主端点单独 25 秒预算——主端点挂起时 25 秒即走备用，总预算仍封顶 60 秒。
      */
     suspend fun version(): String = withContext(ioDispatcher) {
         // B4-P2-14：总超时 60 秒——主备两端点各最多重试 3 次、单次 20 秒，
         // 最坏 ~3 分钟；无取消入口时调用方（更新检查）会被钉死。
-        withTimeout(60_000) {
+        withTimeout(totalVersionTimeoutMs) {
             val primaryUrl = BASE_URL.toHttpUrl().newBuilder()
                 .addQueryParameter("ac", "oriontv-version")
                 .build()
             val fallbackUrl = "$BASE_URL/oriontv-version.json".toHttpUrl()
-            try {
-                fetchVersion(primaryUrl)
+            val primary = try {
+                withTimeout(primaryVersionTimeoutMs) { fetchVersion(primaryUrl) }
+            } catch (e: TimeoutCancellationException) {
+                // 区分“主端点自己的 25 秒预算耗尽”与“调用方取消”：
+                // 前者 job 仍活跃，落到备用；后者 ensureActive 重抛取消。
+                coroutineContext.ensureActive()
+                null
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 // 主端点失败（网络/5xx/结构异常）才走备用；两者都失败时抛备用端的错。
-                fetchVersion(fallbackUrl)
+                null
             }
+            if (primary != null) return@withTimeout primary
+            fetchVersion(fallbackUrl)
         }
     }
 
@@ -228,38 +248,47 @@ class AggApi @Inject constructor(
         // B4-P2-14：repeat 的 lambda 不是 suspend 上下文，coroutineContext
         // 在里面不可见，先在外面捕获。
         val context = coroutineContext
-        repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
-            try {
-                val response = client.newCall(request).executeCancellable()
-                if (response.isSuccessful) {
-                    // D-P1-1：200 只表示响应头到了，不记成功；成功由调用方在体完整读完后记。
-                    return response
+        // D6-P2-2：循环内 try/catch 盖不住的三条取消路径——重试退避 delay()、
+        // catch 里的 ensureActive()、外层 withTimeout——都在这里统一释放试探
+        // 租约再重抛；否则黑窗从 60 秒拖到约 120 秒（租约自然过期才放下一个探针）。
+        // 内层 CancellationException catch 已释放过一次，releaseProbe 是幂等的。
+        try {
+            repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
+                try {
+                    val response = client.newCall(request).executeCancellable()
+                    if (response.isSuccessful) {
+                        // D-P1-1：200 只表示响应头到了，不记成功；成功由调用方在体完整读完后记。
+                        return response
+                    }
+                    response.close()
+                    if (!ApiClient.shouldRetryOnStatus(response.code)) {
+                        // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                        // catch 吞掉重跑（与文档“4xx 不重试”相悖；第 6/7 轮约定）。
+                        throw NonRetryableHttpException(response.code)
+                    }
+                    lastError = IOException("HTTP ${response.code}")
+                } catch (e: NonRetryableHttpException) {
+                    // B5-P2-4：4xx 确定性失败不记熔断，但探针租约要释放，
+                    // 否则这次试探占着租约 120 秒才放下一个。
+                    circuitBreaker.releaseProbe()
+                    throw IOException("HTTP ${e.statusCode}，不重试")
+                } catch (e: CancellationException) {
+                    // B5-P2-4：取消的探针同样释放租约。
+                    circuitBreaker.releaseProbe()
+                    throw e
+                } catch (e: IOException) {
+                    lastError = e
+                    // B4-P2-14：取消已触发时（call.cancel() 让 execute 抛
+                    // IOException），在这里重抛 CE，不再重试。
+                    context.ensureActive()
                 }
-                response.close()
-                if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                    // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
-                    // catch 吞掉重跑（与文档“4xx 不重试”相悖；第 6/7 轮约定）。
-                    throw NonRetryableHttpException(response.code)
+                if (attempt < ApiClient.MAX_RETRIES) {
+                    delay(retryBackoffMs(attempt + 1))
                 }
-                lastError = IOException("HTTP ${response.code}")
-            } catch (e: NonRetryableHttpException) {
-                // B5-P2-4：4xx 确定性失败不记熔断，但探针租约要释放，
-                // 否则这次试探占着租约 120 秒才放下一个。
-                circuitBreaker.releaseProbe()
-                throw IOException("HTTP ${e.statusCode}，不重试")
-            } catch (e: CancellationException) {
-                // B5-P2-4：取消的探针同样释放租约。
-                circuitBreaker.releaseProbe()
-                throw e
-            } catch (e: IOException) {
-                lastError = e
-                // B4-P2-14：取消已触发时（call.cancel() 让 execute 抛
-                // IOException），在这里重抛 CE，不再重试。
-                context.ensureActive()
             }
-            if (attempt < ApiClient.MAX_RETRIES) {
-                delay(retryBackoffMs(attempt + 1))
-            }
+        } catch (e: CancellationException) {
+            circuitBreaker.releaseProbe()
+            throw e
         }
         // 只在“请求最终失败且原因为读超时”时计数一次（按请求，不按每次重试尝试；
         // 第 6 轮 fa348ad 只改了判据、仍按尝试计数，一次超时请求会记 4 次直接击穿阈值 3——这里按请求记一次）。
