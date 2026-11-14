@@ -1,20 +1,39 @@
 package com.oriontv.feature.favorites
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.oriontv.data.api.Favorite
+import com.oriontv.data.repo.FavoritesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 收藏 ViewModel 骨架。M1 补：收藏列表（倒序）、点按进详情、回页刷新。 */
+/** 收藏页 ViewModel（ui-design.md §5.6）：网格倒序（新收藏在前），回页即刷新。 */
 @HiltViewModel
-class FavoritesViewModel @Inject constructor() : ViewModel() {
-    private val _uiState = MutableStateFlow(FavoritesUiState())
+class FavoritesViewModel @Inject constructor(
+    private val favoritesRepository: FavoritesRepository,
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(FavoritesUiState(isLoading = true))
     val uiState: StateFlow<FavoritesUiState> = _uiState.asStateFlow()
+
+    init {
+        refresh()
+    }
+
+    /** 每次回页都刷新（详情页内取消收藏后返回即不残留）。 */
+    fun refresh() {
+        viewModelScope.launch {
+            val items = favoritesRepository.getAllWithKeys()
+            _uiState.value = FavoritesUiState(items = items)
+        }
+    }
 }
 
 data class FavoritesUiState(
     val isLoading: Boolean = false,
-    val error: String? = null,
+    /** (记录键 `${source}+${id}`, 收藏)；最新在前。 */
+    val items: List<Pair<String, Favorite>> = emptyList(),
 )

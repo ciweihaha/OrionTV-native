@@ -14,14 +14,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -30,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
+import com.oriontv.core.focus.preferredFocus
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.PrimaryButton
@@ -41,25 +44,21 @@ import com.oriontv.ui.theme.OrionTextStyles
 
 /**
  * 搜索页（ui-design.md §5.5）：
- * 顶部搜索框 + 远程输入（手机扫码）入口；输入时出联想 chip；
- * 结果网格；无结果提示 + “换个关键词”；搜索历史 chip，可逐个删除；
- * 搜索不清空输入，返回保留上次结果。
- * M1 补：防抖 300ms、同一词 5 分钟缓存、真实搜索接口、历史持久化。
+ * 顶部搜索框（遥控逐字输入；保留扫码远程输入入口，服务本身是阶段 4 的事，
+ * 这里只留入口）+ 输入时下方联想 chips；
+ * 结果网格；无结果提示 + “换个关键词”；搜索历史 chips（可单条删除）；
+ * 搜索不清空已输内容，返回搜索页保留上次结果。
  */
 @Composable
 fun SearchScreen(
     onNavigate: (OrionRoute) -> Unit,
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
-    var query by remember { mutableStateOf("") }
-    val history = remember { mutableStateListOf("示例剧集", "新闻联播") }
-    val suggestions = if (query.isNotBlank()) {
-        listOf("$query 相关 1", "$query 相关 2", "$query 相关 3")
-    } else {
-        emptyList()
-    }
-    // 占位结果：有输入时出 8 条，否则为空。
-    val results = if (query.isNotBlank()) (1..8).toList() else emptyList()
+    val uiState by viewModel.uiState.collectAsState()
+    val searchRequester = remember { FocusRequester() }
+    var showRemoteInputHint by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { searchRequester.requestFocus() }
 
     Column(
         modifier = Modifier
@@ -76,12 +75,14 @@ fun SearchScreen(
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
                 BasicTextField(
-                    value = query,
-                    onValueChange = { query = it },
+                    value = uiState.query,
+                    onValueChange = { viewModel.onQueryChange(it) },
                     textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .preferredFocus(searchRequester),
                     decorationBox = { innerTextField ->
-                        if (query.isEmpty()) {
+                        if (uiState.query.isEmpty()) {
                             Text(text = "输入关键词搜索", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
                         }
                         innerTextField()
@@ -89,61 +90,115 @@ fun SearchScreen(
                 )
             }
             Spacer(modifier = Modifier.width(16.dp))
-            SecondaryButton(text = "手机扫码输入", onClick = { /* M1：远程输入二维码 */ })
+            SecondaryButton(
+                text = "手机扫码输入",
+                onClick = { showRemoteInputHint = true },
+            )
+        }
+        if (showRemoteInputHint) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "远程输入服务即将开通，敬请期待",
+                style = OrionTextStyles.Small,
+                color = OrionColors.TextSecondary,
+            )
         }
 
-        // 联想 chip（输入时出现）。
-        if (suggestions.isNotEmpty()) {
+        // 联想 chip（输入时出现，点按直接搜）。
+        if (uiState.suggestions.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                items(suggestions) { suggestion ->
-                    CategoryChip(text = suggestion, selected = false, onClick = { query = suggestion })
+                items(uiState.suggestions) { suggestion ->
+                    CategoryChip(
+                        text = suggestion,
+                        selected = false,
+                        onClick = { viewModel.searchNow(suggestion) },
+                    )
                 }
             }
         }
 
-        // 搜索历史 chip（可逐个删除）。
-        if (query.isBlank() && history.isNotEmpty()) {
+        // 搜索历史 chip（可单条删除；点按填回并搜索）。
+        if (uiState.query.isBlank() && uiState.history.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = "搜索历史", style = OrionTextStyles.SectionTitle)
             Spacer(modifier = Modifier.height(12.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                items(history.size) { index ->
-                    CategoryChip(
-                        text = "${history[index]} ×",
-                        selected = false,
-                        onClick = { history.removeAt(index) },
-                    )
+                items(uiState.history) { keyword ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CategoryChip(
+                            text = keyword,
+                            selected = false,
+                            onClick = { viewModel.searchHistory(keyword) },
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        SecondaryButton(text = "×", onClick = { viewModel.deleteHistory(keyword) })
+                    }
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-        if (query.isNotBlank() && results.isEmpty()) {
-            // 无结果提示 + “换个关键词”。
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                Text(text = "没有找到相关内容，换个关键词试试", style = OrionTextStyles.Body)
-                Spacer(modifier = Modifier.height(24.dp))
-                PrimaryButton(text = "换个关键词", onClick = { query = "" })
+        when {
+            uiState.isLoading -> {
+                Text(
+                    text = "正在搜索…",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.TextSecondary,
+                )
             }
-        } else if (results.isNotEmpty()) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(6),
-                horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
-                verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                items(results) { i ->
-                    VideoCard(
-                        title = "搜索结果 $i",
-                        posterUrl = "",
-                        meta = "2026",
-                        onClick = { onNavigate(OrionRoute.Detail(source = "agg", id = "search$i")) },
-                    )
+            uiState.error != null -> {
+                // 无结果提示 + “换个关键词”；其他错误也给分型文案 + 重试。
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text(text = uiState.error.message, style = OrionTextStyles.Body)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        PrimaryButton(text = "换个关键词", onClick = { viewModel.clearQuery() })
+                        if (uiState.error !is SearchError.Empty) {
+                            SecondaryButton(
+                                text = "重试",
+                                onClick = { viewModel.searchNow(uiState.searchedQuery) },
+                            )
+                        }
+                        if (uiState.error is SearchError.NotConfigured) {
+                            SecondaryButton(
+                                text = "去设置",
+                                onClick = { onNavigate(OrionRoute.Settings) },
+                            )
+                        }
+                    }
+                }
+            }
+            uiState.results.isNotEmpty() -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(6),
+                    horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
+                    verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(uiState.results) { result ->
+                        VideoCard(
+                            title = result.title,
+                            posterUrl = result.poster,
+                            meta = listOfNotNull(
+                                result.year?.takeIf { it.isNotBlank() },
+                                result.source_name,
+                            ).joinToString(" · ").ifBlank { null },
+                            onClick = {
+                                onNavigate(
+                                    OrionRoute.Detail(
+                                        source = result.source,
+                                        id = result.id.orEmpty(),
+                                        title = result.title,
+                                    ),
+                                )
+                            },
+                        )
+                    }
                 }
             }
         }

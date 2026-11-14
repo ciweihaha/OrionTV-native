@@ -79,6 +79,14 @@ object AppModule {
     @Singleton
     fun provideEpgRepository(client: OkHttpClient): EpgRepository =
         EpgRepository(client, Dispatchers.IO)
+
+    @Provides
+    @Singleton
+    fun provideDetailRepository(
+        moonTvApi: MoonTvApi,
+        settingsRepository: com.oriontv.data.repo.SettingsRepository,
+    ): com.oriontv.data.repo.DetailRepository =
+        com.oriontv.data.repo.DetailRepository(moonTvApi, settingsRepository, Dispatchers.IO)
 }
 
 /** 进程内 CookieJar：按 host 存 cookie，过期自动丢弃。 */
