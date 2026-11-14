@@ -294,8 +294,9 @@ class MoonTvApiTest {
     fun `401 refresh success retries POST once`() {
         // D6-P2-8：401 是鉴权前置拒绝、请求未被执行，续期成功后 POST 也重发一次，
         // 不再报“登录已过期”让用户手动重试。
+        var seen = 0
         val (client, calls, _) = countingClient { request ->
-            if (calls.get() == 1) responseFor(request, 401, "") else {
+            if (seen++ == 0) responseFor(request, 401, "") else {
                 responseFor(request, 200, """{"success": true}""")
             }
         }
