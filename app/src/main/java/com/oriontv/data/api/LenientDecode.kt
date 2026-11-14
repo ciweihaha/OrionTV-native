@@ -1,6 +1,6 @@
 package com.oriontv.data.api
 
-import android.util.Log
+import com.oriontv.core.util.AppLog
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -24,8 +24,8 @@ object LenientDecode {
             }
         }
         if (skipped > 0) {
-            // B4-P2-21：java.util.logging 在 Android 上无输出，改 android.util.Log。
-            Log.w("LenientDecode", "列表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
+            // D-P2-11：走 AppLog（android.util.Log），java.util.logging 在真机上看不到。
+            AppLog.w("LenientDecode", "列表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
         }
         return out
     }
@@ -42,8 +42,7 @@ object LenientDecode {
             }
         }
         if (skipped > 0) {
-            // B4-P2-21：同上。
-            Log.w("LenientDecode", "表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
+            AppLog.w("LenientDecode", "表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
         }
         return out
     }

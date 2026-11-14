@@ -1,8 +1,8 @@
 package com.oriontv.data.api
 
+import com.oriontv.core.util.AppLog
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -51,12 +51,9 @@ class MoonTvApi @Inject constructor(
      */
     var onUnauthorized: (suspend () -> Boolean)? = null
 
-    /**
-     * 播放记录/收藏键在 URL 里的转义：`%`→`%25`、`+`→`%2B`（plan §5.2）。
-     * 旧整键转义（会误转分隔符 `+`），已由伴生对象 [generateKey] 取代，仅保留兼容；
-     * 请求方法不再对整键调用它，只做一次 URLEncoder.encode。
-     */
-    fun escapeKey(key: String): String = key.replace("%", "%25").replace("+", "%2B")
+    // 播放记录/收藏键的转义只在 [generateKey] 里按段做；整键转义 escapeKey
+    // 已删除（D-P2-12）：零调用方，留着只会让后来人误用、把 P1-1
+    // （整键转义误转分隔符 `+`）重新引入。
 
     // ---- 登录 / 配置 ----
 
@@ -84,10 +81,11 @@ class MoonTvApi @Inject constructor(
             }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url(url).post(body).build()
             // 超时/5xx 做一次重试（401 与 ok=false 不重试，那是密码错）。
+            // D-P2-2：可取消执行，协程取消时取消底层 Call（不是裸 execute）。
             var lastError: Throwable? = null
             repeat(2) { attempt ->
                 try {
-                    okHttpClient.newCall(request).execute().use { response ->
+                    okHttpClient.newCall(request).executeCancellable().use { response ->
                         when {
                             response.isSuccessful -> {
                                 val text = readBodyLimited(response)
@@ -114,6 +112,8 @@ class MoonTvApi @Inject constructor(
                 if (attempt == 0) delay(retryBackoffMs)
             }
             return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
+            }
+            return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
         }
 
     suspend fun logout(baseUrl: String) {
@@ -121,7 +121,7 @@ class MoonTvApi @Inject constructor(
             val request = Request.Builder()
                 .url("${baseUrl.trimEnd('/')}/api/logout")
                 .post("{}".toRequestBody("application/json".toMediaType())).build()
-            runCatching { okHttpClient.newCall(request).execute().close() }
+            runCatching { okHttpClient.newCall(request).executeCancellable().close() }
             // finally 里无条件清登录标记（由调用方清 StorageKeys.AUTH_COOKIES）
         }
     }
@@ -219,6 +219,12 @@ class MoonTvApi @Inject constructor(
             runCatching { json.decodeFromString<Map<String, Favorite>>(body) }.getOrElse {
                 val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
                 if (raw == null) {
+                    // D-P2-15：体是 JSON 数组时之前静默返回空表（收藏页空白、无任何日志）；
+                    // 现在记一条可见日志再返回空表，服务端改 shape 时能在线上排查。
+                    if (runCatching { json.parseToJsonElement(body) }.getOrNull() is JsonArray) {
+                        AppLog.w("MoonTvApi", "getFavorites 收到 JSON 数组体（期望对象表），返回空表")
+                        return@withContext emptyMap()
+                    }
                     runCatching {
                         val single = json.decodeFromString<Favorite>(body)
                         mapOf((key ?: "") to single)
@@ -324,6 +330,8 @@ class MoonTvApi @Inject constructor(
      * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
      * 4xx 不重试；401 时调 onUnauthorized 重登，成功且请求幂等则重试一次；
      * 响应体超 2MB 拒绝。
+     * [maxRetries] 供 getResources 的外层重试用（D-P2-1）：外层第 2 次调内层时传 0，
+     * 不让内层 3 次重试被重复执行一遍。
      *
      * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
      * 两者都由专用 catch 原样抛出，不会被下面的 `catch (e: IOException)` 接住重跑
@@ -333,6 +341,7 @@ class MoonTvApi @Inject constructor(
     private suspend fun execute(
         request: Request,
         timeoutSeconds: Long = ApiClient.DEFAULT_TIMEOUT_SECONDS,
+        maxRetries: Int = ApiClient.MAX_RETRIES,
     ): String {
         // B4-P2-1：按超时分档缓存 client——每次 newBuilder().build() 都会新建
         // 连接池与线程池；超时档位有限（默认 15s / 搜索 60s / 版本检查 20s），缓存复用。
@@ -345,16 +354,9 @@ class MoonTvApi @Inject constructor(
         }
         var lastError: Exception? = null
         var refreshAttempted = false
-        // B4-P2-15：同 AggApi——repeat 的 lambda 里 coroutineContext 不可见，先捕获。
-        val context = coroutineContext
-        repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
+        repeat(maxRetries + 1) { attempt ->
             try {
-                val call = client.newCall(request)
-                // B4-P2-15：同 AggApi——协程取消时取消底层 OkHttp 调用。
-                // （coroutines 1.11 无 Job.invokeOnCancellation，用公开的
-                // 单参数 invokeOnCompletion；正常完成时 cancel 是空操作。）
-                context[Job]?.invokeOnCompletion { call.cancel() }
-                call.execute().use { response ->
+                client.newCall(request).executeCancellable().use { response ->
                     if (response.code == 401) {
                         if (!refreshAttempted) {
                             refreshAttempted = true
@@ -390,7 +392,7 @@ class MoonTvApi @Inject constructor(
                 // IOException），在这里重抛 CE，不再重试。
                 context.ensureActive()
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
-                if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
+                if (attempt < maxRetries) delay(retryBackoffMs)
             }
         }
         throw lastError ?: IOException("请求失败")
@@ -413,17 +415,14 @@ class MoonTvApi @Inject constructor(
         return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
-    /** 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验）。 */
+    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。 */
     private fun readBodyLimited(response: okhttp3.Response): String {
-        val declared = response.header("Content-Length")?.toLongOrNull()
-        if (declared != null && declared > ApiClient.MAX_BODY_BYTES) {
+        val bytes = try {
+            readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
+        } catch (e: BodyTooLargeException) {
             throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
         }
-        val body = response.body?.string().orEmpty()
-        if (body.toByteArray(Charsets.UTF_8).size > ApiClient.MAX_BODY_BYTES) {
-            throw ResponseTooLargeException("响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
-        }
-        return body
+        return bytes.toString(Charsets.UTF_8)
     }
 
     companion object {
@@ -437,7 +436,7 @@ class MoonTvApi @Inject constructor(
 
         /**
          * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
-         * 拆键时按最后一个 + 切分（见 PlayViewModel.retry）。
+         * 拆键时按最后一个 + 切分（见 [splitKey]）。
          * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
          */
         fun generateKey(source: String, id: String): String =
@@ -463,9 +462,25 @@ class MoonTvApi @Inject constructor(
             title.lowercase().replace(Regex("\\s+"), "").replace("+", "").replace("%", "")
                 .ifBlank { "unknown" }
 
-        /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
+        /** 键段转义：%→%25、+→%2B（与 [unescapeKeySegment] 配对，按段做）。 */
         private fun escapeKeySegment(segment: String): String =
             segment.replace("%", "%25").replace("+", "%2B")
+
+        /** 键段反转义：%2B→+、%25→%（顺序不能反，见 RN storage.ts 的 unescapeKeyPart）。 */
+        fun unescapeKeySegment(segment: String): String =
+            segment.replace("%2B", "+").replace("%25", "%")
+
+        /**
+         * 拆记录键（D-P2-3）：按最后一个 `+` 切分后反转义，与 [generateKey] 配对；
+         * 之前 FavoritesScreen/HomeModels 用第一个 `+` 拆，与文档约定漂移。
+         * 返回 (source, id)；无分隔符时整个键当 source、id 为空。
+         */
+        fun splitKey(key: String): Pair<String, String> {
+            val sep = key.lastIndexOf("+")
+            if (sep < 0) return unescapeKeySegment(key) to ""
+            return unescapeKeySegment(key.substring(0, sep)) to
+                unescapeKeySegment(key.substring(sep + 1))
+        }
     }
 }
 
