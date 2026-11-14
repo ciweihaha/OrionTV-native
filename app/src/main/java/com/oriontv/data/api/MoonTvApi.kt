@@ -124,8 +124,6 @@ class MoonTvApi @Inject constructor(
                 if (attempt == 0) delay(retryBackoffMs)
             }
             return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
-            }
-            return@withContext LoginResult.Transient(lastError ?: IOException("登录失败"))
         }
 
     override suspend fun logout(baseUrl: String) {
