@@ -164,4 +164,37 @@ class UpdateLogicTest {
         assertFalse(shouldKeepDownloadedFile("2.0.0", "2.0.1"))
         assertFalse(shouldKeepDownloadedFile(null, "2.0.1"))
     }
+
+    @Test
+    fun `download complete toast suppressed for skipped version`() {
+        // 第 7 轮 P2-4：已跳过版本的完成回调不再弹 Toast（跳过与完成竞态时
+        // 完成分支凭此复核）；未跳过的正常弹。
+        assertFalse(shouldNotifyDownloadComplete("2.0.10", "2.0.10"))
+        assertTrue(shouldNotifyDownloadComplete("2.0.10", "2.0.9"))
+        assertTrue(shouldNotifyDownloadComplete("2.0.10", ""))
+        assertTrue(shouldNotifyDownloadComplete("2.0.10", null))
+    }
+
+    @Test
+    fun `restored download validates file existence and versioned name`() {
+        // 第 7 轮 P2-5：启动恢复校验——文件仍在且文件名与版本匹配才复用。
+        val dir = Files.createTempDirectory("oriontv-restore-test").toFile()
+        try {
+            val apk = File(dir, "OrionTV_v2.0.10.apk").apply { writeText("x") }
+            assertTrue(validateRestoredDownload(apk.absolutePath, "2.0.10"))
+            // 文件不在：无效，无孤儿可删。
+            assertFalse(validateRestoredDownload(File(dir, "OrionTV_v2.0.11.apk").absolutePath, "2.0.11"))
+            assertFalse(isOrphanDownloadFile(File(dir, "OrionTV_v2.0.11.apk").absolutePath, "2.0.11"))
+            // 版本对不上文件名：无效，且是孤儿包（恢复时删）。
+            assertFalse(validateRestoredDownload(apk.absolutePath, "2.0.9"))
+            assertTrue(isOrphanDownloadFile(apk.absolutePath, "2.0.9"))
+            // 记录缺失：无效，不是孤儿。
+            assertFalse(validateRestoredDownload(null, "2.0.10"))
+            assertFalse(validateRestoredDownload(apk.absolutePath, null))
+            assertFalse(validateRestoredDownload("", "2.0.10"))
+            assertFalse(isOrphanDownloadFile(null, "2.0.10"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }
