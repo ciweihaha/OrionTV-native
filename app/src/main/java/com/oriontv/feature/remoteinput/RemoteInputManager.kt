@@ -63,7 +63,9 @@ class RemoteInputManager @Inject constructor() {
             }
         },
         onHandshake = {
-            scope.launch { _handshakes.emit(Unit) }
+            // B8-P2-5：握手事件改 tryEmit——旧实现 scope.launch + 可挂起 emit，
+            // 无人订阅时第 5 次握手起协程永久挂起泄漏（_handshakes 缓冲只有 4）。
+            _handshakes.tryEmit(Unit)
         },
     )
 
@@ -90,6 +92,9 @@ class RemoteInputManager @Inject constructor() {
     @Volatile
     private var desiredRunning = false
     /** 配对码定期轮换任务（P1-10：每 5 分钟换一次码并刷新 state 里的显示）。 */
+    // B8-P2-6：同文件其余共享状态都已是 @Volatile，唯独 rotationJob 漏了——
+    // start/stop 在不同线程读写，漏写可见性，后台线程可能看到过期引用。
+    @Volatile
     private var rotationJob: Job? = null
 
     /** 启动服务；已在跑时直接返回；并发启动共用同一次。 */

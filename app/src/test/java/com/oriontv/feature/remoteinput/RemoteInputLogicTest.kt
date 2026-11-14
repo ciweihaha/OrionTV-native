@@ -323,4 +323,33 @@ class RemoteInputLogicTest {
         assertEquals(20, tokens.toSet().size)
         assertTrue(tokens.all { router.isSessionTokenValid(it, "1.2.3.4") })
     }
+
+    // B8-P2-7：轮换与匹配并发时不读到撕裂的配对——8 线程各 50 次轮换/
+    // 匹配/可用判断交错跑，结束后最终态必须自洽（当前码能匹配上、且在有效期）。
+    @Test
+    fun `pairing code rotation and matching stay consistent under concurrency`() {
+        var now = 1_000_000L
+        val router = RemoteInputRouter(nowMs = { now })
+        router.rotatePairingCode()
+        val errors = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val threads = (1..8).map {
+            Thread {
+                try {
+                    repeat(50) {
+                        router.rotatePairingCode()
+                        val code = router.pairingCode
+                        router.matchesPairingCode(code)
+                        router.isPairingCodeUsable()
+                    }
+                } catch (t: Throwable) {
+                    errors.add(t)
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(5_000) }
+        assertTrue(errors.isEmpty())
+        assertTrue(router.matchesPairingCode(router.pairingCode))
+        assertTrue(router.isPairingCodeUsable())
+    }
 }

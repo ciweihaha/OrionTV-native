@@ -207,6 +207,10 @@ class UpdateViewModel @Inject constructor(
                 // downloadAndVerify 内部已在校验通过后清理。
                 val dest = File(dir, "OrionTV_v$latest.apk")
                 downloader.downloadAndVerify(latest, dest) { written, total ->
+                    // B8-P2-4：进度回调也要复核代次——旧任务被新下载取代后，
+                    // 它的进度回调仍会盖掉新任务的进度条（B7-P2-1 只修了
+                    // CE/finally/失败分支，进度回调漏了）。
+                    if (downloadGen != downloadGeneration) return@downloadAndVerify
                     val progress = if (total > 0) ((written * 100 / total).toInt()) else 0
                     _uiState.update { it.copy(downloadProgress = progress.coerceIn(0, 100)) }
                 }
@@ -325,9 +329,16 @@ class UpdateViewModel @Inject constructor(
         val latest = _uiState.value.latestVersion ?: return
         installInFlight = false
         viewModelScope.launch {
-            settingsRepository.setUpdateSkipVersion(latest)
-            _uiState.update {
-                it.copy(showUpdateCard = false, toast = nextToastEvent("已跳过 v$latest"))
+            try {
+                settingsRepository.setUpdateSkipVersion(latest)
+                _uiState.update {
+                    it.copy(showUpdateCard = false, toast = nextToastEvent("已跳过 v$latest"))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B8-P2-2：记跳过失败不静默吞掉、也不关卡——卡片留着，用户可再点一次。
+                _uiState.update { it.copy(toast = nextToastEvent("跳过失败，请重试")) }
             }
         }
     }

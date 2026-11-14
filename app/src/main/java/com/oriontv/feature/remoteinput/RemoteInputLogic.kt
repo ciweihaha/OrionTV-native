@@ -247,6 +247,14 @@ class RemoteInputRouter(
     var previousPairingCodeIssuedAtMs: Long = 0L
         private set
 
+    /**
+     * B8-P2-7：配对码四元组（当前码/签发时间 + 上一轮码/签发时间）的轮换锁——
+     * 四个 @Volatile 字段各自可见，但轮换不是原子的；HTTP 处理线程读
+     * matchesPairingCode 可能读到撕裂的配对（新码 + 旧时间）。轮换、清码、
+     * 匹配、可用判断都进同一把锁。
+     */
+    private val pairingCodeLock = Any()
+
     /** 已发会话 token（P2-14：第 5 轮起绑定签发时客户端 IP）。 */
     private data class SessionToken(
         val expiresAtMs: Long,
@@ -262,29 +270,32 @@ class RemoteInputRouter(
     private val sessionTokens = ConcurrentHashMap<String, SessionToken>()
 
     /** 服务启动成功后轮换配对码（启动失败不废旧码，RN 同款）。 */
-    fun rotatePairingCode(): String {
+    fun rotatePairingCode(): String = synchronized(pairingCodeLock) {
         previousPairingCode = pairingCode
         previousPairingCodeIssuedAtMs = pairingCodeIssuedAtMs
         pairingCode = RemoteInputLogic.generatePairingCode()
         pairingCodeIssuedAtMs = nowMs()
         pairingGate.clear()
-        return pairingCode
+        pairingCode
     }
 
     fun clearPairingCode() {
-        pairingCode = ""
-        pairingCodeIssuedAtMs = 0L
-        previousPairingCode = ""
-        previousPairingCodeIssuedAtMs = 0L
+        synchronized(pairingCodeLock) {
+            pairingCode = ""
+            pairingCodeIssuedAtMs = 0L
+            previousPairingCode = ""
+            previousPairingCodeIssuedAtMs = 0L
+        }
         pairingGate.clear()
         sessionTokens.clear()
     }
 
     /** 当前配对码是否在有效期内（未签发/过期都算无效）。 */
-    fun isPairingCodeUsable(now: Long = nowMs()): Boolean =
+    fun isPairingCodeUsable(now: Long = nowMs()): Boolean = synchronized(pairingCodeLock) {
         pairingCode.isNotEmpty() &&
             pairingCodeIssuedAtMs > 0 &&
             now - pairingCodeIssuedAtMs <= RemoteInputLogic.PAIRING_CODE_TTL_MS
+    }
 
     /**
      * P2-8（第 5 轮）：配对码匹配——当前码在 5 分钟有效期内，或上一轮的码
@@ -292,17 +303,18 @@ class RemoteInputRouter(
      * 以前即判过期；宽限期让“正在配对的那一刻”不被轮换打断。
      * 纯逻辑，可单测。
      */
-    fun matchesPairingCode(code: String, now: Long = nowMs()): Boolean {
-        if (code.isEmpty()) return false
-        if (RemoteInputLogic.timingSafeEqual(code, pairingCode) &&
-            pairingCodeIssuedAtMs > 0 &&
-            now - pairingCodeIssuedAtMs <= RemoteInputLogic.PAIRING_CODE_TTL_MS
-        ) return true
-        return RemoteInputLogic.timingSafeEqual(code, previousPairingCode) &&
-            previousPairingCodeIssuedAtMs > 0 &&
-            now - previousPairingCodeIssuedAtMs <=
-            RemoteInputLogic.PAIRING_CODE_TTL_MS + RemoteInputLogic.PAIRING_CODE_GRACE_MS
-    }
+    fun matchesPairingCode(code: String, now: Long = nowMs()): Boolean =
+        synchronized(pairingCodeLock) {
+            if (code.isEmpty()) return@synchronized false
+            if (RemoteInputLogic.timingSafeEqual(code, pairingCode) &&
+                pairingCodeIssuedAtMs > 0 &&
+                now - pairingCodeIssuedAtMs <= RemoteInputLogic.PAIRING_CODE_TTL_MS
+            ) return@synchronized true
+            RemoteInputLogic.timingSafeEqual(code, previousPairingCode) &&
+                previousPairingCodeIssuedAtMs > 0 &&
+                now - previousPairingCodeIssuedAtMs <=
+                RemoteInputLogic.PAIRING_CODE_TTL_MS + RemoteInputLogic.PAIRING_CODE_GRACE_MS
+        }
 
     /** 校验会话 token（过期即清掉并返回 false；P2-14：须与签发时同一 IP，嗅到即用不再成立）。 */
     fun isSessionTokenValid(token: String, clientIp: String, now: Long = nowMs()): Boolean {

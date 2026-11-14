@@ -246,8 +246,6 @@ class UpdateDownloaderResumeTest {
     }
 
     @Test
-
-    @Test
     fun `restarts from zero when server ignores Range`() {
         val dir = Files.createTempDirectory("oriontv-resume-test").toFile()
         try {

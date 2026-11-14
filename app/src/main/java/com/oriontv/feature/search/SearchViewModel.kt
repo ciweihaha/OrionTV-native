@@ -340,8 +340,16 @@ class SearchViewModel @Inject constructor(
     /** P2-14：扫码弹窗内一键开启远程输入（存设置 + 拉起服务）。 */
     fun enableRemoteInput() {
         viewModelScope.launch {
-            settingsRepository.setRemoteInputEnabled(true)
-            remoteInputManager.start()
+            try {
+                settingsRepository.setRemoteInputEnabled(true)
+                remoteInputManager.start()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B8-P2-3：无 IP 时 start() 抛 IllegalStateException，旧实现
+                // 静默吞掉，弹窗里看着像已开启；弹提示让用户知道没开成。
+                _uiState.update { it.copy(toast = nextToastEvent("远程输入开启失败，请检查网络后重试")) }
+            }
         }
     }
 
