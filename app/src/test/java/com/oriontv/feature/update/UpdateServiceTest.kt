@@ -9,11 +9,11 @@ class UpdateServiceTest {
     @Test
     fun `download url is built from version`() {
         assertEquals(
-            "https://dl.ciweihaha.win/orionTV.2.0.0.apk",
+            "https://dl.ciweihaha.win/orionTV.2.0.0.apk?v=2.0.0",
             UpdateService.downloadUrl("2.0.0"),
         )
         assertEquals(
-            "https://dl.ciweihaha.win/orionTV.2.0.0.apk.sha256",
+            "https://dl.ciweihaha.win/orionTV.2.0.0.apk.sha256?v=2.0.0",
             UpdateService.sha256Url("2.0.0"),
         )
     }
@@ -28,6 +28,12 @@ class UpdateServiceTest {
         assertEquals("abc123", UpdateService.parseSha256File("  abc123\n"))
         assertNull(UpdateService.parseSha256File(""))
         assertNull(UpdateService.parseSha256File("   "))
+    }
+
+    @Test
+    fun `sha256 file strips BOM`() {
+        assertEquals("abc123", UpdateService.parseSha256File("\uFEFFabc123  orionTV.2.0.0.apk"))
+        assertEquals("abc123", UpdateService.parseSha256File("\uFEFFabc123"))
     }
 
     @Test
