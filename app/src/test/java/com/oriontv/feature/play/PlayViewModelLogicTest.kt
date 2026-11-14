@@ -68,4 +68,16 @@ class PlayViewModelLogicTest {
         // 末集 → 不出现
         assertFalse(PlayViewModel.shouldShowNextEpisode(true, 9, 10, -1))
     }
+
+    @Test
+    fun `start position beyond new source duration is overflow`() {
+        // A7-P2-2：起点 >= 时长即溢出（ExoPlayer 会把 seek 钳到片尾、立刻播完）；
+        // 起点为 0、时长未知时不算。
+        assertTrue(PlayViewModel.isStartPositionOverflow(1_200_000L, 1_200_000L))
+        assertTrue(PlayViewModel.isStartPositionOverflow(1_500_000L, 1_200_000L))
+        assertFalse(PlayViewModel.isStartPositionOverflow(600_000L, 1_200_000L))
+        assertFalse(PlayViewModel.isStartPositionOverflow(0L, 1_200_000L))
+        assertFalse(PlayViewModel.isStartPositionOverflow(600_000L, 0L))
+        assertFalse(PlayViewModel.isStartPositionOverflow(0L, 0L))
+    }
 }

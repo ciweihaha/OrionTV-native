@@ -1,6 +1,7 @@
 package com.oriontv.feature.favorites
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -31,6 +33,7 @@ import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.LoadingAnimation
+import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.VideoCard
@@ -65,6 +68,14 @@ fun FavoritesScreen(
     // 返回恢复走记录键，不冲突）。
     LaunchedEffect(uiState.items.size) {
         cardRequesters.keys.removeAll { it < 0 || it >= uiState.items.size }
+    }
+
+    // B7-P0-1：删收藏失败 Toast 2 秒消失（ui-design.md §5.8，详情页同款）。
+    LaunchedEffect(uiState.favoriteError?.id) {
+        if (uiState.favoriteError != null) {
+            delay(2000)
+            viewModel.consumeFavoriteError()
+        }
     }
 
     // 每次回页都刷新（详情页取消收藏后返回即不残留）。
@@ -131,6 +142,7 @@ fun FavoritesScreen(
         return
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().padding(OrionDimens.ContentPadding)) {
         Text(text = "我的收藏", style = OrionTextStyles.PageTitle)
         Spacer(modifier = Modifier.height(16.dp))
@@ -215,5 +227,18 @@ fun FavoritesScreen(
                 }
             }
         }
+    }
+    // B7-P0-1：删收藏失败 Toast，底部居中。
+    if (uiState.favoriteError != null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            OrionToast(
+                message = uiState.favoriteError?.message ?: "",
+                modifier = Modifier.padding(bottom = 48.dp),
+            )
+        }
+    }
     }
 }

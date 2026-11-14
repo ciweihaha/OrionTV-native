@@ -7,10 +7,13 @@ import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.repo.FavoritesRepository
 import com.oriontv.data.repo.PlayRecordsRepository
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
@@ -93,18 +96,31 @@ class FavoritesViewModel @Inject constructor(
      * 删完刷新后焦点落在那张卡上（见 FavoritesScreen 的恢复逻辑）。 */
     fun removeFavorite(key: String, favorite: Favorite) {
         viewModelScope.launch {
-            if (!favoritesRepository.isFavorite(key)) return@launch
-            val items = _uiState.value.items
-            val idx = items.indexOfFirst { it.first == key }
-            savedFocusKey = when {
-                idx < 0 -> null
-                idx + 1 < items.size -> items[idx + 1].first
-                idx - 1 >= 0 -> items[idx - 1].first
-                else -> null
+            try {
+                if (!favoritesRepository.isFavorite(key)) return@launch
+                val items = _uiState.value.items
+                val idx = items.indexOfFirst { it.first == key }
+                savedFocusKey = when {
+                    idx < 0 -> null
+                    idx + 1 < items.size -> items[idx + 1].first
+                    idx - 1 >= 0 -> items[idx - 1].first
+                    else -> null
+                }
+                favoritesRepository.toggle(key, favorite)
+                refresh()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // B7-P0-1：服务端模式网络失败时 toggle 抛 IOException（第 3 轮
+                // B-P0-1 只修了详情页一侧，收藏页漏了）——接住给失败提示，
+                // 不刷新列表（删失败的项仍在，不闪没），不崩溃。
+                _uiState.update { it.copy(favoriteError = nextToastEvent("取消收藏失败，请检查网络后重试")) }
             }
-            favoritesRepository.toggle(key, favorite)
-            refresh()
         }
+    }
+
+    fun consumeFavoriteError() {
+        _uiState.update { it.copy(favoriteError = null) }
     }
 
     companion object {
@@ -124,4 +140,6 @@ data class FavoritesUiState(
     val loadFailed: Boolean = false,
     /** 断点续播：记录键 → 播放记录（无记录的收藏没有“续播”入口）。 */
     val playRecords: Map<String, PlayRecord> = emptyMap(),
+    /** B7-P0-1：删收藏失败时的一次性提示（2 秒 Toast，UI 消费后清掉；与详情页同款）。 */
+    val favoriteError: ToastEvent? = null,
 )

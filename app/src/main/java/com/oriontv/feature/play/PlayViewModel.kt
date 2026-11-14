@@ -78,6 +78,12 @@ class PlayViewModel @Inject constructor(
     /** 跳过片头胶囊的轮询状态机（P0-1）：“已出现过”与“当前可见”分开管。 */
     private val skipIntroCapsule = SkipIntroCapsule()
     private var nextEpisodeShownForIndex: Int = -1
+    /** A7-P2-2：本集开播起点（毫秒）——新源时长短于起点时 ExoPlayer 会把 seek
+     * 钳到片尾、直接 STATE_ENDED；播完回调与轮询凭它识别“起点溢出”，按播错
+     * 走自动换源，而不是当成“看完一集”弹下一集预告、删断点。 */
+    private var episodeStartPositionMs: Long = 0L
+    /** A7-P2-2：本集起点溢出是否已按播错处理过（轮询每 500ms 只触发一次）。 */
+    private var startPositionOverflowHandled: Boolean = false
     /** 用户点过“取消”的下一集预告属于哪集（P1-1）：播完也不再重弹，换集时清除。 */
     private var nextEpisodeDismissedForIndex: Int = -1
     /** 用户手动暂停标志（P2-6）：暂停期间就绪超时不触发自动换源。 */
@@ -224,6 +230,17 @@ class PlayViewModel @Inject constructor(
         playbackToken = playerManager.claimPlayback()
         val episodes = result.episodes
         if (episodes.isEmpty() || episodeIndex !in episodes.indices) {
+            // A7-P2-6：首选源集数不足时不直接报错——试一次其他源（它本身已校验
+            // episodes.size > episodeIndex）；无候选才报错。集数校验会拦住
+            // 已试过的不够集的源，不会来回兜圈。
+            val next = DetailSearchLogic.getNextAvailableSource(
+                _uiState.value.results, result.source, episodeIndex, _uiState.value.failedSources,
+            )
+            if (next != null) {
+                _uiState.update { it.copy(failedSources = it.failedSources + result.source) }
+                launchStartEpisode(next, episodeIndex)
+                return
+            }
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
             return
         }
@@ -260,11 +277,17 @@ class PlayViewModel @Inject constructor(
             skipIntroCapsule.resetForEpisode()
             nextEpisodeShownForIndex = -1
             nextEpisodeDismissedForIndex = -1
+            // A7-P1-1：换集后自动换源次数与失败源集合也要重置——之前只清预告
+            // 状态，上一集换源 2 次后下一集首次播错直接报错。
+            _uiState.update { it.copy(autoSwitchAttempts = 0, failedSources = emptySet()) }
         }
         userPaused = false
         lastSavedPositionMs = -1L
         markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
         playerManager.setPlaybackSpeed(rate)
+        // A7-P2-2：记下本集开播起点，供播完回调/轮询识别“起点溢出”。
+        episodeStartPositionMs = startPosition
+        startPositionOverflowHandled = false
         // A5-P1-5：播流前复核代际——挂起读数期间已有新开播时，旧开播不再碰播放器。
         if (generation != startEpisodeGeneration) return
         playerManager.playUrl(episodes[episodeIndex], startPosition)
@@ -312,8 +335,10 @@ class PlayViewModel @Inject constructor(
         }
     }
 
-    /** 播放错误 → 标记当前源失败 → 自动换源（最多 2 次）→ 再报错。 */
-    private fun handlePlaybackError(error: PlaybackException?) {
+    /** 播放错误 → 标记当前源失败 → 自动换源（最多 2 次）→ 再报错。
+     * resumeFromStart=true 时换源从 0 播（A7-P2-2 起点溢出：原进度已超新源
+     * 时长，再传原进度只会二次溢出）。 */
+    private fun handlePlaybackError(error: PlaybackException?, resumeFromStart: Boolean = false) {
         // A4-P2-8：处理错误即作废就绪超时（超时任务本身调进来时已跑完，取消无害；
         // 新一集开播挂起期间误触的超时也到此为止，不再多算一次失败）。
         readyTimeoutJob?.cancel()
@@ -339,7 +364,12 @@ class PlayViewModel @Inject constructor(
                     )
                 }
                 // A5-P1-5：自动换源也走串行开播入口，不与手动选集并发。
-                launchStartEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
+                // A7-P2-2：起点溢出时从 0 播，不再传已超长的原进度。
+                launchStartEpisode(
+                    next,
+                    state.episodeIndex,
+                    if (resumeFromStart) 0L else playerManager.currentPositionMs,
+                )
                 return
             }
         }
@@ -358,6 +388,14 @@ class PlayViewModel @Inject constructor(
     private fun onPlaybackEnded() {
         // A4-P2-9：同 handlePlaybackError，不是自己的播放不弹下一集预告。
         if (!playerManager.isCurrentOwner(playbackToken)) return
+        // A7-P2-2：起点溢出不是“看完”——新源时长短于开播起点时 ExoPlayer 把
+        // seek 钳到片尾、立刻 STATE_ENDED；按播错走一次自动换源（次数上限
+        // 内），不断点、不弹下一集预告。
+        if (isStartPositionOverflow(episodeStartPositionMs, playerManager.durationMs)) {
+            startPositionOverflowHandled = true
+            handlePlaybackError(null, resumeFromStart = true)
+            return
+        }
         val state = _uiState.value
         val current = state.current ?: return
         saveRecordNow()
@@ -415,6 +453,15 @@ class PlayViewModel @Inject constructor(
                     )
                 }
                 if (wasLoading && isPlaybackReady(playing)) readyTimeoutJob?.cancel()
+                // A7-P2-2（兜底）：播完回调没拦住的起点溢出（例如 STATE_ENDED
+                // 没触发），首个轮询发现位置已到片尾且从未就绪时按播错处理一次。
+                if (wasLoading && !startPositionOverflowHandled && duration > 0 &&
+                    position >= duration &&
+                    isStartPositionOverflow(episodeStartPositionMs, duration)
+                ) {
+                    startPositionOverflowHandled = true
+                    handlePlaybackError(null, resumeFromStart = true)
+                }
                 // 自动跳过片头（每集一次，先于胶囊判断：自动跳开了就不出胶囊）。
                 maybeAutoSkipIntro(position)
                 // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失，每集只出现一次。
@@ -658,6 +705,9 @@ class PlayViewModel @Inject constructor(
         // A6-P2-2：手动重试保进度（旧实现不传起点，10 秒内断流时断点还没存过，
         // 从 0 重播）并重置 failedSources（只清 autoSwitchAttempts 不清
         // failedSources，重试后自动换源会一直跳过之前失败过的源）。
+        // A7-P2-1：同集重试也要重置 nextEpisodeShownForIndex——否则重试后
+        // 播到片尾附近，预告卡因“本集已出过”不再出现。
+        nextEpisodeShownForIndex = -1
         _uiState.update {
             it.copy(error = null, autoSwitchAttempts = 0, failedSources = emptySet(), isLoading = true)
         }
@@ -719,7 +769,12 @@ class PlayViewModel @Inject constructor(
         // 后台播放开着：退出播放页后继续播（画中画/后台音频），不 pause、不 stop；
         // 关着：沿用旧行为，退出即停播。
         cleanupScope.launch {
-            if (settingsRepository.currentBackgroundPlayback()) {
+            // A7-P2-4：清理协程读 DataStore 也要包 runCatching——偏好损坏时
+            // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
+            // LiveViewModel.onCleared 同款）。
+            val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
+                .getOrDefault(false)
+            if (backgroundOn) {
                 playerManager.backgroundPlaybackEnabled = true
             } else {
                 playerManager.backgroundPlaybackEnabled = false
@@ -780,6 +835,14 @@ class PlayViewModel @Inject constructor(
          */
         internal fun shouldPoll(isForeground: Boolean, backgroundPlaybackEnabled: Boolean): Boolean =
             isForeground || backgroundPlaybackEnabled
+
+        /**
+         * 起点是否已超出本源时长（可单测，A7-P2-2）：ExoPlayer 的 seekTo 会钳制到
+         * 有效范围，起点 >= 时长时直接落到片尾、立刻 STATE_ENDED；此时不是
+         * “看完一集”，应按播错走自动换源。起点为 0 或时长未知时不算溢出。
+         */
+        internal fun isStartPositionOverflow(startPositionMs: Long, durationMs: Long): Boolean =
+            startPositionMs > 0 && durationMs > 0 && startPositionMs >= durationMs
 
         /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；
