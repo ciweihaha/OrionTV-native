@@ -74,11 +74,19 @@ private fun isMenuKey(event: KeyEvent): Boolean =
 /** 面板焦点落点（可单测）：分组含当前台落当前台行，否则落该分组第 0 行。 */
 internal fun resolvePanelFocusIndex(
     filtered: List<M3uParser.Channel>,
-    currentUrl: String?,
-): Int = filtered.indexOfFirst { it.url == currentUrl }.coerceAtLeast(0)
+    current: M3uParser.Channel?,
+): Int = current?.let { LiveController.indexOfChannel(filtered, it) }?.coerceAtLeast(0) ?: 0
 
 /** 频道行是否消费按键（可单测）：EPG 弹窗打开时不消费，焦点事件交给弹窗处理。 */
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
+
+/**
+ * 根部 OK 是否走重试（可单测，P2-8）：失败遮罩出现（GiveUp，failCount>5）时根部 OK 也重试，
+ * 与遮罩上获焦的“重试”按钮一致；未耗尽上限但失败过时（failCount 1..5）同样重试；
+ * 其余情况 OK 打开频道面板。
+ */
+internal fun shouldRetryOnOk(playbackFailed: Boolean, failCount: Int): Boolean =
+    playbackFailed || (failCount in 1..LiveController.MAX_AUTO_FAIL)
 
 /**
  * 直播页（ui-design.md §5.4）：
@@ -201,10 +209,8 @@ fun LiveScreen(
                             event.key == Key.DirectionCenter || event.key == Key.Enter -> {
                                 if (uiState.channels.isEmpty()) {
                                     false // 空态按钮自带焦点，不抢
-                                } else if (uiState.failCount > 0 &&
-                                    uiState.failCount <= LiveController.MAX_AUTO_FAIL
-                                ) {
-                                    viewModel.retryCurrent() // 失败过且未耗尽：OK 重试当前台
+                                } else if (shouldRetryOnOk(uiState.playbackFailed, uiState.failCount)) {
+                                    viewModel.retryCurrent() // 失败过且未耗尽，或 GiveUp：OK 重试当前台
                                     true
                                 } else {
                                     viewModel.openPanel()
@@ -338,7 +344,7 @@ fun LiveScreen(
         uiState.epgDialogChannel?.let { channel ->
             EpgDialog(
                 channel = channel,
-                channelIndex = uiState.channels.indexOfFirst { it.url == channel.url },
+                channelIndex = LiveController.indexOfChannel(uiState.channels, channel),
                 epg = uiState.epg,
                 nowMs = uiState.nowMs,
                 onClose = { viewModel.closeEpgDialog() },
@@ -535,7 +541,7 @@ private fun ChannelPanel(
     // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
     LaunchedEffect(uiState.panelOpen, uiState.selectedGroup) {
         if (uiState.panelOpen) {
-            val idx = resolvePanelFocusIndex(filtered, currentChannel?.url)
+            val idx = resolvePanelFocusIndex(filtered, currentChannel)
             listState.scrollToItem(idx)
             delay(100)
             currentRequester.requestFocus()
@@ -609,15 +615,19 @@ private fun ChannelPanel(
                 )
             }
         } else {
-            val hasCurrentInGroup = filtered.any { it.url == currentChannel?.url }
+            val hasCurrentInGroup = currentChannel?.let { current ->
+                filtered.any { it === current }
+            } ?: false
             LazyColumn(
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.weight(1f),
             ) {
-                itemsIndexed(filtered, key = { _, channel -> channel.url }) { index, channel ->
-                    val globalIndex = uiState.channels.indexOfFirst { it.url == channel.url }
-                    val isCurrent = channel.url == currentChannel?.url
+                // 行 key 用全表下标：同 URL 出现多次时 url 会撞 key（P2-4），全表下标唯一且稳定。
+                itemsIndexed(filtered, key = { _, channel -> LiveController.indexOfChannel(uiState.channels, channel) }) { index, channel ->
+                    // 同 URL 出现多次时按对象身份定位全表下标（P2-4），不落到第一条。
+                    val globalIndex = LiveController.indexOfChannel(uiState.channels, channel)
+                    val isCurrent = globalIndex == uiState.currentIndex
                     ChannelRow(
                         number = "${globalIndex + 1}",
                         channel = channel,
