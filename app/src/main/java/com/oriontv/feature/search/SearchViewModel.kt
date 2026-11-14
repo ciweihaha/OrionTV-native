@@ -7,12 +7,14 @@ import com.oriontv.data.api.SearchResult
 import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.repo.SearchHistoryRepository
 import com.oriontv.data.repo.SettingsRepository
+import com.oriontv.feature.remoteinput.RemoteInputManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -29,9 +31,16 @@ class SearchViewModel @Inject constructor(
     private val moonTvApi: MoonTvApi,
     private val settingsRepository: SettingsRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
+    remoteInputManager: RemoteInputManager,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
+
+    /** 远程输入服务状态（搜索页扫码弹窗用）与配对成功事件。 */
+    val remoteInputState: StateFlow<com.oriontv.feature.remoteinput.RemoteInputState> =
+        remoteInputManager.state
+    val remoteInputHandshakes: kotlinx.coroutines.flow.SharedFlow<Unit> =
+        remoteInputManager.handshakes
 
     private val cache = SearchCache()
     private var searchJob: Job? = null
@@ -42,6 +51,12 @@ class SearchViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 history = searchHistoryRepository.getLatest20(),
             )
+        }
+        // 远程输入：手机扫码发来的文本直接填入搜索框并搜索（阶段 4 接通）。
+        viewModelScope.launch {
+            remoteInputManager.messages.collect { message ->
+                searchNow(message)
+            }
         }
     }
 
@@ -100,7 +115,10 @@ class SearchViewModel @Inject constructor(
         try {
             val results = moonTvApi.searchVideos(baseUrl, query)
             cache.put(query, results)
-            searchHistoryRepository.add(query)
+            // 无痕模式不写搜索历史（阶段 4）。
+            if (!settingsRepository.incognitoMode.first()) {
+                searchHistoryRepository.add(query)
+            }
             _uiState.value = _uiState.value.copy(
                 results = results,
                 isLoading = false,

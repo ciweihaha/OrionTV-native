@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.feature.remoteinput.RemoteInputModal
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.PrimaryButton
@@ -55,10 +56,16 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val remoteState by viewModel.remoteInputState.collectAsState()
     val searchRequester = remember { FocusRequester() }
-    var showRemoteInputHint by remember { mutableStateOf(false) }
+    var showRemoteInputModal by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { searchRequester.requestFocus() }
+
+    // 配对成功后自动关弹窗（RN RemoteControlModal 的 onHandshake 同款）。
+    LaunchedEffect(Unit) {
+        viewModel.remoteInputHandshakes.collect { showRemoteInputModal = false }
+    }
 
     Column(
         modifier = Modifier
@@ -92,15 +99,15 @@ fun SearchScreen(
             Spacer(modifier = Modifier.width(16.dp))
             SecondaryButton(
                 text = "手机扫码输入",
-                onClick = { showRemoteInputHint = true },
+                onClick = { showRemoteInputModal = true },
             )
         }
-        if (showRemoteInputHint) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "远程输入服务即将开通，敬请期待",
-                style = OrionTextStyles.Small,
-                color = OrionColors.TextSecondary,
+        if (showRemoteInputModal) {
+            RemoteInputModal(
+                serverUrl = remoteState.serverUrl,
+                pairingCode = remoteState.pairingCode,
+                error = remoteState.error,
+                onDismiss = { showRemoteInputModal = false },
             )
         }
 
