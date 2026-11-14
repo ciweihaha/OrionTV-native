@@ -27,7 +27,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.hasRoute
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.navDeepLink
 import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
