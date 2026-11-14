@@ -112,14 +112,19 @@ class HomeViewModel @Inject constructor(
     /** 返回首页时只刷新“最近播放”行（断点续播刚看完要立刻出现），其他行走缓存。 */
     fun refreshRecent() {
         viewModelScope.launch {
-            // B4-P2-4：取消原样抛出，不当成普通失败吞掉。
+            // P2-11（第 5 轮）：加载失败时不删旧行——以前先删行、失败后不补回，
+            // 一次瞬时失败就让首页丢一行，直到下次 refresh()。
+            // 区分两种 null：抛异常 = 失败，留旧行；正常返回 null = 确实
+            // 没有播放记录，删行是正确的。
+            // B4-P2-4：取消原样抛出，不当成普通失败吞掉（见下面的
+            // CancellationException 分支）。
             val recent = try {
                 loadCategory(HomeCategory.RECENT, "")
             } catch (e: CancellationException) {
                 // D-P2-2：取消原样抛出，不吞成 null（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (_: Exception) {
-                null
+                return@launch
             }
             val rows = _uiState.value.rows.toMutableList()
             rows.removeAll { it.title == HomeCategory.RECENT.title }
