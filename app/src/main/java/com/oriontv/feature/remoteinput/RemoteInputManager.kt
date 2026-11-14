@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /** 远程输入服务状态（供设置页显示：运行中绿字/异常红字）。 */
 data class RemoteInputState(
@@ -81,6 +82,8 @@ class RemoteInputManager @Inject constructor() {
             if (starting) return
             starting = true
         }
+        // B-P1-9：取消不重启（finally 里的重起只针对正常失败路径）。
+        var cancelled = false
         try {
             val ip = RemoteInputServer.localIpAddress()
             if (ip == null) {
@@ -103,6 +106,10 @@ class RemoteInputManager @Inject constructor() {
                     error = null,
                 )
             }
+        } catch (e: CancellationException) {
+            // B-P1-9：取消原样抛出，不写 error 态、不按“失败”重起。
+            cancelled = true
+            throw e
         } catch (e: Exception) {
             if (!stopRequestedDuringStart) {
                 _state.update {
@@ -122,8 +129,8 @@ class RemoteInputManager @Inject constructor() {
                 starting = false
                 stopRequestedDuringStart = false
             }
-            // 启动期间用户又开了：按最新意图重起一次。
-            if (desiredRunning && !_state.value.isRunning && _state.value.error == null) {
+            // 启动期间用户又开了：按最新意图重起一次（取消不重起）。
+            if (!cancelled && desiredRunning && !_state.value.isRunning && _state.value.error == null) {
                 start()
             }
         }

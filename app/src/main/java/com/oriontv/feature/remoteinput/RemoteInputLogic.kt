@@ -1,6 +1,7 @@
 package com.oriontv.feature.remoteinput
 
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 远程输入纯逻辑（plan §5.4 orion_pair_code，RN remoteControlService.ts 对照）：
@@ -133,7 +134,12 @@ class PairingGate(
 
     private val attemptsByIp = mutableMapOf<String, IpState>()
 
-    /** 校验配对码；通过返回 true，失败记一次并返回 false。 */
+    /**
+     * 校验配对码；通过返回 true，失败记一次并返回 false。
+     * 第 3 轮收尾 B-P2-1：NanoHTTPD 每请求独立线程调 check()，读-改-写全程
+     * 须同步，否则并发握手可丢计数/丢锁定。
+     */
+    @Synchronized
     fun check(clientIp: String, code: String, expectedCode: String): Boolean {
         val ip = clientIp.ifBlank { "unknown" }
         val now = nowMs()
@@ -176,9 +182,11 @@ class PairingGate(
         return false
     }
 
+    @Synchronized
     fun clear() = attemptsByIp.clear()
 
     /** 跟踪中的 IP 条数（P2-24 淘汰逻辑单测用）。 */
+    @Synchronized
     fun trackedIpCount(): Int = attemptsByIp.size
 }
 
@@ -207,8 +215,12 @@ class RemoteInputRouter(
     var pairingCodeIssuedAtMs: Long = 0L
         private set
 
-    /** 已发会话 token → 过期时间（毫秒）。 */
-    private val sessionTokens = mutableMapOf<String, Long>()
+    /**
+     * 已发会话 token → 过期时间（毫秒）。
+     * 第 3 轮收尾 B-P2-1：与 PairingGate 同款问题，NanoHTTPD 多线程并发
+     * 读写，换 ConcurrentHashMap（读-改-写单步操作本身已原子）。
+     */
+    private val sessionTokens = ConcurrentHashMap<String, Long>()
 
     /** 服务启动成功后轮换配对码（启动失败不废旧码，RN 同款）。 */
     fun rotatePairingCode(): String {

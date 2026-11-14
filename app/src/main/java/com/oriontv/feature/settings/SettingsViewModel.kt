@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 /** 片头时长档位（RN INTRO_SKIP_OPTIONS）：0=不跳，只用手动标记。 */
 val INTRO_SKIP_OPTIONS = listOf(0, 30, 60, 90, 120)
@@ -116,7 +117,8 @@ class SettingsViewModel @Inject constructor(
                 val apiChanged = state.apiUrl != state.savedApiUrl
                 if (apiChanged) {
                     authRepository.logout()
-                    runCatching { credentialsStore.clear() }
+                    // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
+                    try { credentialsStore.clear() } catch (_: Exception) { }
                 }
                 settingsRepository.setApiBaseUrl(state.apiUrl.trim())
                 settingsRepository.setM3uUrl(state.m3uUrl.trim())
@@ -133,6 +135,9 @@ class SettingsViewModel @Inject constructor(
                         toast = if (apiChanged) "已保存，登录状态已清除" else "已保存",
                     )
                 }
+            } catch (e: CancellationException) {
+                // B-P1-9：取消原样抛出，不把取消写成“保存失败”。
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isSaving = false, error = "保存失败：${e.message ?: "未知错误"}")

@@ -231,4 +231,31 @@ class RemoteInputLogicTest {
             assertTrue(token.all { it.isDigit() || it in 'a'..'f' })
         }
     }
+
+    // 第 3 轮收尾 B-P2-1：并发握手不丢计数/不丢锁定。
+    @Test
+    fun `pairing gate survives concurrent failures from one ip`() {
+        val gate = PairingGate(nowMs = { 1_000L })
+        val threads = (1..10).map {
+            Thread { gate.check("1.2.3.4", "0000", "1234") }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(5_000) }
+        assertEquals(1, gate.trackedIpCount())
+        // 5 次失败即锁定：正确码也被拒。
+        assertFalse(gate.check("1.2.3.4", "1234", "1234"))
+    }
+
+    @Test
+    fun `session tokens survive concurrent issue`() {
+        val router = RemoteInputRouter(nowMs = { 1_000L })
+        val tokens = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val threads = (1..20).map {
+            Thread { tokens.add(router.issueSessionToken()) }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(5_000) }
+        assertEquals(20, tokens.toSet().size)
+        assertTrue(tokens.all { router.isSessionTokenValid(it) })
+    }
 }
