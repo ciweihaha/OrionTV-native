@@ -204,7 +204,10 @@ internal class ServerConfigFailureCache(
     }
 
     fun clear() {
+        // D7-P2-9：只清时间不清 URL 会留 bug——failedAtMs 归 0 后
+        // nowMs() - 0 < 30 秒恒成立，旧 URL 仍命中缓存；两者一起复位。
         failedAtMs = 0L
+        failedUrl = ""
     }
 
     fun isCached(url: String): Boolean =
