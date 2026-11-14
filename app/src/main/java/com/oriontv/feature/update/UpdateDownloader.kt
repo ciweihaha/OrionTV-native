@@ -108,6 +108,15 @@ class UpdateDownloader @Inject constructor(
                 downloadClient.newCall(request).executeCancellable().use { response ->
                     if (!response.isSuccessful) {
                         if (response.code == 416 && resumedFrom > 0) {
+                            // 第 6 轮 P2-2：416 未必是断点失效——本地文件已与服务端
+                            // 声明体积相等时，很可能是上次已下完、未及校验就中断
+                            //（或 Range 起点恰好在 EOF）；直接当下完走校验，不删
+                            // 整包重下（110MB 弱网下等于白下一次）。体积对不上
+                            //（服务端文件已换）才删残文件重下；拿不到声明体积时
+                            // 沿用旧行为（删残文件重下）。
+                            if (shouldTreat416AsComplete(resumedFrom, declared)) {
+                                return@withContext destFile
+                            }
                             // 断点失效（服务端文件已换）：删残文件，可重试重下。
                             destFile.delete()
                             throw IOException("下载失败：HTTP 416，断点失效，从头重下")
@@ -308,6 +317,15 @@ class UpdateDownloader @Inject constructor(
         }
     }
 }
+
+/**
+ * 第 6 轮 P2-2：HTTP 416 时本地残文件是否已可当作下完——本地已下字节数
+ * 达到服务端声明体积时，不删包、直接走 SHA256 校验（校验不过再由
+ * downloadAndVerify 删文件报失败）；体积对不上（服务端文件已换）或
+ * 拿不到声明体积时，删残文件重下。纯逻辑，可单测。
+ */
+fun shouldTreat416AsComplete(resumedFrom: Long, declaredSizeBytes: Long?): Boolean =
+    declaredSizeBytes != null && resumedFrom >= declaredSizeBytes
 
 /** 更新流程错误分型（各步失败都要有明确提示，不静默失败）。 */
 sealed interface UpdateError {

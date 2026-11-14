@@ -22,4 +22,16 @@ class RemoteInputServerTest {
         assertFalse(isChunkedTransfer(mapOf("transfer-encoding" to "gzip")))
         assertFalse(isChunkedTransfer(mapOf("content-encoding" to "chunked")))
     }
+
+    @Test
+    fun `body size limit counts bytes not characters`() {
+        // 第 6 轮 P2-13：中文 3 字节/字符——6000 个汉字是 6000 字符（≤16K）
+        // 却是 18000 字节（>16K），按字符数判会漏放。
+        assertTrue(isRequestBodyTooLarge("你".repeat(6000)))
+        assertFalse(isRequestBodyTooLarge("你".repeat(5000)))
+        // ASCII 1 字节/字符：边界上 16384 不超、16385 超。
+        assertFalse(isRequestBodyTooLarge("a".repeat(16 * 1024)))
+        assertTrue(isRequestBodyTooLarge("a".repeat(16 * 1024 + 1)))
+        assertFalse(isRequestBodyTooLarge(""))
+    }
 }

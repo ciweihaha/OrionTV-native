@@ -116,7 +116,10 @@ fun OnScreenKeyboard(
     val firstKeyRequester = remember { FocusRequester() }
 
     // 打开即把焦点落到首键，遥控可直接按方向键选键。
-    LaunchedEffect(Unit) { firstKeyRequester.requestFocus() }
+    // 第 6 轮 P2-8：按 nineKeyMode 键——QWERTY↔9 键切换后当前聚焦的切换
+    // 按钮随模式重组离开组合，之前没有任何重新请求焦点的调用，焦点丢失；
+    // 切换后把焦点还给新模式的首键（首次打开也走同一条路）。
+    LaunchedEffect(nineKeyMode) { firstKeyRequester.requestFocus() }
 
     Column(
         modifier = modifier

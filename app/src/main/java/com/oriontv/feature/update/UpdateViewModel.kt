@@ -92,6 +92,8 @@ class UpdateViewModel @Inject constructor(
                                 showUpdateCard = false,
                                 // B-P1-4：旧版下好的包已失效（当前已是最新），不清会残留“立即安装”。
                                 downloadedFilePath = null,
+                                // 第 6 轮 P2-2：路径清掉时版本标记同步清掉，不留残值。
+                                downloadedVersion = null,
                                 toast = if (silent) null else nextToastEvent("已是最新版本 v$current"),
                             )
                         }
@@ -105,6 +107,8 @@ class UpdateViewModel @Inject constructor(
                                 showUpdateCard = false,
                                 // B-P1-4：同上，跳过的新版不是已下载的旧包。
                                 downloadedFilePath = null,
+                                // 第 6 轮 P2-2：同上，版本标记同步清掉。
+                                downloadedVersion = null,
                                 toast = if (silent) null else nextToastEvent("已跳过 v$latest，可在设置里重新检查"),
                             )
                         }
@@ -127,6 +131,15 @@ class UpdateViewModel @Inject constructor(
                         }
                         // P2-12：新版卡片弹出时复位安装守卫（上一次安装流程已结束）。
                         installInFlight = false
+                        // 第 6 轮 P2-2：重查不再无条件清 downloadedFilePath——
+                        // 文件名按版本固定（OrionTV_v$latest.apk），同版本时
+                        // “新版≠已下载的旧包”的假设不成立；同版且文件还在就保留，
+                        // 卡片直接显示“立即安装”，不用重新下载。版本不同或文件
+                        // 已不在时才清掉（旧包失效）。
+                        val keepDownload = shouldKeepDownloadedFile(
+                            _uiState.value.downloadedVersion,
+                            latest,
+                        ) && _uiState.value.downloadedFilePath?.let { File(it).exists() } == true
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -136,8 +149,8 @@ class UpdateViewModel @Inject constructor(
                                 // 静默检查发现新版也要弹卡（RN 教训：静默恒不弹等于自动更新无效）。
                                 showUpdateCard = true,
                                 isLatest = false,
-                                // B-P1-4：新版≠已下载的旧包，清掉旧路径，防卡片“立即安装”装旧包。
-                                downloadedFilePath = null,
+                                downloadedFilePath = if (keepDownload) it.downloadedFilePath else null,
+                                downloadedVersion = if (keepDownload) it.downloadedVersion else null,
                             )
                         }
                     }
@@ -170,6 +183,12 @@ class UpdateViewModel @Inject constructor(
     fun startDownload() {
         val latest = _uiState.value.latestVersion ?: return
         if (_uiState.value.downloading) return
+        // 第 6 轮 P2-2（Jewel）：同版包已下好且文件还在，不重复下载（重查保留路径后
+        // 卡片直接显示“立即安装”，正常走不到这里；多一层兜底）。
+        val existingPath = _uiState.value.downloadedFilePath
+        if (_uiState.value.downloadedVersion == latest &&
+            existingPath != null && File(existingPath).exists()
+        ) return
         // B6-P2-3：双发守卫必须在协程体外就生效——旧实现只在 launch 体内
         // 置 downloading=true，两次快速连点都通过守卫、起两个下载任务，
         // 后一个覆盖 downloadJob，前一个泄漏且 cancelDownload 停不掉。
@@ -197,8 +216,20 @@ class UpdateViewModel @Inject constructor(
                             downloading = false,
                             downloadProgress = 100,
                             downloadedFilePath = dest.absolutePath,
+                            // 第 6 轮 P2-2：版本标记与路径同步置位（重查按版本比对保留同版包）。
+                            downloadedVersion = latest,
                             toast = nextToastEvent("下载完成，校验通过，可以安装了"),
                         )
+                    }
+                    // 第 6 轮 P2-2：下载完成时卡片若已被“稍后”/返回键关掉，要重新
+                    // 弹出给安装入口，否则下好的包没有任何入口能再打开“立即安装”
+                    //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
+                    // 代次过期（已被更新的下载取代）时不弹旧任务的卡。
+                    if (!_uiState.value.showUpdateCard) {
+                        val skipVersion = settingsRepository.currentUpdateSkipVersion()
+                        if (skipVersion != latest) {
+                            _uiState.update { it.copy(showUpdateCard = true) }
+                        }
                     }
                 }
             } catch (e: CancellationException) {
@@ -210,7 +241,13 @@ class UpdateViewModel @Inject constructor(
                 if (downloadGen == downloadGeneration) {
                     _uiState.update {
                         // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
-                        it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
+                        // 第 6 轮 P2-2：版本标记与路径同步清掉。
+                        it.copy(
+                            downloading = false,
+                            downloadedFilePath = null,
+                            downloadedVersion = null,
+                            error = e.message ?: "下载失败",
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -219,6 +256,8 @@ class UpdateViewModel @Inject constructor(
                         it.copy(
                             downloading = false,
                             downloadedFilePath = null,
+                            // 第 6 轮 P2-2：版本标记与路径同步清掉。
+                            downloadedVersion = null,
                             error = "下载失败：${e.message ?: "网络错误"}",
                         )
                     }
@@ -304,6 +343,15 @@ class UpdateViewModel @Inject constructor(
 }
 
 /**
+ * 第 6 轮 P2-2：重查时是否保留已下载包——只在已下载包的版本就是本次
+ * 查到的新版时保留（文件名按版本固定，同版即同一文件）；版本不同或
+ * 从未下载过时清掉重下。文件是否还在由调用方另行核对（exists）。
+ * 纯逻辑，可单测。
+ */
+fun shouldKeepDownloadedFile(downloadedVersion: String?, latestVersion: String): Boolean =
+    downloadedVersion != null && downloadedVersion == latestVersion
+
+/**
  * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
  * B4-P2-13：AggApi.version() 内部已 strip v 前缀（根治），这里的 strip
  * 是死防御，留着无害；第 5 轮起根治点在 AggApi（先 strip 再校验），这里只留兼容委托。
@@ -313,12 +361,11 @@ fun stripVersionPrefix(version: String): String = VersionUtils.stripVersionPrefi
 
 /**
  * P2-4（第 5 轮）：检查更新失败的文案分流（纯逻辑，可单测）。
- * 版本号带 v 前缀时，AggApi.version() 在 strip 之前就抛
- * AggInvalidResponseException（“版本号格式非法：v…”，正则在数据层），
- * UpdateViewModel 侧的 stripVersionPrefix 根本跑不到——根治还得在 AggApi
- * 里 strip（数据层未修，见汇报）。壳侧能做的防御：把这类失败的文案与
- * 普通网络失败区分开，不让用户对着“检查网络”白折腾；同时 strip 层保留，
- * 万一数据层修好、version() 真返回带 v 的版本，比较与下载地址仍正确。
+ * 第 6 轮修正注释（原注释已过时）：AggApi.fetchVersion 已先
+ * stripVersionPrefix 再 isValidVersion（数据层 D-P2-4 根治已落地，
+ * 主备两端点共用同一函数），带 v 前缀的版本号不再到这里才抛错；
+ * 本分支如今只对真正非法的版本号生效（仍有价值）。UpdateViewModel 侧的
+ * stripVersionPrefix 是死防御，留着无害。
  */
 fun versionCheckError(e: Exception): String = when {
     e is AggInvalidResponseException && e.message?.contains("版本号格式非法") == true ->
@@ -337,6 +384,8 @@ data class UpdateUiState(
     val downloading: Boolean = false,
     val downloadProgress: Int = 0,
     val downloadedFilePath: String? = null,
+    /** 第 6 轮 P2-2：已下载包对应的版本号（与 downloadedFilePath 同步置/清；重查时按版本比对而非一律清掉）。 */
+    val downloadedVersion: String? = null,
     val error: String? = null,
     /** 一次性提示（Toast，2 秒消失，UI 消费后清掉）。 */
     val toast: ToastEvent? = null,

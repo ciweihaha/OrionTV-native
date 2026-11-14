@@ -275,6 +275,12 @@ class RemoteInputManager @Inject constructor() {
         // 12346 端口直到进程被杀。release() 只在真退出时调，直接同步停服；
         // 先把 desiredRunning 置 false，排队的停服协程进锁后不再因
         // B5-P1-5 的复核而跳过停服。
+        // 第 6 轮 P2-11：stop() 有 stopRequestedDuringStart 拦飞行中的 start()，
+        // release() 之前没有——退出瞬间若 start() 正在 newServer.start() 与
+        // server 赋值之间，start() 恢复后照常赋值、拉起轮换、置 isRunning，
+        // 停掉的服务又被复活。这里同样置位，start() 恢复后走 stopLocked()；
+        // 正在退出的进程里该标志不再被消费也无害（release 后不再调 start）。
+        stopRequestedDuringStart = true
         desiredRunning = false
         stopLocked()
         scope.cancel()

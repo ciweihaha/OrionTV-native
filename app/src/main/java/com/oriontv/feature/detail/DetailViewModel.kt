@@ -3,6 +3,7 @@ package com.oriontv.feature.detail
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.oriontv.core.util.InFlightGuard
 import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResult
@@ -44,6 +45,9 @@ class DetailViewModel @Inject constructor(
     private var currentKey: String = ""
     private var currentTitle: String = ""
     private var currentId: String = ""
+
+    /** 第 6 轮 P1-2：收藏切换防连按守卫（toggle 是翻转操作，连按两次翻回去）。 */
+    private val favoriteToggleGuard = InFlightGuard()
 
     /** B4-P2-2：轻量代次——init 时 +1，迟到的搜索回调/收藏读取复核后才写回。
      * B7-P2-7：searchDetail 的回调跑在 IO 线程（withContext(ioDispatcher)），
@@ -117,13 +121,18 @@ class DetailViewModel @Inject constructor(
                     val current = state.current
                         ?: results.firstOrNull()
                         ?: state.current
-                    // B7-P2-6：断点集号按当前源集数钳制——记录里的集号可能超出
-                    // 当前源（换源/源更新后集数变少），不钳制时点“播放”进错误页；
-                    // 所属分组随钳制后的集号一起落好，否则分组视图仍停在旧分组。
+                    // B7-P2-6 / 第 6 轮 P2-1：断点集号按当前源集数钳制——记录里的集号可能超出
+                    // 当前源（换源/源更新后集数变少），不钳制时点“播放”进错误页。
+                    // 只有真正钳动时才重算分组：用户可能正在浏览别的分组视图，别拉回去。
                     val clampedEpisode = clampSelectedEpisode(
                         state.selectedEpisode,
                         current?.episodes?.size ?: 0,
                     )
+                    val clampedGroup = if (clampedEpisode != state.selectedEpisode) {
+                        DetailSearchLogic.groupIndexForEpisode(clampedEpisode)
+                    } else {
+                        state.selectedGroup
+                    }
                     _uiState.value = state.copy(
                         isLoading = false,
                         results = results,
@@ -132,7 +141,7 @@ class DetailViewModel @Inject constructor(
                         allSourcesLoaded = allLoaded,
                         error = null,
                         selectedEpisode = clampedEpisode,
-                        selectedGroup = DetailSearchLogic.groupIndexForEpisode(clampedEpisode),
+                        selectedGroup = clampedGroup,
                     )
                 }
             } catch (e: TimeoutCancellationException) {
@@ -171,7 +180,7 @@ class DetailViewModel @Inject constructor(
     fun selectSource(source: String) {
         val state = _uiState.value
         val next = state.results.firstOrNull { it.source == source } ?: return
-        val episode = state.selectedEpisode.coerceAtMost((next.episodes.size - 1).coerceAtLeast(0))
+        val episode = clampSelectedEpisode(state.selectedEpisode, next.episodes.size)
         _uiState.value = state.copy(current = next, selectedEpisode = episode)
     }
 
@@ -186,6 +195,13 @@ class DetailViewModel @Inject constructor(
     fun toggleFavorite() {
         val state = _uiState.value
         val current = state.current ?: return
+        // 第 6 轮 P1-2：收藏切换防连按——toggle() 是“读-改-写翻转”，快速
+        // 连按两次 = 翻转两次 = 回到原态（删了又加回来），仓库层的 writeMutex
+        // 只串行化调用、拦不住。守卫在发起前同步拿锁（主线程），进行中
+        // 第二次点按直接丢弃；按钮同时按 isFavoriteToggling 禁用（见 DetailScreen）。
+        // 只改调用方守卫，不碰 Repositories.kt 的 toggle() 本体（数据层 D6-P1-2 修）。
+        if (!favoriteToggleGuard.tryAcquire()) return
+        _uiState.update { it.copy(isFavoriteToggling = true) }
         viewModelScope.launch {
             try {
                 val favorite = Favorite(
@@ -208,6 +224,9 @@ class DetailViewModel @Inject constructor(
                 throw e
             } catch (_: Exception) {
                 _uiState.value = _uiState.value.copy(favoriteError = nextToastEvent("收藏失败，请检查网络后重试"))
+            } finally {
+                favoriteToggleGuard.release()
+                _uiState.update { it.copy(isFavoriteToggling = false) }
             }
         }
     }
@@ -260,6 +279,8 @@ data class DetailUiState(
     val selectedEpisode: Int = 0,
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
+    /** 第 6 轮 P1-2：收藏切换进行中（防连按；进行中收藏按钮禁用）。 */
+    val isFavoriteToggling: Boolean = false,
     /** B-P0-1：收藏切换失败时的一次性提示（2 秒 Toast，UI 消费后清掉）。 */
     val favoriteError: ToastEvent? = null,
     /** P1-2：断点记录的集号（null = 无断点）；只有选中它时“播放”才带位置。 */

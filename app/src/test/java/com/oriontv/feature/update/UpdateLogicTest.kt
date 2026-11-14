@@ -132,4 +132,13 @@ class UpdateLogicTest {
         assertEquals("512.0KB", downloader.formatSize(512L * 1024))
         assertEquals("42B", downloader.formatSize(42L))
     }
+
+    @Test
+    fun `keeps downloaded file only when versions match`() {
+        // 第 6 轮 P2-2：重查时同版保留已下载包（文件名按版本固定，同版即同一文件），
+        // 版本不同或从未下载过时清掉重下。
+        assertTrue(shouldKeepDownloadedFile("2.0.1", "2.0.1"))
+        assertFalse(shouldKeepDownloadedFile("2.0.0", "2.0.1"))
+        assertFalse(shouldKeepDownloadedFile(null, "2.0.1"))
+    }
 }

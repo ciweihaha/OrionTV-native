@@ -83,7 +83,10 @@ class RemoteInputServer(
             val files = mutableMapOf<String, String>()
             session.parseBody(files)
             val body = files["postData"].orEmpty()
-            if (body.length > RemoteInputLogic.MAX_REQUEST_BODY_BYTES) {
+            // 第 6 轮 P2-13：兜底按字节数判（见 isRequestBodyTooLarge）——
+            // 之前 body.length 计 UTF-16 码元，多字节字符为主的体可在字符数
+            // ≤16K 时超过 16KB 字节。
+            if (isRequestBodyTooLarge(body)) {
                 throw BodyTooLargeException()
             }
             body
@@ -133,3 +136,14 @@ fun isChunkedTransfer(headers: Map<String, String>): Boolean =
         it.key.equals("transfer-encoding", ignoreCase = true) &&
             it.value.contains("chunked", ignoreCase = true)
     }
+
+/**
+ * 第 6 轮 P2-13：POST 体是否超 16KB 上限——按 UTF-8 字节数判，不按字符数。
+ * body 是 String，length 计 UTF-16 码元；多字节字符（中文 3 字节/字符）
+ * 为主的体可在字符数 ≤16K 时超过 16KB 字节，与 P1-3 的 16KB“字节”语义
+ * 对齐。纯函数，可单测。
+ */
+fun isRequestBodyTooLarge(
+    body: String,
+    maxBytes: Int = RemoteInputLogic.MAX_REQUEST_BODY_BYTES,
+): Boolean = body.toByteArray(Charsets.UTF_8).size > maxBytes

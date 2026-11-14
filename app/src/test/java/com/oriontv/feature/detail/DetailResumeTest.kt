@@ -36,4 +36,20 @@ class DetailResumeTest {
         // 源还没回来（集数为 0）时只保底 >= 0，不动集号。
         assertEquals(25, DetailViewModel.clampSelectedEpisode(25, 0))
     }
+
+    @Test
+    fun `clamp keeps episode inside current source range`() {
+        // 第 6 轮 P2-1：断点在另一源是第 25 集、当前源只有 10 集时钳到最后一集。
+        assertEquals(9, DetailViewModel.clampSelectedEpisode(24, 10))
+        // 范围内不动。
+        assertEquals(5, DetailViewModel.clampSelectedEpisode(5, 10))
+        // 边界：第 10 集（0-based 9）正好是最后一集。
+        assertEquals(9, DetailViewModel.clampSelectedEpisode(9, 10))
+        // rebase 注：0 集用例按 main 的 B7-P2-6 语义——集数为 0 视为“源还没回来”，
+        // 只保底 >= 0、不动集号（我方原顶层实现钳到 0，已随单实现收敛到 main 版撤回）。
+        assertEquals(3, DetailViewModel.clampSelectedEpisode(3, 0))
+        assertEquals(0, DetailViewModel.clampSelectedEpisode(0, 0))
+        // 负集号钳到 0。
+        assertEquals(0, DetailViewModel.clampSelectedEpisode(-2, 10))
+    }
 }
