@@ -16,6 +16,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -50,6 +51,9 @@ class AggApi @Inject constructor(
 
     /** version 专用的体超时熔断器（与 videoList 分开）。 */
     val versionCircuitBreaker = CircuitBreaker()
+
+    /** B4-P2-1：按读超时分档缓存的 OkHttpClient（见 executeWithRetry）。 */
+    private val clientsByTimeout = ConcurrentHashMap<Long, OkHttpClient>()
 
     /**
      * 分类列表。`code==1` 且 `list` 为数组才算成功，否则抛 [AggInvalidResponseException]（不重试）。
@@ -184,9 +188,13 @@ class AggApi @Inject constructor(
         if (circuitBreaker.isOpen()) {
             throw IOException("agg 熔断开启，60 秒内不再发请求")
         }
-        val client = okHttpClient.newBuilder()
-            .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
+        // B4-P2-1：按超时分档缓存 client——每次 newBuilder().build() 都会新建
+        // 连接池与线程池；超时档位有限，缓存复用。
+        val client = clientsByTimeout.getOrPut(timeoutSeconds) {
+            okHttpClient.newBuilder()
+                .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+        }
         var lastError: Exception? = null
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {

@@ -17,6 +17,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -37,6 +38,9 @@ class MoonTvApi @Inject constructor(
     /** 重试退避（毫秒），默认 1 秒固定；单测可注入 0 以免真睡。 */
     private val retryBackoffMs: Long = ApiClient.RETRY_BACKOFF_MS,
 ) {
+    /** B4-P2-1：按超时分档缓存的 OkHttpClient（见 execute）。 */
+    private val clientsByTimeout = ConcurrentHashMap<Long, OkHttpClient>()
+
     /**
      * 401 续期回调：由 Auth 层注入（用已保存凭据重登）。
      * 返回 true 表示续期成功，可对幂等请求重试一次。
@@ -322,11 +326,15 @@ class MoonTvApi @Inject constructor(
         request: Request,
         timeoutSeconds: Long = ApiClient.DEFAULT_TIMEOUT_SECONDS,
     ): String {
-        val client = okHttpClient.newBuilder()
-            .connectTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
+        // B4-P2-1：按超时分档缓存 client——每次 newBuilder().build() 都会新建
+        // 连接池与线程池；超时档位有限（默认 15s / 搜索 60s / 版本检查 20s），缓存复用。
+        val client = clientsByTimeout.getOrPut(timeoutSeconds) {
+            okHttpClient.newBuilder()
+                .connectTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+        }
         var lastError: Exception? = null
         var refreshAttempted = false
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->

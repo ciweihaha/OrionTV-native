@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /** 收藏页 ViewModel（ui-design.md §5.6）：网格倒序（新收藏在前），回页即刷新。 */
@@ -49,7 +50,15 @@ class FavoritesViewModel @Inject constructor(
     /** 每次回页都刷新（详情页内取消收藏后返回即不残留）。 */
     fun refresh() {
         viewModelScope.launch {
-            val items = favoritesRepository.getAllWithKeys()
+            // B4-P2-5：仓库调用失败保留旧 items 并置 loadFailed，不崩溃、不闪空。
+            val items = try {
+                favoritesRepository.getAllWithKeys()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(loadFailed = true)
+                return@launch
+            }
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。
             _uiState.value = FavoritesUiState(
                 items = items,

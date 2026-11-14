@@ -39,6 +39,9 @@ class DetailViewModel @Inject constructor(
     private var currentTitle: String = ""
     private var currentId: String = ""
 
+    /** B4-P2-2：轻量代次——init 时 +1，迟到的搜索回调/收藏读取复核后才写回。 */
+    private var generation = 0
+
     /** P1-4/P2-2：首进后才置 true；换源、返回重组都不再抢焦点到“播放”按钮。 */
     var focusAnchored: Boolean = false
 
@@ -51,11 +54,19 @@ class DetailViewModel @Inject constructor(
         currentKey = key
         currentTitle = title
         currentId = id
+        val gen = ++generation
         searchJob?.cancel()
         _uiState.value = DetailUiState(isLoading = true, selectedEpisode = 0)
         searchJob = viewModelScope.launch {
             // 断点：有播放记录时默认选中记录里的集，并记下断点秒数（P1-2）。
-            val record = playRecordsRepository.getByKey(currentKey)
+            // B4-P2-5：仓库调用失败不崩溃（读不到断点当无断点，从 0 集播）。
+            val record = try {
+                playRecordsRepository.getByKey(currentKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
             val startEpisode = record?.index ?: 0
             _uiState.value = _uiState.value.copy(
                 selectedEpisode = startEpisode,
@@ -69,6 +80,8 @@ class DetailViewModel @Inject constructor(
             val preferredSource = if (source == "douban") null else source.ifBlank { null }
             try {
                 detailRepository.searchDetail(title, preferredSource, id.ifBlank { null }) { results, allLoaded ->
+                    // B4-P2-2：回调里复核代次——旧搜索迟到返回时不再覆盖新搜索的状态。
+                    if (gen != generation) return@searchDetail
                     val state = _uiState.value
                     val current = state.current
                         ?: results.firstOrNull()
@@ -93,7 +106,15 @@ class DetailViewModel @Inject constructor(
                 )
             }
             // 收藏状态（异步查，不阻塞详情展示）。
-            val favorite = favoritesRepository.isFavorite(currentKey)
+            // B4-P2-2：读取前复核代次；B4-P2-5：查不到当未收藏，不崩溃。
+            if (gen != generation) return@launch
+            val favorite = try {
+                favoritesRepository.isFavorite(currentKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                false
+            }
             _uiState.value = _uiState.value.copy(isFavorite = favorite)
         }
     }

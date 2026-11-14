@@ -114,16 +114,20 @@ object AppModule {
 class InMemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
+    @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val now = System.currentTimeMillis()
-        // 新值优先：新 cookie 在前，distinctBy 按 name 去重时留新丢旧
+        // 新值优先：新 cookie 在前，distinctBy 按 name+path+domain 去重时留新丢旧
         //（之前旧在前，服务端轮换 cookie 后这里一直留旧值，P1-6）。
+        // B4-P2-6：去重键加 path/domain——同名不同 path 的 cookie 是两个
+        // cookie，不能互相覆盖；读-改-写加 @Synchronized 防并发丢 cookie。
         val kept = (cookies + store[url.host].orEmpty())
             .filter { it.expiresAt > now }
-            .distinctBy { it.name }
+            .distinctBy { Triple(it.name, it.path, it.domain) }
         store[url.host] = kept.toMutableList()
     }
 
+    @Synchronized
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         val now = System.currentTimeMillis()
         // 按 Cookie 自身的 path/domain 过滤（matches 含子域规则），不只按 host 取；
@@ -133,6 +137,7 @@ class InMemoryCookieJar : CookieJar {
     }
 
     /** 退出登录时清掉全部会话 cookie（只清标记位等于没退，P0-4）。 */
+    @Synchronized
     fun clear() {
         store.clear()
     }

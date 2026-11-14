@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /**
@@ -48,29 +49,44 @@ class HomeViewModel @Inject constructor(
     fun refresh() {
         val gen = ++generation
         viewModelScope.launch {
-            // P2-8：刷新保留旧行，只置 loading，不闪回“正在加载…”空屏。
-            _uiState.value = _uiState.value.copy(isLoading = true)
-            val serverConfigured = settingsRepository.isServerConfigured()
-            if (!serverConfigured) {
-                _uiState.value = HomeUiState(serverConfigured = false)
-                return@launch
+            // B4-P2-5：仓库调用失败不崩溃——保留旧行并置错误提示（首次加载失败
+            // 时行是空的，错误文案由下面 error 分支给出）。
+            try {
+                // P2-8：刷新保留旧行，只置 loading，不闪回“正在加载…”空屏。
+                _uiState.value = _uiState.value.copy(isLoading = true)
+                val serverConfigured = settingsRepository.isServerConfigured()
+                if (!serverConfigured) {
+                    _uiState.value = HomeUiState(serverConfigured = false)
+                    return@launch
+                }
+                val baseUrl = settingsRepository.currentApiBaseUrl()
+                val rows = loadRows(baseUrl)
+                if (gen != generation) return@launch // 迟到结果丢弃
+                _uiState.value = HomeUiState(
+                    serverConfigured = true,
+                    rows = rows,
+                    error = if (rows.isEmpty()) "加载失败，请检查网络或服务器地址" else null,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (gen != generation) return@launch
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = "加载失败，请检查网络或服务器地址",
+                )
             }
-            val baseUrl = settingsRepository.currentApiBaseUrl()
-            val rows = loadRows(baseUrl)
-            if (gen != generation) return@launch // 迟到结果丢弃
-            _uiState.value = HomeUiState(
-                serverConfigured = true,
-                rows = rows,
-                error = if (rows.isEmpty()) "加载失败，请检查网络或服务器地址" else null,
-            )
         }
     }
 
     /** 返回首页时只刷新“最近播放”行（断点续播刚看完要立刻出现），其他行走缓存。 */
     fun refreshRecent() {
         viewModelScope.launch {
+            // B4-P2-4：取消原样抛出，不当成普通失败吞掉。
             val recent = try {
                 loadCategory(HomeCategory.RECENT, "")
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 null
             }
@@ -87,6 +103,9 @@ class HomeViewModel @Inject constructor(
             async {
                 try {
                     loadCategory(category, baseUrl)
+                } catch (e: CancellationException) {
+                    // B4-P2-4：取消原样抛出，不当成单行失败留占位。
+                    throw e
                 } catch (_: Exception) {
                     HomeRow(category.title, emptyList(), error = "该分类加载失败")
                 }
@@ -125,8 +144,14 @@ class HomeViewModel @Inject constructor(
     /** CMS 分类：agg 首屏；失败或空列表时回落豆瓣（无筛选时才回落）。 */
     private suspend fun loadCmsCategory(category: HomeCategory, baseUrl: String): List<HomeRowItem> {
         val cmsType = category.cmsType ?: return emptyList()
-        val aggItems = runCatching { aggApi.videoList(cmsType, 1).list.orEmpty() }
-            .getOrDefault(emptyList())
+        // B4-P2-4：runCatching 会吞 CancellationException，改 try/catch 前置重抛。
+        val aggItems = try {
+            aggApi.videoList(cmsType, 1).list.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
         if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem)
         // 回落豆瓣：走用户服务器的 /api/douban。
         val fallbackTag = category.fallbackTag ?: return emptyList()
@@ -137,10 +162,15 @@ class HomeViewModel @Inject constructor(
         loadDouban(category.doubanType ?: "movie", category.doubanTag ?: "热门", baseUrl)
 
     private suspend fun loadDouban(type: String, tag: String, baseUrl: String): List<HomeRowItem> =
-        runCatching {
+        // B4-P2-4：同上，runCatching 吞取消，改 try/catch 前置重抛。
+        try {
             moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
                 .list.orEmpty().map(::mapDoubanItem)
-        }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
 }
 
 data class HomeUiState(

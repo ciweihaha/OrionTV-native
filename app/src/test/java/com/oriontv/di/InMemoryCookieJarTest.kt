@@ -52,4 +52,18 @@ class InMemoryCookieJarTest {
         jar.clear()
         assertEquals(0, jar.loadForRequest(url).size)
     }
+
+    @Test
+    fun `same name different paths coexist`() {
+        val jar = InMemoryCookieJar()
+        val url = "https://example.com/api/play".toHttpUrl()
+        jar.saveFromResponse(url, listOf(cookie("session", "root", path = "/")))
+        jar.saveFromResponse(url, listOf(cookie("session", "api", path = "/api")))
+        // B4-P2-6：同名不同 path 是两个 cookie，去重键须含 path，不能互相覆盖。
+        val loaded = jar.loadForRequest(url)
+        assertEquals(2, loaded.size)
+        assertEquals(setOf("root", "api"), loaded.map { it.value }.toSet())
+        // /other 只带 path=/ 的那条。
+        assertEquals(1, jar.loadForRequest("https://example.com/other".toHttpUrl()).size)
+    }
 }

@@ -63,9 +63,15 @@ class SearchViewModel @Inject constructor(
         // 结果以 JSON 存（SearchResult 是 @Serializable；体量约十几 KB，远小于存档上限）。
         restoreSearchState()
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                history = searchHistoryRepository.getLatest20(),
-            )
+            // B4-P2-5：init 历史加载失败忽略（历史为空，不崩溃、不阻塞搜索页）。
+            val history = try {
+                searchHistoryRepository.getLatest20()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
+            _uiState.value = _uiState.value.copy(history = history)
         }
         // 远程输入：手机扫码发来的文本直接填入搜索框并搜索（阶段 4 接通）。
         // B-P2-22：_messages 是 replay=0 的 SharedFlow，进搜索页前发来的文本
@@ -178,6 +184,9 @@ class SearchViewModel @Inject constructor(
             if (!settingsRepository.incognitoMode.first()) {
                 searchHistoryRepository.add(query)
             }
+            // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
+            // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
+            if (gen != generation) return
             _uiState.value = _uiState.value.copy(
                 results = results,
                 isLoading = false,

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -85,12 +86,13 @@ class RemoteInputManager @Inject constructor() {
         // B-P1-9：取消不重启（finally 里的重起只针对正常失败路径）。
         var cancelled = false
         try {
-            val ip = RemoteInputServer.localIpAddress()
+            // B4-P2-8：网络枚举 + 端口绑定是阻塞操作，切 IO 线程做，不占主线程。
+            val ip = withContext(Dispatchers.IO) { RemoteInputServer.localIpAddress() }
             if (ip == null) {
                 throw IllegalStateException("无法获取 IP 地址，请确认设备已连接到 Wi-Fi 或以太网。")
             }
             val newServer = RemoteInputServer(router)
-            newServer.start()
+            withContext(Dispatchers.IO) { newServer.start() }
             val code = router.rotatePairingCode()
             server = newServer
             if (stopRequestedDuringStart) {

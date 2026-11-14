@@ -23,6 +23,13 @@ class M3uRepository @Inject constructor(
     private val cacheStore: LiveCacheStore,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    /** B4-P2-1：播放列表专用 client（15 秒读超时）只建一次，不再每次拉网新建。 */
+    private val playlistClient by lazy {
+        okHttpClient.newBuilder()
+            .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     /** 缓存优先加载：缓存新鲜直接返回；过期拉网，成功落盘，失败回落旧缓存。 */
     suspend fun loadChannels(
         m3uUrl: String,
@@ -49,11 +56,8 @@ class M3uRepository @Inject constructor(
     suspend fun fetchChannels(m3uUrl: String): List<M3uParser.Channel> = withContext(ioDispatcher) {
         if (m3uUrl.isBlank()) return@withContext emptyList()
         try {
-            val client = okHttpClient.newBuilder()
-                .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
             val request = Request.Builder().url(m3uUrl).get().build()
-            client.newCall(request).execute().use { response ->
+            playlistClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext emptyList()
                 // A4-P2-2：流式限量读，超 5MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_M3U_BYTES)
@@ -80,6 +84,13 @@ class EpgRepository @Inject constructor(
     private val cacheStore: LiveCacheStore,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    /** B4-P2-1：EPG 专用 client（15 秒读超时）只建一次，不再每次拉网新建。 */
+    private val playlistClient by lazy {
+        okHttpClient.newBuilder()
+            .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     companion object {
         const val EPG_URL = "https://ysp.ciweihaha.win/epg.xml"
 
@@ -113,11 +124,8 @@ class EpgRepository @Inject constructor(
     /** 纯拉网（15 秒超时、3MB 上限，失败返回 null，不抛错；协程取消原样抛出）。 */
     suspend fun fetchEpg(): EpgParser.EpgData? = withContext(ioDispatcher) {
         try {
-            val client = okHttpClient.newBuilder()
-                .readTimeout(ApiClient.PLAYLIST_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
             val request = Request.Builder().url(EPG_URL).get().build()
-            client.newCall(request).execute().use { response ->
+            playlistClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 // A4-P2-2：流式限量读，超 3MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_CACHE_BYTES)

@@ -83,9 +83,19 @@ class UpdateDownloader @Inject constructor(
         repeat(MAX_RETRIES + 1) { attempt ->
             try {
                 destFile.parentFile?.mkdirs()
-                val request = Request.Builder().url(url).get().build()
-                okHttpClient.newCall(request).execute().use { response ->
+                // B4-P2-9：断点续传——半截文件存在时带 Range 续下，不从头重下。
+                val existing = if (destFile.exists()) destFile.length() else 0L
+                val requestBuilder = Request.Builder().url(url).get()
+                if (existing > 0) {
+                    requestBuilder.header("Range", "bytes=$existing-")
+                }
+                okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
                     if (!response.isSuccessful) {
+                        if (response.code == 416) {
+                            // 半截文件比服务端还新/无效：删后重下（下一轮重试从 0 开始）。
+                            destFile.delete()
+                            throw IOException("断点无效（416），已删半截文件重下")
+                        }
                         if (!ApiClient.shouldRetryOnStatus(response.code)) {
                             // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
                             // UpdateDownloadException 有专用 catch，直接重抛不重试。
@@ -97,10 +107,13 @@ class UpdateDownloader @Inject constructor(
                         throw IOException("下载失败：HTTP ${response.code}")
                     }
                     val body = response.body ?: throw IOException("下载失败：响应体为空")
-                    val total = body.contentLength()
-                    var written = 0L
+                    // 206 才续写；200 说明服务端不支持 Range，从头写（截断旧半截文件）。
+                    val resume = response.code == 206 && existing > 0
+                    val startAt = if (resume) existing else 0L
+                    val total = if (resume) startAt + body.contentLength() else body.contentLength()
+                    var written = startAt
                     body.byteStream().use { input ->
-                        destFile.outputStream().use { output ->
+                        java.io.FileOutputStream(destFile, resume).use { output ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 val read = input.read(buffer)
@@ -129,7 +142,7 @@ class UpdateDownloader @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 lastError = e
-                destFile.delete()
+                // B4-P2-9：可重试失败保留半截文件，下次尝试用 Range 续传；不再每次删。
                 if (attempt < MAX_RETRIES) {
                     delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
                 }
@@ -151,7 +164,13 @@ class UpdateDownloader @Inject constructor(
             try {
                 val request = Request.Builder().url(sha256Url).get().build()
                 okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext null
+                    if (!response.isSuccessful) {
+                        // B4-P2-10：5xx/429 是瞬时失败，按注释重试 2 次；4xx 确定性失败直接 null。
+                        if (response.code == 429 || response.code in 500..599) {
+                            throw IOException("SHA256 拉取失败：HTTP ${response.code}")
+                        }
+                        return@withContext null
+                    }
                     val body = response.body ?: return@withContext null
                     // 流式限量读：超 4KB 直接判无效，不整包进内存。
                     val bytes = body.byteStream().use { input ->

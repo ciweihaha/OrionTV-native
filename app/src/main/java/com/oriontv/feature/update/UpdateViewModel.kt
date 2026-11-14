@@ -97,6 +97,20 @@ class UpdateViewModel @Inject constructor(
                     }
                     else -> {
                         val size = downloader.headApkSizeBytes(UpdateService.downloadUrl(latest))
+                        // B4-P2-11：HEAD 体积超 200MB 直接报错、不弹下载卡（UpdateCard
+                        // 的 apkTooLarge 禁用按钮是第二层；这里是第一层拦截）。
+                        if (size != null && size > UpdateDownloader.MAX_APK_BYTES) {
+                            _uiState.update {
+                                it.copy(
+                                    isChecking = false,
+                                    latestVersion = latest,
+                                    apkSizeBytes = size,
+                                    updateAvailable = false,
+                                    error = "安装包过大（${downloader.formatSize(size)}），超过 200MB 上限",
+                                )
+                            }
+                            return@launch
+                        }
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -134,7 +148,9 @@ class UpdateViewModel @Inject constructor(
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
                 downloader.cleanOldApkFiles(dir)
-                val dest = File(dir, "OrionTV_v${System.currentTimeMillis()}.apk")
+                // B4-P2-9：目标文件名固定为版本名（不用时间戳）——否则每次下载
+                // 都是新文件，断点续传永不可达。
+                val dest = File(dir, "OrionTV_v$latest.apk")
                 downloader.downloadAndVerify(latest, dest) { written, total ->
                     val progress = if (total > 0) ((written * 100 / total).toInt()) else 0
                     _uiState.update { it.copy(downloadProgress = progress.coerceIn(0, 100)) }
@@ -192,7 +208,8 @@ class UpdateViewModel @Inject constructor(
                 return
             }
             context.startActivity(intent)
-            _uiState.update { it.copy(showUpdateCard = false) }
+            // B4-P2-12：调起安装器后不立即清路径/关卡片——取消安装后已下载
+            // 的 APK 还在，卡片仍显示“立即安装”可再次安装；不失联。
         } catch (e: Exception) {
             _uiState.update { it.copy(error = "安装失败：${e.message ?: "无法调起安装器"}") }
         } finally {

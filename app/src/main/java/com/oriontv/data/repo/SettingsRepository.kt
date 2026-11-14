@@ -5,6 +5,8 @@ import com.oriontv.data.api.ServerConfig
 import com.oriontv.data.local.SettingsDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -67,11 +69,14 @@ class SettingsRepository @Inject constructor(
     private var lastConfigFailureAtMs: Long = 0L
     private var lastConfigFailureUrl: String = ""
 
+    /** B4-P2-7：refreshServerConfig 的互斥锁——并发换地址时两次拉取不再交错写 StorageType。 */
+    private val refreshMutex = Mutex()
+
     /**
      * 拉取 server-config 并缓存 StorageType。失败时 30 秒内不再重试；
      * 拉取期间地址变了则丢弃旧结果。
      */
-    suspend fun refreshServerConfig(): ServerConfig? {
+    suspend fun refreshServerConfig(): ServerConfig? = refreshMutex.withLock {
         val baseUrl = currentApiBaseUrl()
         if (baseUrl.isBlank()) return null
         if (baseUrl == lastConfigFailureUrl &&
