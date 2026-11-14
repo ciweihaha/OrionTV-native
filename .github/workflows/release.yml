@@ -47,6 +47,7 @@ jobs:
 
       - name: Build release APK
         env:
+          ORION_KEYSTORE_BASE64: ${{ secrets.ORION_KEYSTORE_BASE64 }}
           ORION_KEYSTORE_PASSWORD: ${{ secrets.ORION_KEYSTORE_PASSWORD }}
           ORION_KEY_ALIAS: ${{ secrets.ORION_KEY_ALIAS }}
           ORION_KEY_PASSWORD: ${{ secrets.ORION_KEY_PASSWORD }}
