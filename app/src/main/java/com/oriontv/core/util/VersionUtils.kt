@@ -12,6 +12,13 @@ object VersionUtils {
     fun isValidVersion(version: String): Boolean = VERSION_REGEX.matches(version)
 
     /**
+     * 去 "v"/"V" 前缀（D-P2-4）：服务端一旦带 v 返回，根治点在数据层
+     * （AggApi.fetchVersion 先 strip 再校验），调用方不再各自 strip。
+     */
+    fun stripVersionPrefix(version: String): String =
+        version.trim().removePrefix("v").removePrefix("V")
+
+    /**
      * 比较两个版本号。
      * @return 负数表示 [a] < [b]，0 表示相等，正数表示 [a] > [b]。
      */

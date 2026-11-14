@@ -25,9 +25,11 @@ import kotlin.coroutines.cancellation.CancellationException
  * 超时/重试照抄 plan §5.1：单次 15 秒；超时/网络错/5xx 最多 3 次，退避 1s/2s/3s 递增；
  * 4xx、结构异常、JSON 损坏、体超时熔断开启时不重试。
  *
- * 熔断器（第 4 轮 P0-3）：videoList 与 version 各用一个，互不影响；
+ * 熔断器（第 4 轮 P0-3，第 5 轮 D-P1-1 修订）：videoList 与 version 各用一个，互不影响；
  * 只在“请求最终失败且原因为读超时（SocketTimeoutException）”时计数一次
  * （按请求计数，不按每次重试尝试计数）；4xx/5xx 不计数。
+ * 成功只在体完整读完后记（D-P1-1）：200 响应头不再先 `recordSuccess` 清零，
+ * 否则纯体超时请求永远是“先清零、再记 1”，计数在 0→1 振荡、到不了阈值 3。
  */
 @Singleton
 class AggApi @Inject constructor(
@@ -71,7 +73,13 @@ class AggApi @Inject constructor(
                 Request.Builder().url(url).get().build(),
                 circuitBreaker = videoListCircuitBreaker,
             )
-            val body = readBodyLimited(response, videoListCircuitBreaker)
+            // D-P1-2：Response 必须关（声明超限先抛那条路之前漏关，5 次可占满每 host 连接池）；
+            // D-P1-1：体完整读完才记成功，响应头 200 不先清零。
+            val body = response.use {
+                val b = readBodyLimited(it, videoListCircuitBreaker)
+                videoListCircuitBreaker.recordSuccess()
+                b
+            }
             val parsed = try {
                 json.decodeFromString<AggListResponse>(body)
             } catch (e: Exception) {
@@ -104,23 +112,28 @@ class AggApi @Inject constructor(
         }
     }
 
-    /** 单次版本拉取：执行 + 体上限 + 解码 + 正则校验，任一步失败即抛。 */
+    /** 单次版本拉取：执行 + 体上限 + 解码 + 正则校验，任一步失败即抛。版本号先去 "v" 前缀再校验（D-P2-4，根治点在 AggApi）。 */
     private suspend fun fetchVersion(url: HttpUrl): String {
         val response = executeWithRetry(
             Request.Builder().url(url).get().build(),
             timeoutSeconds = ApiClient.VERSION_CHECK_TIMEOUT_SECONDS,
             circuitBreaker = versionCircuitBreaker,
         )
-        val body = readBodyLimited(response, versionCircuitBreaker)
+        val body = response.use {
+            val b = readBodyLimited(it, versionCircuitBreaker)
+            versionCircuitBreaker.recordSuccess()
+            b
+        }
         val parsed = try {
             json.decodeFromString<VersionResponse>(body)
         } catch (e: Exception) {
             throw AggInvalidResponseException("版本接口返回 JSON 损坏", e)
         }
-        if (!VersionUtils.isValidVersion(parsed.version)) {
+        val version = VersionUtils.stripVersionPrefix(parsed.version)
+        if (!VersionUtils.isValidVersion(version)) {
             throw AggInvalidResponseException("版本号格式非法：${parsed.version}")
         }
-        return parsed.version
+        return version
     }
 
     /**
@@ -146,26 +159,22 @@ class AggApi @Inject constructor(
     }
 
     /**
-     * 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验，复用 MoonTvApi 的思路）。
-     * 体读取超时也要记一次熔断（第 10 轮）：熔断器的判据就是“体超时”，而 body.string()
+     * 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。
+     * 体读取超时也要记一次熔断（第 10 轮）：熔断器的判据就是“体超时”，而体读取
      * 发生在 executeWithRetry 返回之后，不包进来熔断就永远看不到真正的体超时；
      * 记在本次请求的熔断器上（与 executeWithRetry 的按请求计数一致，不重复记）。
+     * 成功由调用方在体完整读完后记（D-P1-1），这里只记失败。
      */
     private fun readBodyLimited(response: okhttp3.Response, circuitBreaker: CircuitBreaker): String {
-        val declared = response.header("Content-Length")?.toLongOrNull()
-        if (declared != null && declared > ApiClient.MAX_BODY_BYTES) {
+        val bytes = try {
+            readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
+        } catch (e: BodyTooLargeException) {
             throw AggInvalidResponseException("agg 响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
-        }
-        val body = try {
-            response.body?.string().orEmpty()
         } catch (e: java.net.SocketTimeoutException) {
             circuitBreaker.recordFailure()
             throw e
         }
-        if (body.toByteArray(Charsets.UTF_8).size > ApiClient.MAX_BODY_BYTES) {
-            throw AggInvalidResponseException("agg 响应体超限（>${ApiClient.MAX_BODY_BYTES} 字节）")
-        }
-        return body
+        return bytes.toString(Charsets.UTF_8)
     }
 
     /**
@@ -190,9 +199,9 @@ class AggApi @Inject constructor(
         var lastError: Exception? = null
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
-                val response = client.newCall(request).execute()
+                val response = client.newCall(request).executeCancellable()
                 if (response.isSuccessful) {
-                    circuitBreaker.recordSuccess()
+                    // D-P1-1：200 只表示响应头到了，不记成功；成功由调用方在体完整读完后记。
                     return response
                 }
                 response.close()
