@@ -5,6 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -17,6 +19,7 @@ import java.io.IOException
 import java.net.URLEncoder
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 用户 MoonTV 服务（{baseURL}，设置里填，默认空串）。接口路径与 plan §5.2 原样一致。
@@ -31,6 +34,8 @@ class MoonTvApi @Inject constructor(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** 重试退避（毫秒），默认 1 秒固定；单测可注入 0 以免真睡。 */
+    private val retryBackoffMs: Long = ApiClient.RETRY_BACKOFF_MS,
 ) {
     /**
      * 401 续期回调：由 Auth 层注入（用已保存凭据重登）。
@@ -38,7 +43,11 @@ class MoonTvApi @Inject constructor(
      */
     var onUnauthorized: (suspend () -> Boolean)? = null
 
-    /** 播放记录/收藏键在 URL 里的转义：`%`→`%25`、`+`→`%2B`（plan §5.2）。 */
+    /**
+     * 播放记录/收藏键在 URL 里的转义：`%`→`%25`、`+`→`%2B`（plan §5.2）。
+     * 旧整键转义（会误转分隔符 `+`），已由伴生对象 [generateKey] 取代，仅保留兼容；
+     * 请求方法不再对整键调用它，只做一次 URLEncoder.encode。
+     */
     fun escapeKey(key: String): String = key.replace("%", "%25").replace("+", "%2B")
 
     // ---- 登录 / 配置 ----
@@ -54,7 +63,8 @@ class MoonTvApi @Inject constructor(
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext false
                 val text = readBodyLimited(response)
-                runCatching { json.decodeFromString<LoginResponse>(text).ok }.getOrDefault(true)
+                // 响应体解不出来时不算登录成功（默认 false；之前默认 true 会误认登录成功）。
+                runCatching { json.decodeFromString<LoginResponse>(text).ok }.getOrDefault(false)
             }
         }
 
@@ -84,7 +94,7 @@ class MoonTvApi @Inject constructor(
         pageSize: Int = 16,
         pageStart: Int = 0,
     ): DoubanResponse = withContext(ioDispatcher) {
-        val url = "${baseUrl.trimEnd('/')}/api/douban?type=$type" +
+        val url = "${baseUrl.trimEnd('/')}/api/douban?type=${URLEncoder.encode(type, "UTF-8")}" +
             "&tag=${URLEncoder.encode(tag, "UTF-8")}&pageSize=$pageSize&pageStart=$pageStart"
         val body = execute(Request.Builder().url(url).get().build())
         json.decodeFromString<DoubanResponse>(body)
@@ -100,8 +110,7 @@ class MoonTvApi @Inject constructor(
                 Request.Builder().url(url).get().build(),
                 timeoutSeconds = ApiClient.SEARCH_TIMEOUT_SECONDS,
             )
-            runCatching { json.decodeFromString<SearchResponse>(body).results }.getOrNull()
-                ?: emptyList()
+            decodeSearchResults(body)
         }
 
     /**
@@ -110,23 +119,39 @@ class MoonTvApi @Inject constructor(
      */
     suspend fun searchVideo(baseUrl: String, query: String, resourceId: String): List<SearchResult> =
         withContext(ioDispatcher) {
+            // 空查询不过滤会把所有标题都含空串的结果全放回来：直接返回空列表，不发请求。
+            if (query.isBlank()) return@withContext emptyList()
             val url = "${baseUrl.trimEnd('/')}/api/search/one?q=${URLEncoder.encode(query, "UTF-8")}" +
                 "&resourceId=${URLEncoder.encode(resourceId, "UTF-8")}"
             val body = execute(Request.Builder().url(url).get().build())
-            val list = runCatching { json.decodeFromString<SearchResponse>(body).results }
-                .getOrNull() ?: emptyList()
+            val list = decodeSearchResults(body)
             val normalizedQuery = normalizeTitle(query)
             list.filter { it.title.isNotBlank() && normalizeTitle(it.title).contains(normalizedQuery) }
         }
 
-    /** 资源列表：仅超时重试 1 次（plan §5.2）；空响应体时当空列表。 */
+    /**
+     * 视频源列表。外层仅超时重试 1 次（第 9 轮）：4xx、体超限等确定性失败
+     * 在 execute 里已 fail fast，这里不能再兜回来多发一次；空体直接返回空列表，
+     * 整表解码失败时逐条容错保留可解析条目（P1-8）。
+     */
     suspend fun getResources(baseUrl: String): List<ApiSite> = withContext(ioDispatcher) {
         val url = "${baseUrl.trimEnd('/')}/api/search/resources"
         val request = Request.Builder().url(url).get().build()
         var lastError: Exception? = null
         repeat(2) { attempt ->
             try {
-                return@withContext json.decodeFromString<List<ApiSite>>(execute(request))
+                val body = execute(request)
+                if (body.isBlank()) return@withContext emptyList()
+                return@withContext try {
+                    json.decodeFromString<List<ApiSite>>(body)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 整表解码失败时保留可解析条目；连 JSON 数组都不是才原样抛错。
+                    val raw = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull()
+                        ?: throw e
+                    LenientDecode.decodeList(json, raw, ApiSite.serializer())
+                }
             } catch (e: IOException) {
                 // 仅超时重试 1 次：4xx、体超限等确定性失败立即抛
                 //（第 6/7/8 轮已让它们 fail fast，这里不能再兜回来多发一次）。
@@ -143,15 +168,33 @@ class MoonTvApi @Inject constructor(
     suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
-                (key?.let { "?key=${URLEncoder.encode(escapeKey(it), "UTF-8")}" } ?: "")
+                (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).get().build())
             if (body.isBlank()) return@withContext emptyMap()
             // 服务端可能返回整表 Record，也可能返回单条 Favorite。
+            // 整表解码失败时保留可解析条目（P1-8），而不是整个变空；
+            // 整表逐条解出来是空时，再看对象里有没有 Favorite 的字段名，
+            // 有才按单条解（Favorite 全字段有默认值，直接试单条会把整表误认成单条）。
             runCatching { json.decodeFromString<Map<String, Favorite>>(body) }.getOrElse {
-                runCatching {
-                    val single = json.decodeFromString<Favorite>(body)
-                    mapOf((key ?: "") to single)
-                }.getOrDefault(emptyMap())
+                val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+                if (raw == null) {
+                    runCatching {
+                        val single = json.decodeFromString<Favorite>(body)
+                        mapOf((key ?: "") to single)
+                    }.getOrDefault(emptyMap())
+                } else {
+                    val lenient = LenientDecode.decodeMap(json, raw, Favorite.serializer())
+                    if (lenient.isNotEmpty()) {
+                        lenient
+                    } else if (raw.keys.any { it in FAVORITE_KEYS }) {
+                        runCatching {
+                            val single = json.decodeFromString<Favorite>(body)
+                            mapOf((key ?: "") to single)
+                        }.getOrDefault(emptyMap())
+                    } else {
+                        emptyMap()
+                    }
+                }
             }
         }
 
@@ -169,7 +212,7 @@ class MoonTvApi @Inject constructor(
     suspend fun deleteFavorite(baseUrl: String, key: String? = null): Boolean =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
-                (key?.let { "?key=${URLEncoder.encode(escapeKey(it), "UTF-8")}" } ?: "")
+                (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).delete().build())
             runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
         }
@@ -181,8 +224,12 @@ class MoonTvApi @Inject constructor(
             val url = "${baseUrl.trimEnd('/')}/api/playrecords"
             val body = execute(Request.Builder().url(url).get().build())
             if (body.isBlank()) return@withContext emptyMap()
-            runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }
-                .getOrDefault(emptyMap())
+            // 整表解码失败时保留可解析条目（P1-8），而不是整个变空。
+            runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }.getOrElse {
+                val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+                raw?.let { LenientDecode.decodeMap(json, it, PlayRecord.serializer()) }
+                    ?: emptyMap()
+            }
         }
 
     suspend fun savePlayRecord(baseUrl: String, key: String, record: PlayRecord): Boolean =
@@ -199,7 +246,7 @@ class MoonTvApi @Inject constructor(
     suspend fun deletePlayRecord(baseUrl: String, key: String? = null): Boolean =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/playrecords" +
-                (key?.let { "?key=${URLEncoder.encode(escapeKey(it), "UTF-8")}" } ?: "")
+                (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).delete().build())
             runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
         }
@@ -236,6 +283,11 @@ class MoonTvApi @Inject constructor(
      * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
      * 4xx 不重试；401 时调 onUnauthorized 重登，成功且请求幂等则重试一次；
      * 响应体超 2MB 拒绝。
+     *
+     * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
+     * 两者都由专用 catch 原样抛出，不会被下面的 `catch (e: IOException)` 接住重跑
+     * （P0-2；第 6/7/8 轮约定）。401 续期每趟 execute 最多一次，
+     * 否则服务端持续 401 时会连登 4 次（P2-10）。协程取消原样抛出，不重试（P2）。
      */
     private suspend fun execute(
         request: Request,
@@ -247,13 +299,17 @@ class MoonTvApi @Inject constructor(
             .writeTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         var lastError: Exception? = null
+        var refreshAttempted = false
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
                 client.newCall(request).execute().use { response ->
                     if (response.code == 401) {
-                        val refreshed = onUnauthorized?.invoke() ?: false
-                        if (refreshed && ApiClient.isIdempotent(request.method)) {
-                            return@repeat // 外层循环再发一次（幂等重试）
+                        if (!refreshAttempted) {
+                            refreshAttempted = true
+                            val refreshed = onUnauthorized?.invoke() ?: false
+                            if (refreshed && ApiClient.isIdempotent(request.method)) {
+                                return@repeat // 外层循环再发一次（幂等重试）
+                            }
                         }
                         throw UnauthorizedException("登录已过期，请重新登录")
                     }
@@ -272,15 +328,28 @@ class MoonTvApi @Inject constructor(
             } catch (e: NonRetryableHttpException) {
                 throw IOException("HTTP ${e.statusCode}，不重试")
             } catch (e: ResponseTooLargeException) {
-                // 响应体超限是确定性失败：重发只会再下载一遍同样的超大体，不重试
+                // 响应体超限是确定性失败：重发只会再下载一遍同样的超大体，不重试（第 8 轮）
+                throw e
+            } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
                 lastError = e
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
-                if (attempt < ApiClient.MAX_RETRIES) delay(ApiClient.RETRY_BACKOFF_MS)
+                if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
             }
         }
         throw lastError ?: IOException("请求失败")
+    }
+
+    /** 搜索结果解码：空体/缺 results 字段时当空结果；单条脏数据只丢该条，不丢整表。 */
+    private fun decodeSearchResults(body: String): List<SearchResult> {
+        if (body.isBlank()) return emptyList()
+        val response = runCatching { json.decodeFromString<SearchResponse>(body) }.getOrNull()
+        if (response != null) return response.results ?: emptyList()
+        val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+            ?: return emptyList()
+        val results = raw["results"] as? JsonArray ?: return emptyList()
+        return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
     /** 读响应体并做 2MB 上限校验（Content-Length 先行拒绝 + 事后字节校验）。 */
@@ -297,6 +366,10 @@ class MoonTvApi @Inject constructor(
     }
 
     companion object {
+        /** 单条 Favorite 的字段名（整表单条兜底时用来认形状）。 */
+        private val FAVORITE_KEYS =
+            setOf("cover", "title", "source_name", "total_episodes", "search_title")
+
         /** 标题归一化：去空白、小写（搜索子串过滤与精确标题匹配共用）。 */
         fun normalizeTitle(title: String): String =
             title.lowercase().replace(Regex("\\s+"), "")
