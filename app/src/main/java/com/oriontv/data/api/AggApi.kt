@@ -24,6 +24,10 @@ class AggApi @Inject constructor(
 ) {
     companion object {
         const val BASE_URL = "https://ysp.ciweihaha.win/agg"
+
+        /** 是否体超时：OkHttp 读/连接超时抛 SocketTimeoutException，才记熔断。 */
+        internal fun isBodyTimeout(e: IOException): Boolean =
+            e is java.net.SocketTimeoutException
     }
 
     /** agg 体超时熔断：同类请求连续 3 次体超时后 60 秒内不再发。 */
@@ -76,7 +80,8 @@ class AggApi @Inject constructor(
 
     /**
      * 带重试的执行：超时/网络错/5xx 最多 3 次，退避 1 秒；熔断开启时直接拒绝。
-     * TODO（M1）：把熔断判据从“请求失败”细化到“体超时”；把 401 续期接进来。
+     * 4xx 立即抛，不重试、不记熔断（401 续期只在 MoonTvApi，agg 无登录不适用）。
+     * 熔断只记体超时（见 [isBodyTimeout]）：DNS 失败、连接被拒、5xx 只重试，不 trip 熔断。
      */
     private fun executeWithRetry(
         request: Request,
@@ -98,12 +103,16 @@ class AggApi @Inject constructor(
                 }
                 response.close()
                 if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                    throw IOException("HTTP ${response.code}，不重试")
+                    // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                    // catch 吞掉、记一次熔断失败并继续重试（与文档“4xx 不重试”相悖）。
+                    throw NonRetryableHttpException(response.code)
                 }
                 lastError = IOException("HTTP ${response.code}")
+            } catch (e: NonRetryableHttpException) {
+                throw IOException("HTTP ${e.statusCode}，不重试")
             } catch (e: IOException) {
                 lastError = e
-                circuitBreaker.recordFailure()
+                if (isBodyTimeout(e)) circuitBreaker.recordFailure()
             }
             if (attempt < ApiClient.MAX_RETRIES) {
                 Thread.sleep(ApiClient.backoffMs(attempt + 1))
@@ -115,3 +124,7 @@ class AggApi @Inject constructor(
 
 class AggInvalidResponseException(message: String, cause: Throwable? = null) :
     IOException(message, cause)
+
+/** 不可重试的 HTTP 状态（4xx）：仅用于跳出 executeWithRetry 的 IOException catch。 */
+private class NonRetryableHttpException(val statusCode: Int) :
+    IOException("HTTP $statusCode")
