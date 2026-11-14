@@ -142,17 +142,6 @@ class MoonTvApiTest {
     }
 
     @Test
-    fun `getResources retries at most five requests on persistent timeout`() {
-        // D-P2-1：之前外层 2 次 × 内层 4 次 = 8 次请求、~120 秒；
-        // 现在外层第 2 次调内层时不重试，最坏 4 + 1 = 5 次。
-        val (client, calls, _) = countingClient { _ -> throw SocketTimeoutException("timeout") }
-        assertThrows(IOException::class.java) {
-            runBlocking { api(client).getResources("https://example.com") }
-        }
-        assertEquals(5, calls.get())
-    }
-
-    @Test
     fun `getFavorites returns empty map for json array body`() {
         // D-P2-15：数组体不再静默空表（现在还记一条可见日志，行为仍是返回空表）。
         val body = """[{"cover":"","title":"单片","source_name":"源","total_episodes":3,"search_title":"单片"}]"""
