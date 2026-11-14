@@ -12,6 +12,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSource
 import okio.ForwardingSource
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,7 +41,7 @@ class UpdateDownloaderResumeTest {
                     if (n > 0) readSoFar += n
                     return n
                 }
-            }
+            }.buffer()
         }
     }
 
