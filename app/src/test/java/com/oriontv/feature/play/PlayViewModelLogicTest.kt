@@ -47,6 +47,16 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `polling advances in foreground or with background playback on`() {
+        // P2-9：前台照常推进；切后台且后台播放关着时只空转（不刷 UI、不存断点）；
+        // 后台播放开着时后台也要推进（自动跳片头/下一集预告在后台也要走）
+        assertTrue(PlayViewModel.shouldPoll(isForeground = true, backgroundPlaybackEnabled = false))
+        assertTrue(PlayViewModel.shouldPoll(isForeground = true, backgroundPlaybackEnabled = true))
+        assertTrue(PlayViewModel.shouldPoll(isForeground = false, backgroundPlaybackEnabled = true))
+        assertFalse(PlayViewModel.shouldPoll(isForeground = false, backgroundPlaybackEnabled = false))
+    }
+
+    @Test
     fun `next episode overlay respects dismiss`() {
         // P1-1：没取消过 → 出现；本集点过“取消” → 播完也不再弹、不自动播下一集
         assertTrue(PlayViewModel.shouldShowNextEpisode(true, 0, 10, -1))

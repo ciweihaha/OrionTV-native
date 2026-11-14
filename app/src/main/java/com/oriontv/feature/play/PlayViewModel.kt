@@ -95,6 +95,16 @@ class PlayViewModel @Inject constructor(
     /** 本页认领的播放代际（onCleared 只停自己那一代，不停直播页的播放）。 */
     private var playbackToken: Long = 0L
 
+    /** 是否在前台（PlayScreen 的 ON_RESUME/ON_PAUSE 观察者维护；轮询门控见 startPolling，P2-9）。 */
+    @Volatile
+    var isForeground: Boolean = true
+        private set
+
+    /** 前台状态变化（供 PlayScreen 的生命周期观察者调用）。 */
+    fun setForeground(foreground: Boolean) {
+        isForeground = foreground
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             handlePlaybackError(error)
@@ -225,10 +235,17 @@ class PlayViewModel @Inject constructor(
                 }
             }
         }
-        introSkippedThisEpisode = false
-        skipIntroCapsule.resetForEpisode()
-        nextEpisodeShownForIndex = -1
-        nextEpisodeDismissedForIndex = -1
+        // P2-5：按集重置的状态只在集号真的变了时重置——同集换源/自动换源/重试
+        // 也走 startEpisode，之前无条件重置会让“每集一次”的胶囊在换源后再次出现、
+        // 点过“取消”的下一集预告在换源后重弹。开播首集（current == null）按换集处理。
+        val episodeChanged = _uiState.value.current == null ||
+            episodeIndex != _uiState.value.episodeIndex
+        if (episodeChanged) {
+            introSkippedThisEpisode = false
+            skipIntroCapsule.resetForEpisode()
+            nextEpisodeShownForIndex = -1
+            nextEpisodeDismissedForIndex = -1
+        }
         userPaused = false
         lastSavedPositionMs = -1L
         markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
@@ -257,6 +274,10 @@ class PlayViewModel @Inject constructor(
                 outroStartMs = settings?.outroStartTime?.takeIf { it > 0 },
                 showNextEpisode = false,
                 drawer = null,
+                // P2-3：集次版本号，每次开播（换集/换源/重试/自动换源）都 +1，
+                // 播放页据此清掉旧落点预览——只看 durationMs 不够，新集时长与旧集
+                // 相同时控制器不重建，待定落点会带到新集、2 秒后对新集 seek 旧落点。
+                episodeGeneration = it.episodeGeneration + 1,
             )
         }
         armReadyTimeout()
@@ -344,6 +365,12 @@ class PlayViewModel @Inject constructor(
                 // A5-P2-2：轮询开头判归属——播放器被直播页抢走后，本页的
                 // 轮询不再读位置/写状态（之前无归属校验，跨页互相覆盖进度）。
                 if (!playerManager.isCurrentOwner(playbackToken)) continue
+                // P2-9 前台门控：切后台且后台播放关着时，本轮只空转，不读播放器、
+                // 不刷 UI 状态、不存断点；后台播放开着时仍要全量推进——自动跳片头、
+                // 下一集预告在后台也要走，否则后台播完不会自动切下一集。
+                // 注意：门控只看 Activity 前台（PlayScreen 的 ON_PAUSE/ON_RESUME），
+                // 应用内被其他页盖住时 Activity 仍是 resumed，轮询照常跑。
+                if (!shouldPoll(isForeground, playerManager.backgroundPlaybackEnabled)) continue
                 val position = playerManager.currentPositionMs
                 val duration = playerManager.durationMs
                 val buffered = playerManager.bufferedPositionMs
@@ -712,6 +739,14 @@ class PlayViewModel @Inject constructor(
             overlayEnabled && episodeIndex < episodeCount - 1 && dismissedForIndex != episodeIndex
 
         /**
+         * 轮询是否应推进（可单测，P2-9）：在前台、或后台播放开着时都推进；
+         * 切后台且后台播放关着时只空转——UI 刷新与断点保存都停，
+         * 播放器本身由 MainActivity 在 onUserLeaveHint 里暂停，不靠轮询停。
+         */
+        internal fun shouldPoll(isForeground: Boolean, backgroundPlaybackEnabled: Boolean): Boolean =
+            isForeground || backgroundPlaybackEnabled
+
+        /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；
          * 时长未知（直播/未出时长）时只保底 >= 0。
          */
@@ -755,4 +790,9 @@ data class PlayUiState(
     /** 断点标记（毫秒）：进度条上的断点位置。 */
     val breakpointMs: Long = 0L,
     val drawer: PlayDrawer? = null,
+    /**
+     * 集次版本号（P2-3）：每次开播（换集/换源/重试/自动换源）都 +1，
+     * 播放页据此清掉旧落点预览；只看 durationMs 不够（新集时长可能与旧集相同）。
+     */
+    val episodeGeneration: Int = 0,
 )
