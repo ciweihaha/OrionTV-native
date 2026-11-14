@@ -286,7 +286,13 @@ class UpdateDownloader @Inject constructor(
                 // B5-P1-4：按文件名排序会把 v2.0.10 排在 v2.0.9 之前（字典序
                 // "1" < "9"），刚下好的新包反被当旧包删掉；改按最后修改时间倒序，
                 // 与“只保留最新 N 个”的注释一致。
-            }?.sortedByDescending { it.lastModified() }.orEmpty()
+                // 第 5 轮 CI 跟进：lastModified 只有毫秒精度，快机器上连续创建的
+                // 文件会打平——sortedByDescending 是稳定排序，打平时结果取决于
+                // listFiles() 的未定义顺序，CI 两次因此红了、本地慢机器却全绿。
+                // 加文件名倒序作平局决胜，结果在任何文件系统上都确定。
+            }?.sortedWith(
+                compareByDescending<File> { it.lastModified() }.thenByDescending { it.name },
+            ).orEmpty()
             if (files.size <= keep) return
             files.drop(keep).forEach { runCatching { it.delete() } }
         } catch (_: Exception) {

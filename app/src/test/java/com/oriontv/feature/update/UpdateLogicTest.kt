@@ -60,8 +60,17 @@ class UpdateLogicTest {
         val downloader = UpdateDownloader(OkHttpClient())
         val dir = Files.createTempDirectory("oriontv-apk-test").toFile()
         try {
-            listOf("OrionTV_v1.apk", "OrionTV_v2.apk", "OrionTV_v3.apk", "OrionTV_v4.apk")
-                .forEach { File(dir, it).writeText("x") }
+            // 第 5 轮 CI 跟进：连续创建的文件在快机器上 lastModified 会打平
+            //（毫秒精度），必须显式摆 mtime，否则排序结果取决于 listFiles()
+            // 的未定义顺序、CI 飘红。
+            val now = System.currentTimeMillis()
+            listOf("OrionTV_v1.apk" to 30_000L, "OrionTV_v2.apk" to 20_000L, "OrionTV_v3.apk" to 10_000L, "OrionTV_v4.apk" to 0L)
+                .forEach { (name, ageMs) ->
+                    File(dir, name).apply {
+                        writeText("x")
+                        setLastModified(now - ageMs)
+                    }
+                }
             File(dir, "other.txt").writeText("keep me")
             downloader.cleanOldApkFiles(dir)
             val remaining = dir.listFiles()?.map { it.name }?.toSet().orEmpty()

@@ -53,6 +53,15 @@ jobs:
                 [ -n "$line" ] && echo "::error::$line"
               done
             else
+              # 先发失败的单测名（Gradle 的 "Class > test FAILED" 行，含任务失败行），
+              # 再发 FAILURE 段——否则 API 上只能看到泛失败、拿不到是哪个单测挂了
+              #（第 5 轮 efc7932/bef2edc 两次 CI 红、注解里都没有测试名，只能靠猜）。
+              FAILED_TESTS=$(grep -E " FAILED$" gradle-build.log | head -10 || true)
+              if [ -n "$FAILED_TESTS" ]; then
+                echo "$FAILED_TESTS" | sed 's/%/%25/g' | while IFS= read -r line; do
+                  [ -n "$line" ] && echo "::error::$line"
+                done
+              fi
               awk '/FAILURE: Build failed/{found=1} found{print} found && ++n>=10{exit}' gradle-build.log | sed 's/%/%25/g' | while IFS= read -r line; do
                 [ -n "$line" ] && echo "::error::$line"
               done

@@ -90,8 +90,18 @@ class UpdateDownloaderVerifyTest {
                 clientFor(sha256Status = 200, apkCalls, sha256Calls),
                 Dispatchers.Unconfined,
             )
-            File(dir, "OrionTV_v1.apk").writeText("old1")
-            File(dir, "OrionTV_v2.apk").writeText("old2")
+            // 第 5 轮 CI 跟进：v1/v2 连续创建，在快机器上 lastModified 会打平
+            //（毫秒精度），必须显式摆 mtime，否则清理结果取决于 listFiles()
+            // 的未定义顺序、CI 飘红。
+            val now = System.currentTimeMillis()
+            File(dir, "OrionTV_v1.apk").apply {
+                writeText("old1")
+                setLastModified(now - 20_000L)
+            }
+            File(dir, "OrionTV_v2.apk").apply {
+                writeText("old2")
+                setLastModified(now - 10_000L)
+            }
             val dest = File(dir, "OrionTV_v9999999999999.apk")
             val result = runBlocking { downloader.downloadAndVerify("2.0.0", dest) }
             assertEquals(dest, result)
