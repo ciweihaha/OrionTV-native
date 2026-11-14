@@ -23,7 +23,8 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
 /**
  * 设置类存储（DataStore Preferences）。
  * 注意：键名与 plan §5.4 的 AsyncStorage 键表保持一致；
- * RN 旧数据的首启迁移（读 RKStorage 库）在 M1 补齐，这里只提供新存储的读写。
+ * RN 旧数据的首启迁移（读 RKStorage 库）见 RnMigration（D-P1-6），
+ * 这里只提供新存储的读写 + 迁移完成标记。
  */
 @Singleton
 class SettingsDataStore @Inject constructor(
