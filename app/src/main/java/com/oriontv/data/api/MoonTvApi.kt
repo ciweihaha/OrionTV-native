@@ -130,37 +130,26 @@ class MoonTvApi @Inject constructor(
         }
 
     /**
-     * 视频源列表。外层仅超时重试 1 次（第 9 轮）：4xx、体超限等确定性失败
-     * 在 execute 里已 fail fast，这里不能再兜回来多发一次；空体直接返回空列表，
+     * 视频源列表。单次 execute 已对超时/网络错/5xx 重试 3 次（第 3 轮收尾 B-P2-13：
+     * 外层 repeat(2) 是双重重试，一次超时最多发 8 次请求，已去掉，只留 execute 内重试）；
+     * 4xx、体超限等确定性失败在 execute 里已 fail fast；空体直接返回空列表，
      * 整表解码失败时逐条容错保留可解析条目（P1-8）。
      */
     suspend fun getResources(baseUrl: String): List<ApiSite> = withContext(ioDispatcher) {
         val url = "${baseUrl.trimEnd('/')}/api/search/resources"
         val request = Request.Builder().url(url).get().build()
-        var lastError: Exception? = null
-        repeat(2) { attempt ->
-            try {
-                val body = execute(request)
-                if (body.isBlank()) return@withContext emptyList()
-                return@withContext try {
-                    json.decodeFromString<List<ApiSite>>(body)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // 整表解码失败时保留可解析条目；连 JSON 数组都不是才原样抛错。
-                    val raw = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull()
-                        ?: throw e
-                    LenientDecode.decodeList(json, raw, ApiSite.serializer())
-                }
-            } catch (e: IOException) {
-                // 仅超时重试 1 次：4xx、体超限等确定性失败立即抛
-                //（第 6/7/8 轮已让它们 fail fast，这里不能再兜回来多发一次）。
-                if (!AggApi.isBodyTimeout(e)) throw e
-                lastError = e
-                if (attempt == 0) delay(ApiClient.RETRY_BACKOFF_MS)
-            }
+        val body = execute(request)
+        if (body.isBlank()) return@withContext emptyList()
+        return@withContext try {
+            json.decodeFromString<List<ApiSite>>(body)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 整表解码失败时保留可解析条目；连 JSON 数组都不是才原样抛错。
+            val raw = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull()
+                ?: throw e
+            LenientDecode.decodeList(json, raw, ApiSite.serializer())
         }
-        throw lastError ?: IOException("获取视频源失败")
     }
 
     // ---- 收藏（服务端模式） ----
@@ -206,7 +195,7 @@ class MoonTvApi @Inject constructor(
                 put("favorite", json.encodeToJsonElement(Favorite.serializer(), favorite))
             }.toString().toRequestBody("application/json".toMediaType())
             val body = execute(Request.Builder().url(url).post(bodyJson).build())
-            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
+            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
         }
 
     suspend fun deleteFavorite(baseUrl: String, key: String? = null): Boolean =
@@ -214,7 +203,7 @@ class MoonTvApi @Inject constructor(
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).delete().build())
-            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
+            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
         }
 
     // ---- 播放记录（服务端模式） ----
@@ -240,7 +229,7 @@ class MoonTvApi @Inject constructor(
                 put("record", json.encodeToJsonElement(PlayRecord.serializer(), record))
             }.toString().toRequestBody("application/json".toMediaType())
             val body = execute(Request.Builder().url(url).post(bodyJson).build())
-            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
+            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
         }
 
     suspend fun deletePlayRecord(baseUrl: String, key: String? = null): Boolean =
@@ -248,7 +237,7 @@ class MoonTvApi @Inject constructor(
             val url = "${baseUrl.trimEnd('/')}/api/playrecords" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).delete().build())
-            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
+            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
         }
 
     // ---- 搜索历史（服务端模式） ----
@@ -274,7 +263,7 @@ class MoonTvApi @Inject constructor(
             val url = "${baseUrl.trimEnd('/')}/api/searchhistory" +
                 (keyword?.let { "?keyword=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).delete().build())
-            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(true)
+            runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
         }
 
     // ---- 执行层 ----
@@ -341,14 +330,20 @@ class MoonTvApi @Inject constructor(
         throw lastError ?: IOException("请求失败")
     }
 
-    /** 搜索结果解码：空体/缺 results 字段时当空结果；单条脏数据只丢该条，不丢整表。 */
+    /**
+     * 搜索结果解码：空体/缺 results 字段时当空结果；单条脏数据只丢该条，不丢整表。
+     * 第 3 轮收尾 B-P2-9：JSON 损坏（非 JSON 对象、results 字段非数组）时抛
+     * [SearchResponseException]，与“无结果”区分，由 SearchError 分型提示“数据异常请重试”。
+     */
     private fun decodeSearchResults(body: String): List<SearchResult> {
         if (body.isBlank()) return emptyList()
         val response = runCatching { json.decodeFromString<SearchResponse>(body) }.getOrNull()
         if (response != null) return response.results ?: emptyList()
         val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
-            ?: return emptyList()
-        val results = raw["results"] as? JsonArray ?: return emptyList()
+            ?: throw SearchResponseException("搜索结果解析失败：响应不是合法 JSON 对象")
+        val resultsElement = raw["results"] ?: return emptyList()
+        val results = resultsElement as? JsonArray
+            ?: throw SearchResponseException("搜索结果解析失败：results 字段不是数组")
         return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
@@ -389,6 +384,9 @@ class MoonTvApi @Inject constructor(
 }
 
 class UnauthorizedException(message: String) : Exception(message)
+
+/** 搜索响应 JSON 损坏（仍是 IOException，调用方照常捕获；SearchError 分型为“数据异常”）。 */
+class SearchResponseException(message: String) : IOException(message)
 
 /** 响应体超限（>2MB）：确定性失败，不重试（仍是 IOException，调用方照常捕获）。 */
 internal class ResponseTooLargeException(message: String) : IOException(message)

@@ -15,6 +15,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -148,5 +149,68 @@ class MoonTvApiTest {
         runBlocking { api(client).getDoubanData("https://example.com", "电影", "动作") }
         assertTrue(lastUrl.get().contains("type=%E7%94%B5%E5%BD%B1"))
         assertFalse(lastUrl.get().contains("type=电影"))
+    }
+
+    // 第 3 轮收尾 B-P2-8：服务端写操作解码失败默认 false，不再当成功。
+    @Test
+    fun `addFavorite decode failure defaults to false`() {
+        val (client, calls, _) = countingClient { request -> responseFor(request, 200, "not-json{{{") }
+        val ok = runBlocking { api(client).addFavorite("https://example.com", "k", Favorite()) }
+        assertFalse(ok)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `deleteFavorite decode failure defaults to false`() {
+        val (client, calls, _) = countingClient { request -> responseFor(request, 200, "not-json{{{") }
+        val ok = runBlocking { api(client).deleteFavorite("https://example.com", "k") }
+        assertFalse(ok)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `savePlayRecord decode failure defaults to false`() {
+        val (client, calls, _) = countingClient { request -> responseFor(request, 200, "not-json{{{") }
+        val ok = runBlocking {
+            api(client).savePlayRecord("https://example.com", "k", PlayRecord())
+        }
+        assertFalse(ok)
+        assertEquals(1, calls.get())
+    }
+
+    // 第 3 轮收尾 B-P2-9：搜索 JSON 损坏时抛错，与“无结果”区分。
+    @Test
+    fun `searchVideos corrupt JSON throws instead of empty list`() {
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, "not-json{{{") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).searchVideos("https://example.com", "庆余年") }
+        }
+    }
+
+    @Test
+    fun `searchVideos results field not an array throws`() {
+        val (client, _, _) = countingClient { request ->
+            responseFor(request, 200, """{"results": "oops"}""")
+        }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).searchVideos("https://example.com", "庆余年") }
+        }
+    }
+
+    @Test
+    fun `searchVideos missing results field is empty list`() {
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, """{"foo": 1}""") }
+        val results = runBlocking { api(client).searchVideos("https://example.com", "庆余年") }
+        assertTrue(results.isEmpty())
+    }
+
+    // 第 3 轮收尾 B-P2-13：去掉外层重试后，一次超时最多发 4 次（execute 内重试 3 次）。
+    @Test
+    fun `getResources timeout is retried only inside execute`() {
+        val (client, calls, _) = countingClient { _ -> throw SocketTimeoutException("timed out") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getResources("https://example.com") }
+        }
+        assertEquals(4, calls.get())
     }
 }
