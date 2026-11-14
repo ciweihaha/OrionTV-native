@@ -161,8 +161,8 @@ class AggApi @Inject constructor(
     /**
      * 带重试的执行：超时/网络错/5xx 最多 3 次，退避 1s/2s/3s 递增；熔断开启时直接拒绝。
      *
-     * 4xx 抛 [NonRetryableException]——它不继承 IOException，所以不会被下面的
-     * `catch (e: IOException)` 接住重跑（P0-2）；熔断只在请求最终失败且原因为
+     * 4xx 抛 [NonRetryableHttpException]，由专用 catch 原样转成 IOException 抛出，
+     * 不会被下面的 `catch (e: IOException)` 接住重跑（P0-2；第 6/7 轮约定）；熔断只在请求最终失败且原因为
      * 读超时时计数一次，不按每次重试尝试计数，4xx/5xx 不计数（P0-3）。
      * 协程取消原样抛出，不重试、不计数（P2）。
      */
@@ -172,7 +172,7 @@ class AggApi @Inject constructor(
         circuitBreaker: CircuitBreaker,
     ): okhttp3.Response {
         if (circuitBreaker.isOpen()) {
-            throw NonRetryableException("agg 熔断开启，60 秒内不再发请求")
+            throw IOException("agg 熔断开启，60 秒内不再发请求")
         }
         val client = okHttpClient.newBuilder()
             .readTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
@@ -187,11 +187,13 @@ class AggApi @Inject constructor(
                 }
                 response.close()
                 if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                    throw NonRetryableException("HTTP ${response.code}，不重试")
+                    // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                    // catch 吞掉重跑（与文档“4xx 不重试”相悖；第 6/7 轮约定）。
+                    throw NonRetryableHttpException(response.code)
                 }
                 lastError = IOException("HTTP ${response.code}")
-            } catch (e: NonRetryableException) {
-                throw e
+            } catch (e: NonRetryableHttpException) {
+                throw IOException("HTTP ${e.statusCode}，不重试")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -212,3 +214,7 @@ class AggApi @Inject constructor(
 
 class AggInvalidResponseException(message: String, cause: Throwable? = null) :
     IOException(message, cause)
+
+/** 不可重试的 HTTP 状态（4xx）：仅用于跳出各 Api execute 的 IOException catch。 */
+internal class NonRetryableHttpException(val statusCode: Int) :
+    IOException("HTTP $statusCode")
