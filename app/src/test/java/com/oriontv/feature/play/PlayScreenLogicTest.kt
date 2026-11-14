@@ -181,4 +181,28 @@ class PlayScreenLogicTest {
             ),
         )
     }
+
+    @Test
+    fun `ok toggles play pause except on error page`() {
+        // 第 7 轮 P2-6：错误页上 OK 不触发播放/暂停——焦点因“重试”落焦失败
+        // 回退到根部时，旧分支会在错误页后 pokeControls + togglePlayPause；
+        // 抽屉打开、控制条隐藏、有待定落点时 OK 也另有去处，不走到播放/暂停。
+        assertTrue(shouldTogglePlayPauseOnOk(false, false, true, false))
+        assertFalse(shouldTogglePlayPauseOnOk(false, false, true, true))
+        assertFalse(shouldTogglePlayPauseOnOk(true, false, true, false))
+        assertFalse(shouldTogglePlayPauseOnOk(false, true, true, false))
+        assertFalse(shouldTogglePlayPauseOnOk(false, false, false, false))
+        assertFalse(shouldTogglePlayPauseOnOk(false, false, false, true))
+    }
+
+    @Test
+    fun `group scroll target is selected group only with multiple groups`() {
+        // 第 7 轮 P2-7：只有多分组时才滚，目标是选中分组；单分组/空表不滚（-1）；
+        // 选中分组越界时钳制到末组。
+        assertEquals(5, resolveGroupScrollIndex(5, 8))
+        assertEquals(0, resolveGroupScrollIndex(0, 8))
+        assertEquals(7, resolveGroupScrollIndex(9, 8))
+        assertEquals(-1, resolveGroupScrollIndex(0, 1))
+        assertEquals(-1, resolveGroupScrollIndex(0, 0))
+    }
 }

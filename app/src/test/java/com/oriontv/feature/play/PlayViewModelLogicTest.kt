@@ -103,4 +103,108 @@ class PlayViewModelLogicTest {
         assertFalse(PlayViewModel.isStartPositionOverflow(600_000L, 0L))
         assertFalse(PlayViewModel.isStartPositionOverflow(0L, 0L))
     }
+
+    @Test
+    fun `seek away from tail clears next episode card`() {
+        // 第 7 轮 P2-1：seek 后按新位置重算——落点离开片尾窗口（剩 10 秒内或
+        // 已标记片尾处）时清掉，否则预告卡钉屏、“3 秒后自动播放”被冻结误导；
+        // 落点仍在片尾窗口内时保留；片长未知时无法重算，不动。
+        val duration = 1_800_000L
+        // 剩 5 秒：保留
+        assertFalse(PlayViewModel.shouldClearNextEpisodeOnSeek(1_795_000L, duration, null))
+        // 恰好剩 10 秒：保留（窗口含边界）
+        assertFalse(PlayViewModel.shouldClearNextEpisodeOnSeek(1_790_000L, duration, null))
+        // 剩 10 秒零 1 毫秒：清掉
+        assertTrue(PlayViewModel.shouldClearNextEpisodeOnSeek(1_789_999L, duration, null))
+        // 快退回几分钟前：清掉
+        assertTrue(PlayViewModel.shouldClearNextEpisodeOnSeek(600_000L, duration, null))
+        // 已标记片尾处（播到标记点）：保留
+        assertFalse(PlayViewModel.shouldClearNextEpisodeOnSeek(1_700_000L, duration, 1_700_000L))
+        // 标记了片尾但落点在标记点之前：清掉
+        assertTrue(PlayViewModel.shouldClearNextEpisodeOnSeek(600_000L, duration, 1_700_000L))
+        // 片长未知：不动
+        assertFalse(PlayViewModel.shouldClearNextEpisodeOnSeek(600_000L, 0L, null))
+    }
+
+    @Test
+    fun `next episode early overlay can show again after replay marker reset`() {
+        // 第 7 轮 P2-2：轮询门控对 nextEpisodeShownForIndex 的语义——OK 重播把
+        // 标记重置为 -1（与 retry() 一致），重播后片尾前 10 秒才能再提前出卡；
+        // 标记仍是本集集号时不再提前出（旧重播分支漏了重置，只有播完才重弹）。
+        val duration = 1_800_000L
+        // 重播后（标记 -1），播到剩 5 秒：提前出
+        assertTrue(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 本集已出过（标记 0）：不再提前出
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = 0, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 标记是上一集（换集后）：本集能提前出
+        assertTrue(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = 0, episodeIndex = 1,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 位置不在片尾窗口：不出
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 600_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 标过片尾且播到标记处：提前出
+        assertTrue(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_700_000L, outroStartMs = 1_700_000L,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 开关关/点过取消/末集：不出
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = false, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = 0,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 9,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+    }
+
+    @Test
+    fun `same episode source switch rearms intro skip only inside intro window`() {
+        // 第 7 轮 P2-3：同集换源/自动换源/重试时，新起点仍在片头窗口内才重 arm
+        // 自动跳与胶囊——开播早期换源后新源上自动跳与胶囊才重现；起点已过片头
+        // （或没片头可跳）时不重 arm，“每集一次”不被换源重置。
+        assertTrue(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(30_000L, 90_000L))
+        assertTrue(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(0L, 90_000L))
+        assertFalse(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(120_000L, 90_000L))
+        assertFalse(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(90_000L, 90_000L))
+        assertFalse(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(30_000L, 0L))
+    }
 }

@@ -77,6 +77,12 @@ class LiveViewModel @Inject constructor(
     /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /** 是否已离页（第 7 轮 P1-1）：onPagePaused 置真、onPageResumed 置假；待定播放
+     * 任务（就绪超时/数字键提交/面板定时器）到点时凭它二次核对——取消是协作式的，
+     * 已越过 delay 的任务仍会恢复执行，不能只靠取消。 */
+    @Volatile
+    private var pagePaused: Boolean = false
+
     /** 是否在前台（LiveScreen 的 ON_RESUME/ON_PAUSE 观察者维护；时钟门控见 startTicker，P2-9）。 */
     @Volatile
     var isForeground: Boolean = true
@@ -192,6 +198,9 @@ class LiveViewModel @Inject constructor(
         // A9-P2-5：在途守卫——上一路加载还没跑完时直接返回，不并发跑两路
         // M3U 加载、两次 playCurrent()（与 refreshJob 同款）。
         if (initJob?.isActive == true) return
+        // 第 7 轮 P2-13：重载先取消旧定时任务（防御性）——当前仅空态可达，
+        // 定时器无从武装；若将来 reload 在有频道时可达，即与 P1-1 同类泄漏。
+        cancelPendingPlaybackJobs()
         // A4-P2-4：重载先停掉旧播放——否则失败时旧台音频继续播、UI 却显示加载失败。
         // 第 6 轮 P2-9：无归属的 stop() 改 stopIfOwner——本页没认领过播放（token 0）
         // 时不碰别人的播放（例如后台播放开着时点播页正在播）；只停自己那一代。
@@ -220,6 +229,14 @@ class LiveViewModel @Inject constructor(
             // A6-P2-7：传正在播的那条线（controller.currentUrl），不是
             // current?.url（恒为 urls[0]）——正在播 2 号线时刷新后应回 2 号线。
             controller.setChannels(fresh, restoreUrl = controller.currentUrl, restoreName = current?.name)
+            // 第 7 轮 P2-12：EPG 弹窗持的旧频道对象在新表里已不存在——按新表
+            // 重建（标题带台号、左右切台按新列表走）；旧对象继续持着，
+            // indexOfChannel 按身份/（url, name）都匹配不到，标题无台号、切台失效。
+            // 弹窗没开时为 null，不动。
+            val dialogChannel = _uiState.value.epgDialogChannel
+            val resolvedDialogChannel = dialogChannel?.let {
+                resolveRefreshedEpgChannel(fresh, it, controller.currentChannel)
+            }
             _uiState.update {
                 it.copy(
                     isLoading = false,
@@ -228,6 +245,7 @@ class LiveViewModel @Inject constructor(
                     currentIndex = controller.currentIndex,
                     lineIndex = controller.lineIndex,
                     focusedChannelIndex = controller.currentIndex,
+                    epgDialogChannel = resolvedDialogChannel,
                 )
             }
             // 当前台还在新表里且之前没失败过：不断流，只更新表；否则重开播。
@@ -306,7 +324,9 @@ class LiveViewModel @Inject constructor(
         readyTimeoutJob?.cancel()
         readyTimeoutJob = viewModelScope.launch {
             delay(LIVE_READY_TIMEOUT_MS)
-            if (!playingConfirmed) handlePlaybackError()
+            // 第 7 轮 P1-1：离页后到点也不处理——取消是协作式的，已越过 delay
+            // 的任务仍会恢复执行，凭 pagePaused 二次核对，不在别的页面上恢复音频。
+            if (shouldFirePendingPlaybackTask(pagePaused) && !playingConfirmed) handlePlaybackError()
         }
     }
 
@@ -385,17 +405,23 @@ class LiveViewModel @Inject constructor(
      * 后台播放开关关着时暂停本页的播放（导航轨切走直播页也一样，之前音频
      * 继续播）；时钟与 EPG 刷新定时器随页停掉，切走后不再后台空转。
      * 开关开着时不暂停（画中画/后台音频继续），但定时器同样停——回页时重起。
+     * 第 7 轮 P1-1：待定播放任务（就绪超时/数字键提交/面板定时器）一并取消——
+     * 旧实现只停 ticker/EPG，15 秒就绪超时、数字键提交、面板定时器到点仍会
+     * playCurrent()，音频泄漏到别的页面；到点回调另凭 pagePaused 二次核对。
      */
     fun onPagePaused() {
         pageActive = false
+        pagePaused = true
         if (!playerManager.backgroundPlaybackEnabled) {
             playerManager.pauseIfOwner(playbackToken)
         }
-        // A9-P1-1：离页即取消数字键提交定时器——否则 1.5 秒后在后台切台开播
-        //（与 afterManualChannelChange/changeLine/openPanel 的取消同款）。
-        cancelDigitCommit()
         tickerJob?.cancel()
         epgRefreshJob?.cancel()
+        // A9-P1-1 + 第 7 轮 P1-1：离页即取消待定播放任务——就绪超时/数字键提交/
+        // 面板定时器到点都会调 playCurrent()，不取消会在后台切台开播
+        //（cancelPendingPlaybackJobs 含 cancelDigitCommit，与
+        // afterManualChannelChange/changeLine/openPanel 的取消同款）。
+        cancelPendingPlaybackJobs()
     }
 
     /**
@@ -410,6 +436,9 @@ class LiveViewModel @Inject constructor(
      */
     fun onPageResumed() {
         pageActive = true
+        // 第 7 轮 P1-1：先清离页标志再早退——首启时频道表还是空的，init() 的
+        // 加载完成后才开播、才武装就绪超时；若标志不清，那个超时会被误拦。
+        pagePaused = false
         if (_uiState.value.channels.isEmpty()) {
             // A9-P1-3：频道表为空时重走 init()——首装未配 M3U 时 init() 早退后
             // initialised 已复位（见 init 的未配分支），用户填好地址回来能自动加载；
@@ -536,6 +565,9 @@ class LiveViewModel @Inject constructor(
         digitCommitJob?.cancel()
         digitCommitJob = viewModelScope.launch {
             delay(LiveController.DIGIT_COMMIT_MS)
+            // 第 7 轮 P1-1：离页后到点也不提交换台（同就绪超时，取消后仍可能
+            // 已在恢复执行，凭 pagePaused 二次核对）。
+            if (!shouldFirePendingPlaybackTask(pagePaused)) return@launch
             when (val action = controller.commitDigits()) {
                 is DigitAction.SwitchTo -> {
                     _uiState.update { it.copy(digitBuffer = "") }
@@ -561,6 +593,18 @@ class LiveViewModel @Inject constructor(
         digitCommitJob = null
         controller.clearDigitBuffer()
         _uiState.update { it.copy(digitBuffer = "") }
+    }
+
+    /**
+     * 取消全部待定播放任务（第 7 轮 P1-1/P2-13）：就绪超时、数字键提交、
+     * 面板定时器到点都会调 playCurrent()；离页（onPagePaused）与重载
+     * （reload）时不取消，超时后会在别的页面上恢复音频、或与重载后的
+     * 新任务交错。数字键提交走 cancelDigitCommit，缓冲一并清掉。
+     */
+    private fun cancelPendingPlaybackJobs() {
+        readyTimeoutJob?.cancel()
+        cancelDigitCommit()
+        panelTimerJob?.cancel()
     }
 
     // ---- 收藏 ----
@@ -619,10 +663,15 @@ class LiveViewModel @Inject constructor(
         // 否则播放器静置在错误态，需用户手动换台或按 OK 重试。
         // 已在播（流已恢复）或无 signalError 时不动作；失败页（playbackFailed）
         // 的重试仍走遮罩上的重试按钮，不在这里自动重试。
+        // 第 7 轮 P1-1：离页后面板定时器到点调进来时不重播（到点回调已凭
+        // pagePaused 核对过一次，这里是第二道——closePanel 也可由返回键调入，
+        // 在页时标志为假，不影响正常关面板重播）。
         val hadSignalError = _uiState.value.signalError
         val wasPlaying = _uiState.value.isPlaying
         _uiState.update { it.copy(panelOpen = false, epgDialogChannel = null) }
-        if (hadSignalError && !wasPlaying && _uiState.value.channels.isNotEmpty()) {
+        if (hadSignalError && !wasPlaying && _uiState.value.channels.isNotEmpty() &&
+            shouldFirePendingPlaybackTask(pagePaused)
+        ) {
             playCurrent()
         }
     }
@@ -643,7 +692,9 @@ class LiveViewModel @Inject constructor(
         panelTimerJob?.cancel()
         panelTimerJob = viewModelScope.launch {
             delay(LiveController.PANEL_AUTO_CLOSE_MS)
-            closePanel()
+            // 第 7 轮 P1-1：离页后到点不关面板、更不触发关面板后的重播
+            //（同就绪超时/数字键提交，凭 pagePaused 二次核对）。
+            if (shouldFirePendingPlaybackTask(pagePaused)) closePanel()
         }
     }
 
@@ -776,6 +827,33 @@ class LiveViewModel @Inject constructor(
             backgroundPlaybackEnabled: Boolean,
             playbackStarted: Boolean,
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+
+        /**
+         * 待定播放任务到点时是否应执行（可单测，第 7 轮 P1-1）：离页后就绪超时/
+         * 数字键提交/面板定时器到点也不应再播放——取消是协作式的，已越过
+         * delay 的任务仍会恢复执行，须凭 pagePaused 二次核对。
+         */
+        internal fun shouldFirePendingPlaybackTask(pagePaused: Boolean): Boolean = !pagePaused
+
+        /**
+         * 刷新后 EPG 弹窗应持的新频道对象（可单测，第 7 轮 P2-12）：在新表里按
+         * (url, name) → url → name 的顺序找（与 LiveController.setChannels
+         * 的回退顺序一致），找不到回落到当前播放台；新表里完全无着落时返回
+         * null（调用方据此关闭弹窗，不持旧对象）。旧实现一直持刷新前的旧
+         * 对象，indexOfChannel 按身份/（url, name）都匹配不到，标题无台号、
+         * 左右切台直接 early return。
+         */
+        internal fun resolveRefreshedEpgChannel(
+            fresh: List<M3uParser.Channel>,
+            dialogChannel: M3uParser.Channel,
+            currentChannel: M3uParser.Channel?,
+        ): M3uParser.Channel? {
+            fresh.firstOrNull { it.url == dialogChannel.url && it.name == dialogChannel.name }
+                ?.let { return it }
+            fresh.firstOrNull { it.url == dialogChannel.url }?.let { return it }
+            fresh.firstOrNull { it.name == dialogChannel.name }?.let { return it }
+            return currentChannel
+        }
 
         /**
          * 手动刷新后是否应按“刷新失败”提示（可单测，A8-P1-2）：拉网失败时
