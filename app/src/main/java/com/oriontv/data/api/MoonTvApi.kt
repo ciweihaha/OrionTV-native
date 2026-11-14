@@ -256,7 +256,9 @@ class MoonTvApi @Inject constructor(
                     }
                     if (!response.isSuccessful) {
                         if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                            throw IOException("HTTP ${response.code}，不重试")
+                            // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                            // catch 吞掉并继续重试（与文档“4xx 不重试”相悖；同 AggApi 第 6 轮）。
+                            throw NonRetryableHttpException(response.code)
                         }
                         throw IOException("HTTP ${response.code}")
                     }
@@ -264,6 +266,8 @@ class MoonTvApi @Inject constructor(
                 }
             } catch (e: UnauthorizedException) {
                 throw e
+            } catch (e: NonRetryableHttpException) {
+                throw IOException("HTTP ${e.statusCode}，不重试")
             } catch (e: IOException) {
                 lastError = e
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
@@ -306,3 +310,7 @@ class MoonTvApi @Inject constructor(
 }
 
 class UnauthorizedException(message: String) : Exception(message)
+
+/** 不可重试的 HTTP 状态（4xx）：仅用于跳出 execute 的 IOException catch。 */
+private class NonRetryableHttpException(val statusCode: Int) :
+    IOException("HTTP $statusCode")
