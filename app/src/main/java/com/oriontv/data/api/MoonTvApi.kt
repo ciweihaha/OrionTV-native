@@ -477,8 +477,8 @@ class MoonTvApi @Inject constructor(
         return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
-    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。 */
-    private fun readBodyLimited(response: okhttp3.Response): String {
+    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。第 7 轮 D7-P2-4：改 suspend，体读可取消（取消时关体中断 socket 读）。 */
+    private suspend fun readBodyLimited(response: okhttp3.Response): String {
         val bytes = try {
             readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
         } catch (e: BodyTooLargeException) {

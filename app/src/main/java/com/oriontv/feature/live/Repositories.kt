@@ -1,7 +1,9 @@
 package com.oriontv.feature.live
 
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.BodyTooLargeException
 import com.oriontv.data.api.executeCancellable
+import com.oriontv.data.api.readStreamCapped
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -214,22 +216,22 @@ class EpgRepository @Inject constructor(
 /**
  * 流式限量读响应体（A4-P2-2）：Content-Length 先行拒绝，之后按 64KB 块流式读，
  * 累计超上限即停并返回 null，不把超大体整读进内存再判。
+ * 第 7 轮 D7-P2-4：改 suspend + 可取消读（与 ApiClient.readBodyBytesLimited
+ * 同款，取消时关响应体、中断阻塞的 socket 读）；超限时 readStreamCapped
+ * 抛 BodyTooLargeException，这里按旧语义返回 null。
  */
-internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String? {
+internal suspend fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String? {
     val declared = response.header("Content-Length")?.toLongOrNull()
     if (declared != null && declared > maxBytes) return null
     val body = response.body ?: return null
-    val out = java.io.ByteArrayOutputStream()
-    val buffer = ByteArray(64 * 1024)
-    body.byteStream().use { input ->
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            if (out.size() + read > maxBytes) return null
-            out.write(buffer, 0, read)
+    val bytes = try {
+        body.byteStream().use { input ->
+            readStreamCapped(input, maxBytes) { runCatching { body.close() } }
         }
+    } catch (e: BodyTooLargeException) {
+        return null
     }
-    return decodeBodyBytes(out.toByteArray(), response.header("Content-Type"))
+    return decodeBodyBytes(bytes, response.header("Content-Type"))
 }
 
 /**

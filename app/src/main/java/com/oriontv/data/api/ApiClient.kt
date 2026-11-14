@@ -150,16 +150,38 @@ class BodyTooLargeException(message: String) : IOException(message)
  * 累计超限立即停（最多缓冲 limit 字节），不整包进内存（服务端谎报小体积时
  * `body.string()` 会把未封顶的体读进内存）。
  * 体读取超时（SocketTimeoutException）原样抛出，由调用方记熔断/做重试判定。
+ * 第 7 轮 D7-P2-4：改 suspend + 可取消读（见 [readStreamCapped]）——
+ * 之前是阻塞式 `InputStream.read()`，`withTimeout` 的取消在体读返回前
+ * 递送不到协程，version() 的 60 秒总预算可超支约一个读超时（20 秒）。
  */
-internal fun readBodyBytesLimited(response: okhttp3.Response, limitBytes: Long): ByteArray {
+internal suspend fun readBodyBytesLimited(response: okhttp3.Response, limitBytes: Long): ByteArray {
     val declared = response.header("Content-Length")?.toLongOrNull()
     if (declared != null && declared > limitBytes) {
         throw BodyTooLargeException("响应体超限（>$limitBytes 字节）")
     }
     val body = response.body ?: return ByteArray(0)
-    val out = java.io.ByteArrayOutputStream()
-    val buf = ByteArray(64 * 1024)
-    body.byteStream().use { input ->
+    return body.byteStream().use { input ->
+        readStreamCapped(input, limitBytes) { runCatching { body.close() } }
+    }
+}
+
+/**
+ * 可取消的流式限量读（第 7 轮 D7-P2-4）：阻塞式 `InputStream.read()` 本身
+ * 不响应协程取消——取消到达时由 `invokeOnCancellation` 关流（调用方传
+ * 关响应体的动作），中断 socket 读，体读立即以 [CancellationException]
+ * 收尾；调用方仍在 IO 线程阻塞读（与之前一致），只是多了一条取消时
+ * 中断读的路径。超限仍抛 [BodyTooLargeException]；取消与超限竞态时
+ * 以取消为准（已取消的 continuation 不再恢复超限结果）。
+ */
+internal suspend fun readStreamCapped(
+    input: java.io.InputStream,
+    limitBytes: Long,
+    closeOnCancel: () -> Unit,
+): ByteArray = suspendCancellableCoroutine { cont ->
+    cont.invokeOnCancellation { runCatching { closeOnCancel() } }
+    try {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
         while (true) {
             val read = input.read(buf)
             if (read < 0) break
@@ -168,8 +190,19 @@ internal fun readBodyBytesLimited(response: okhttp3.Response, limitBytes: Long):
             }
             out.write(buf, 0, read)
         }
+        if (cont.isActive) {
+            cont.resume(out.toByteArray())
+        }
+    } catch (e: Exception) {
+        if (cont.isCancelled) {
+            cont.resumeWithException(
+                e as? CancellationException
+                    ?: CancellationException("响应体读取已取消").apply { initCause(e) },
+            )
+        } else {
+            cont.resumeWithException(e)
+        }
     }
-    return out.toByteArray()
 }
 
 /**

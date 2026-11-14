@@ -209,7 +209,7 @@ class AggApi @Inject constructor(
      * 记在本次请求的熔断器上（与 executeWithRetry 的按请求计数一致，不重复记）。
      * 成功由调用方在体完整读完后记（D-P1-1），这里只记失败。
      */
-    private fun readBodyLimited(response: okhttp3.Response, circuitBreaker: CircuitBreaker): String {
+    private suspend fun readBodyLimited(response: okhttp3.Response, circuitBreaker: CircuitBreaker): String {
         val bytes = try {
             readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
         } catch (e: BodyTooLargeException) {
