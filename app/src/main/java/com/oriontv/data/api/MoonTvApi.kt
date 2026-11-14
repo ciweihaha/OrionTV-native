@@ -129,21 +129,38 @@ class MoonTvApi @Inject constructor(
             list.filter { it.title.isNotBlank() && normalizeTitle(it.title).contains(normalizedQuery) }
         }
 
-    /** 资源列表：重试由 [execute] 统一做（之前这里又包一层 repeat(2)，一次请求最多发 8 次）。 */
+    /**
+     * 视频源列表。外层仅超时重试 1 次（第 9 轮）：4xx、体超限等确定性失败
+     * 在 execute 里已 fail fast，这里不能再兜回来多发一次；空体直接返回空列表，
+     * 整表解码失败时逐条容错保留可解析条目（P1-8）。
+     */
     suspend fun getResources(baseUrl: String): List<ApiSite> = withContext(ioDispatcher) {
         val url = "${baseUrl.trimEnd('/')}/api/search/resources"
-        val body = execute(Request.Builder().url(url).get().build())
-        if (body.isBlank()) return@withContext emptyList()
-        try {
-            json.decodeFromString<List<ApiSite>>(body)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // 整表解码失败时保留可解析条目；连 JSON 数组都不是才原样抛错。
-            val raw = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull()
-                ?: throw e
-            LenientDecode.decodeList(json, raw, ApiSite.serializer())
+        val request = Request.Builder().url(url).get().build()
+        var lastError: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                val body = execute(request)
+                if (body.isBlank()) return@withContext emptyList()
+                return@withContext try {
+                    json.decodeFromString<List<ApiSite>>(body)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 整表解码失败时保留可解析条目；连 JSON 数组都不是才原样抛错。
+                    val raw = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull()
+                        ?: throw e
+                    LenientDecode.decodeList(json, raw, ApiSite.serializer())
+                }
+            } catch (e: IOException) {
+                // 仅超时重试 1 次：4xx、体超限等确定性失败立即抛
+                //（第 6/7/8 轮已让它们 fail fast，这里不能再兜回来多发一次）。
+                if (!AggApi.isBodyTimeout(e)) throw e
+                lastError = e
+                if (attempt == 0) delay(ApiClient.RETRY_BACKOFF_MS)
+            }
         }
+        throw lastError ?: IOException("获取视频源失败")
     }
 
     // ---- 收藏（服务端模式） ----
