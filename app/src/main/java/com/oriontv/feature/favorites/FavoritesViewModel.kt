@@ -4,7 +4,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.Favorite
+import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.repo.FavoritesRepository
+import com.oriontv.data.repo.PlayRecordsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +19,7 @@ import javax.inject.Inject
 @HiltViewModel
 class FavoritesViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
+    private val playRecordsRepository: PlayRecordsRepository,
     private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(FavoritesUiState(isLoading = true))
@@ -37,10 +40,15 @@ class FavoritesViewModel @Inject constructor(
             savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
         }
 
-    var savedFocusIndex: Int
-        get() = savedStateHandle[SAVED_FOCUS_INDEX] ?: -1
+    /**
+     * P2-9（第 5 轮）：返回焦点恢复按记录键（source+id）锚定，不按 index——
+     * 刷新/删除后 index 对应的已是另一张卡。键同样由 SavedStateHandle 承载
+     * （不只用内存变量，否则导航轨切走后 ViewModel 被清、键就丢了）。
+     */
+    var savedFocusKey: String?
+        get() = savedStateHandle[SAVED_FOCUS_KEY]
         set(value) {
-            savedStateHandle[SAVED_FOCUS_INDEX] = value
+            savedStateHandle[SAVED_FOCUS_KEY] = value
         }
 
     init {
@@ -61,11 +69,41 @@ class FavoritesViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(loadFailed = true, isLoading = false)
                 return@launch
             }
+            // P2-3：断点续播入口——一并取播放记录（无记录的收藏没有“续播”按钮）。
+            // 记录拉取失败只降级为空表，不让收藏列表跟着失败（记录层本身对
+            // 服务端失败已有 lastGoodRecords 兜底，这里只防本地异常）。
+            val records = try {
+                playRecordsRepository.getAllWithKeys().toMap()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyMap()
+            }
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。
             _uiState.value = FavoritesUiState(
                 items = items,
+                playRecords = records,
                 loadFailed = favoritesRepository.loadFailed.value,
             )
+        }
+    }
+
+    /** 页内删除（P2-3）：先确认仍是收藏再 toggle，避免已删的情况下
+     * toggle 反而重新收藏；删前算好焦点落点（下一张卡，末尾则上一张），
+     * 删完刷新后焦点落在那张卡上（见 FavoritesScreen 的恢复逻辑）。 */
+    fun removeFavorite(key: String, favorite: Favorite) {
+        viewModelScope.launch {
+            if (!favoritesRepository.isFavorite(key)) return@launch
+            val items = _uiState.value.items
+            val idx = items.indexOfFirst { it.first == key }
+            savedFocusKey = when {
+                idx < 0 -> null
+                idx + 1 < items.size -> items[idx + 1].first
+                idx - 1 >= 0 -> items[idx - 1].first
+                else -> null
+            }
+            favoritesRepository.toggle(key, favorite)
+            refresh()
         }
     }
 
@@ -73,8 +111,8 @@ class FavoritesViewModel @Inject constructor(
         /** SavedStateHandle 键：是否已落过默认锚点。 */
         const val SAVED_INITIAL_FOCUS_DONE = "favorites_initial_focus_done"
 
-        /** SavedStateHandle 键：上次所在的卡片下标（-1 = 未记录）。 */
-        const val SAVED_FOCUS_INDEX = "favorites_saved_focus_index"
+        /** SavedStateHandle 键：上次所在的卡片记录键（P2-9 按键锚定，不按 index）。 */
+        const val SAVED_FOCUS_KEY = "favorites_saved_focus_key"
     }
 }
 
@@ -84,4 +122,6 @@ data class FavoritesUiState(
     val items: List<Pair<String, Favorite>> = emptyList(),
     /** B-P2-20：服务端拉取失败（展示的是上次成功结果）。 */
     val loadFailed: Boolean = false,
+    /** 断点续播：记录键 → 播放记录（无记录的收藏没有“续播”入口）。 */
+    val playRecords: Map<String, PlayRecord> = emptyMap(),
 )
