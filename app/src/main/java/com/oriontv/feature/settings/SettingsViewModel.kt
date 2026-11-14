@@ -8,6 +8,8 @@ import com.oriontv.data.repo.AuthRepository
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.remoteinput.RemoteInputManager
 import com.oriontv.feature.remoteinput.RemoteInputState
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -143,18 +145,22 @@ class SettingsViewModel @Inject constructor(
                     } else {
                         ""
                     }
-                _uiState.update {
-                    it.copy(
+                _uiState.update { current ->
+                    current.copy(
                         isSaving = false,
                         savedApiUrl = state.apiUrl.trim(),
                         savedM3uUrl = state.m3uUrl.trim(),
-                        apiUrl = state.apiUrl.trim(),
-                        m3uUrl = state.m3uUrl.trim(),
-                        toast = when {
-                            configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行$httpWarning"
-                            apiChanged -> "已保存，登录状态已清除$httpWarning"
-                            else -> "已保存$httpWarning"
-                        },
+                        // B5-P2-9：只在用户保存期间没改过输入框时才回写；否则保留
+                        // 用户刚敲的字，不拿保存开始时的旧快照覆盖。
+                        apiUrl = if (current.apiUrl == state.apiUrl) state.apiUrl.trim() else current.apiUrl,
+                        m3uUrl = if (current.m3uUrl == state.m3uUrl) state.m3uUrl.trim() else current.m3uUrl,
+                        toast = nextToastEvent(
+                            when {
+                                configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行$httpWarning"
+                                apiChanged -> "已保存，登录状态已清除$httpWarning"
+                                else -> "已保存$httpWarning"
+                            },
+                        ),
                     )
                 }
             } catch (e: CancellationException) {
@@ -229,7 +235,7 @@ data class SettingsUiState(
     val isSaving: Boolean = false,
     val error: String? = null,
     /** 一次性提示（Toast，2 秒消失，UI 消费后清掉）。 */
-    val toast: String? = null,
+    val toast: ToastEvent? = null,
     val apiUrl: String = "",
     val m3uUrl: String = "",
     val savedApiUrl: String = "",

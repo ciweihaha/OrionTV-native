@@ -105,14 +105,16 @@ class AuthRepository @Inject constructor(
      * CookieJar 里的会话 cookie 也还在（P0-4）。三处都要清。
      */
     suspend fun logout() {
-        val baseUrl = settingsRepository.currentApiBaseUrl()
+        // B5-P2-3：DataStore 读失败按无地址处理，不让冷启动/登出崩溃。
+        val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         try {
             if (baseUrl.isNotBlank()) moonTvApi.logout(baseUrl)
         } finally {
             // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了，改 try/catch。
             try { credentialsStore.clear() } catch (_: Exception) { }
             runCatching { cookieJar.clear() }
-            settingsRepository.setAuthCookies("")
+            // B5-P2-3：标记清除失败也不拦登出收尾（_isLoggedIn 必须落 false）。
+            try { settingsRepository.setAuthCookies("") } catch (_: Exception) { }
             _isLoggedIn.value = false
         }
     }
@@ -127,19 +129,21 @@ class AuthRepository @Inject constructor(
      * 同步拉一次配置（30 秒失败缓存）+ 失败时 31 秒后延迟重试，不再双通道刷新。
      */
     suspend fun checkLoginStatus() {
-        val baseUrl = settingsRepository.currentApiBaseUrl()
+        // B5-P2-3：DataStore 读失败按未配置/未拉取处理，冷启动不崩溃；
+        // 取消原样抛出（runOrDefault 内处理）。
+        val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) {
             _isLoggedIn.value = false
             _showLoginModal.value = false
             return
         }
-        val config = settingsRepository.refreshServerConfig()
+        val config = runOrDefault(null) { settingsRepository.refreshServerConfig() }
         // B-P1-8：冷启动拉取失败且 StorageType 仍未知时，31 秒后（越过 30 秒
         // 失败缓存）再试一次，不把进程钉死在本地模式。
-        if (config == null && settingsRepository.isServerConfigUnknown()) {
+        if (config == null && runOrDefault(false) { settingsRepository.isServerConfigUnknown() }) {
             scheduleConfigRetry()
         }
-        val marker = settingsRepository.currentAuthCookies()
+        val marker = runOrDefault("") { settingsRepository.currentAuthCookies() }
         if (marker.isNotBlank()) {
             when (verifySession(baseUrl)) {
                 SessionCheck.VALID -> {
@@ -220,7 +224,8 @@ class AuthRepository @Inject constructor(
     }
 
     private suspend fun performRestore(): Boolean {
-        val baseUrl = settingsRepository.currentApiBaseUrl()
+        // B5-P2-3：同 checkLoginStatus，DataStore 读失败按未恢复处理。
+        val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) return false
         val saved = try { credentialsStore.load() } catch (_: Exception) { null }
         val ok = try {
@@ -232,13 +237,35 @@ class AuthRepository @Inject constructor(
             false
         }
         return if (ok) {
-            settingsRepository.setAuthCookies("1")
+            // B5-P2-3：标记写失败不推翻已建好的会话（本次登录成功），只记日志；
+            // 下次冷启动静默重登会失败、再提示登录。
+            try {
+                settingsRepository.setAuthCookies("1")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("AuthRepository", "静默恢复成功但登录标记保存失败，下次冷启动需重新登录：${e.message}")
+            }
             _isLoggedIn.value = true
             _showLoginModal.value = false
             true
         } else {
             _isLoggedIn.value = false
             false
+        }
+    }
+
+    /**
+     * B5-P2-3：DataStore 读写失败回落默认值，协程取消原样抛出
+     *（同 Repositories.runOrDefault，那个是 private、这里各写一份）。
+     */
+    private suspend fun <T> runOrDefault(default: T, block: suspend () -> T): T {
+        return try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            default
         }
     }
 

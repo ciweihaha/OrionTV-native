@@ -23,6 +23,21 @@ import androidx.tv.material3.Text
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * 一次性 Toast 事件（B5-P2-11）：带自增 id。
+ * 之前 Toast 状态就是字符串，LaunchedEffect 以它为 key——2 秒内同文案
+ * 失败第二次时 key 不变，effect 不重跑、也没有新的 2 秒计时，第二次提示
+ * 直接丢了。id 每次不同，key 一定变化，同文案也能连续弹两次。
+ */
+data class ToastEvent(val id: Long, val message: String)
+
+private val toastEventIdCounter = AtomicLong(0L)
+
+/** 新建一个带唯一 id 的 Toast 事件。 */
+fun nextToastEvent(message: String): ToastEvent =
+    ToastEvent(toastEventIdCounter.incrementAndGet(), message)
 
 /**
  * 确认弹窗（ui-design.md §5.8）：

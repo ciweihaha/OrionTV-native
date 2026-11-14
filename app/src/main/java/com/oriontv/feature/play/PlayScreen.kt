@@ -138,7 +138,8 @@ fun PlayScreen(
     }
 
     // 标记成功/清除提示：Toast 底部居中，2 秒消失（ui-design.md §5.8）。
-    LaunchedEffect(uiState.toast) {
+    // B5-P2-11：以事件 id 为 key——同文案连续两次时 id 不同，effect 一定重跑。
+    LaunchedEffect(uiState.toast?.id) {
         if (uiState.toast != null) {
             delay(2000)
             viewModel.consumeToast()
@@ -457,7 +458,7 @@ fun PlayScreen(
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 com.oriontv.ui.components.OrionToast(
-                    message = uiState.toast ?: "",
+                    message = uiState.toast?.message ?: "",
                     modifier = Modifier.padding(bottom = 48.dp),
                 )
             }

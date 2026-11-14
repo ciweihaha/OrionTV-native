@@ -106,7 +106,8 @@ private fun DetailScreenContent(
         if (viewModel.focusAnchored) playRequester.requestFocus()
     }
     // B-P0-1：收藏失败 Toast 2 秒消失（ui-design.md §5.8 同款）。
-    LaunchedEffect(uiState.favoriteError) {
+    // B5-P2-11：以事件 id 为 key——同文案连续两次时 id 不同，effect 一定重跑。
+    LaunchedEffect(uiState.favoriteError?.id) {
         if (uiState.favoriteError != null) {
             delay(2000)
             viewModel.consumeFavoriteError()
@@ -339,7 +340,7 @@ private fun DetailScreenContent(
             contentAlignment = Alignment.BottomCenter,
         ) {
             OrionToast(
-                message = uiState.favoriteError ?: "",
+                message = uiState.favoriteError?.message ?: "",
                 modifier = Modifier.padding(bottom = 48.dp),
             )
         }

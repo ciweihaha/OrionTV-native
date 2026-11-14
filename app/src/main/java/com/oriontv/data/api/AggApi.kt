@@ -83,9 +83,16 @@ class AggApi @Inject constructor(
             // D-P1-2：Response 必须关（声明超限先抛那条路之前漏关，5 次可占满每 host 连接池）；
             // D-P1-1：体完整读完才记成功，响应头 200 不先清零。
             val body = response.use {
-                val b = readBodyLimited(it, videoListCircuitBreaker)
-                videoListCircuitBreaker.recordSuccess()
-                b
+                try {
+                    val b = readBodyLimited(it, videoListCircuitBreaker)
+                    videoListCircuitBreaker.recordSuccess()
+                    b
+                } catch (e: Exception) {
+                    // B5-P2-4：体读失败且不是体超时（体超时已在 readBodyLimited
+                    // 内记失败并清探针）时释放试探租约，免得确定性失败也占着探针。
+                    videoListCircuitBreaker.releaseProbe()
+                    throw e
+                }
             }
             val parsed = try {
                 json.decodeFromString<AggListResponse>(body)
@@ -131,9 +138,15 @@ class AggApi @Inject constructor(
             circuitBreaker = versionCircuitBreaker,
         )
         val body = response.use {
-            val b = readBodyLimited(it, versionCircuitBreaker)
-            versionCircuitBreaker.recordSuccess()
-            b
+            try {
+                val b = readBodyLimited(it, versionCircuitBreaker)
+                versionCircuitBreaker.recordSuccess()
+                b
+            } catch (e: Exception) {
+                // B5-P2-4：同 videoList，体读确定性失败时释放试探租约。
+                versionCircuitBreaker.releaseProbe()
+                throw e
+            }
         }
         val parsed = try {
             json.decodeFromString<VersionResponse>(body)
@@ -230,8 +243,13 @@ class AggApi @Inject constructor(
                 }
                 lastError = IOException("HTTP ${response.code}")
             } catch (e: NonRetryableHttpException) {
+                // B5-P2-4：4xx 确定性失败不记熔断，但探针租约要释放，
+                // 否则这次试探占着租约 120 秒才放下一个。
+                circuitBreaker.releaseProbe()
                 throw IOException("HTTP ${e.statusCode}，不重试")
             } catch (e: CancellationException) {
+                // B5-P2-4：取消的探针同样释放租约。
+                circuitBreaker.releaseProbe()
                 throw e
             } catch (e: IOException) {
                 lastError = e
@@ -245,8 +263,11 @@ class AggApi @Inject constructor(
         }
         // 只在“请求最终失败且原因为读超时”时计数一次（按请求，不按每次重试尝试；
         // 第 6 轮 fa348ad 只改了判据、仍按尝试计数，一次超时请求会记 4 次直接击穿阈值 3——这里按请求记一次）。
+        // B5-P2-4：超时记失败（探针失败立即重开）；非超时终态失败只释放试探租约，不计数。
         if (lastError is IOException && isBodyTimeout(lastError)) {
             circuitBreaker.recordFailure()
+        } else {
+            circuitBreaker.releaseProbe()
         }
         throw lastError ?: IOException("请求失败")
     }

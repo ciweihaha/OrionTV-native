@@ -99,13 +99,14 @@ fun SettingsScreen(
         if (focusRestoreTick > 0) menuRequesters[selectedMenu].requestFocus()
     }
     // Toast 2 秒消失（ui-design.md §5.8）。
-    LaunchedEffect(uiState.toast) {
+    // B5-P2-11：以事件 id 为 key——同文案连续两次时 id 不同，effect 一定重跑。
+    LaunchedEffect(uiState.toast?.id) {
         if (uiState.toast != null) {
             delay(2000)
             viewModel.consumeToast()
         }
     }
-    LaunchedEffect(updateState.toast) {
+    LaunchedEffect(updateState.toast?.id) {
         if (updateState.toast != null) {
             delay(2000)
             updateViewModel.consumeToast()
@@ -227,7 +228,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,
             ) {
-                OrionToast(message = toast, modifier = Modifier.padding(bottom = 48.dp))
+                OrionToast(message = toast.message, modifier = Modifier.padding(bottom = 48.dp))
             }
         }
         // 更新失败红字：除卡片内已显示外，这里也给一行（卡片关闭后仍可见）。

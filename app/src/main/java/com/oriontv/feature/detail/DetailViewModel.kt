@@ -10,6 +10,8 @@ import com.oriontv.data.repo.DetailRepository
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.data.repo.FavoritesRepository
 import com.oriontv.data.repo.PlayRecordsRepository
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -185,7 +187,7 @@ class DetailViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _uiState.value = _uiState.value.copy(favoriteError = "收藏失败，请检查网络后重试")
+                _uiState.value = _uiState.value.copy(favoriteError = nextToastEvent("收藏失败，请检查网络后重试"))
             }
         }
     }
@@ -239,7 +241,7 @@ data class DetailUiState(
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
     /** B-P0-1：收藏切换失败时的一次性提示（2 秒 Toast，UI 消费后清掉）。 */
-    val favoriteError: String? = null,
+    val favoriteError: ToastEvent? = null,
     /** P1-2：断点记录的集号（null = 无断点）；只有选中它时“播放”才带位置。 */
     val resumeEpisode: Int? = null,
     /** P1-2：断点记录的已播秒数（null = 无断点）。 */

@@ -15,6 +15,8 @@ import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.data.repo.PlayRecordsRepository
 import com.oriontv.data.repo.PlayerSettingsRepository
 import com.oriontv.data.repo.SettingsRepository
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -469,13 +471,13 @@ class PlayViewModel @Inject constructor(
                 playerSettingsRepository.update(currentKey) { it.copy(introEndTime = null) }
                 val fallback = cachedIntroSkipSeconds * 1000L
                 _uiState.update {
-                    it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = "已清除片头标记")
+                    it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = nextToastEvent("已清除片头标记"))
                 }
             } else {
                 markedIntroEndMs = position
                 playerSettingsRepository.update(currentKey) { it.copy(introEndTime = position) }
                 _uiState.update {
-                    it.copy(introEndMs = position, markedIntroEndMs = position, toast = "片头已标记为 ${formatTime(position)}")
+                    it.copy(introEndMs = position, markedIntroEndMs = position, toast = nextToastEvent("片头已标记为 ${formatTime(position)}"))
                 }
             }
         }
@@ -495,11 +497,11 @@ class PlayViewModel @Inject constructor(
         viewModelScope.launch {
             if (_uiState.value.outroStartMs != null) {
                 playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = null) }
-                _uiState.update { it.copy(outroStartMs = null, toast = "已清除片尾标记") }
+                _uiState.update { it.copy(outroStartMs = null, toast = nextToastEvent("已清除片尾标记")) }
             } else {
                 playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = position) }
                 _uiState.update {
-                    it.copy(outroStartMs = position, toast = "片尾已标记为 ${formatTime(position)}")
+                    it.copy(outroStartMs = position, toast = nextToastEvent("片尾已标记为 ${formatTime(position)}"))
                 }
             }
         }
@@ -601,12 +603,13 @@ class PlayViewModel @Inject constructor(
                 launchStartEpisode(current, state.episodeIndex)
             } else {
                 initialised = false
-                // 拆键按最后一个 + 切分（与 RN 一致）：键由两段转义后用 + 连接，
-                // 源/ID 自身含 + 时（转义后为 %2B）也不能从第一个 + 切。
-                val sep = currentKey.lastIndexOf("+")
+                // B5-P2-1：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
+                // 与 FavoritesScreen/HomeModels 一致；之前手动拆不反转义，
+                // 段内含 %2B/%25 的键再进 recordKey 会二次转义、播错集。
+                val (source, id) = MoonTvApi.splitKey(currentKey)
                 init(
-                    if (sep >= 0) currentKey.substring(0, sep) else currentKey,
-                    if (sep >= 0) currentKey.substring(sep + 1) else "",
+                    source,
+                    id,
                     state.title,
                     state.episodeIndex,
                     state.positionMs,
@@ -744,7 +747,7 @@ data class PlayUiState(
     /** 手动标记的片尾开始时间（毫秒，绝对位置）；null 表示没标过。 */
     val outroStartMs: Long? = null,
     /** 一次性提示（标记成功/清除，Toast，2 秒消失）。 */
-    val toast: String? = null,
+    val toast: ToastEvent? = null,
     val autoSwitchAttempts: Int = 0,
     val failedSources: Set<String> = emptySet(),
     val skipIntroVisible: Boolean = false,

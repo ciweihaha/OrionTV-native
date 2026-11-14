@@ -56,7 +56,9 @@ class FavoritesViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _uiState.value = _uiState.value.copy(loadFailed = true)
+                // B5-P2-2：首载失败也要清 isLoading，否则加载圈一直转、
+                // loadFailed 提示出不来；旧 items 保留（初始即空表）。
+                _uiState.value = _uiState.value.copy(loadFailed = true, isLoading = false)
                 return@launch
             }
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。

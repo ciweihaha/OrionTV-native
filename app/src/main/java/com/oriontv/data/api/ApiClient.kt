@@ -20,14 +20,32 @@ class CircuitBreaker(
     private var consecutiveFailures = 0
     private var openedAtMs: Long = -1L
 
+    /**
+     * 半开试探租约（B5-P2-4）：冷却期满后只放行一个试探请求，其余继续拒绝。
+     * 探针完成前 [probeInFlight] 为 true；探针挂死时租约过期才允许下一个试探。
+     */
+    private var probeInFlight = false
+    private var probeStartedAtMs: Long = -1L
+
+    /** 探针租约时长：覆盖一次完整重试周期（版本检查 4 次 × 20 秒 + 退避约 86 秒）。 */
+    private val probeLeaseMs: Long = 120_000L
+
     /** 熔断是否开启（开启期间拒绝发请求）。 */
     @Synchronized
     fun isOpen(): Boolean {
         if (openedAtMs < 0) return false
-        if (nowMs() - openedAtMs >= openDurationMs) {
-            // 冷却期结束，半开：允许一次试探
-            openedAtMs = -1L
-            consecutiveFailures = 0
+        if (nowMs() - openedAtMs < openDurationMs) {
+            return true
+        }
+        // 冷却期满：半开。第一个调用方拿到试探租约，其余继续拒绝；
+        // 租约过期（探针挂死）时允许下一个调用方重新试探。
+        if (!probeInFlight) {
+            probeInFlight = true
+            probeStartedAtMs = nowMs()
+            return false
+        }
+        if (nowMs() - probeStartedAtMs >= probeLeaseMs) {
+            probeStartedAtMs = nowMs()
             return false
         }
         return true
@@ -37,14 +55,28 @@ class CircuitBreaker(
     fun recordSuccess() {
         consecutiveFailures = 0
         openedAtMs = -1L
+        probeInFlight = false
     }
 
     @Synchronized
     fun recordFailure() {
+        // 探针失败立即重开：冷却期满时 consecutiveFailures 仍保留着开闸前的
+        // 计数值（isOpen 不再清零），一次探针失败即回到阈值以上。
+        probeInFlight = false
         consecutiveFailures++
         if (consecutiveFailures >= failureThreshold) {
             openedAtMs = nowMs()
         }
+    }
+
+    /**
+     * 释放试探租约（不记失败）：探针请求以非超时原因终态失败时调用——
+     * 熔断器的判据只看体超时，这类失败不计数，但也不能占着租约
+     * 120 秒才放下一个试探。
+     */
+    @Synchronized
+    fun releaseProbe() {
+        probeInFlight = false
     }
 }
 

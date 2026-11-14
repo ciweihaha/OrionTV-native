@@ -50,11 +50,15 @@ class CredentialsStore @Inject constructor(
      * EncryptedSharedPreferences 首次访问含 Keystore/磁盘 IO，之前在主线程
      * 协程上下文（AuthViewModel、OrionNavHost 的 LaunchedEffect）里同步调。
      */
-    override suspend fun save(username: String, password: String) = withContext(Dispatchers.IO) {
-        prefs.edit()
-            .putString("username", username)
-            .putString("password", password)
-            .apply()
+    override suspend fun save(username: String, password: String) {
+        withContext(Dispatchers.IO) {
+            // B5-P2-7：apply() 是异步落盘——登录标记（DataStore）先落盘、凭据还没写完
+            // 就可能读到“有标记、无凭据”；改 commit() 同步落盘（已在 IO 线程）。
+            prefs.edit()
+                .putString("username", username)
+                .putString("password", password)
+                .commit()
+        }
     }
 
     /** 返回已保存的 (账号, 密码)，无保存时返回 null。 */
@@ -64,7 +68,10 @@ class CredentialsStore @Inject constructor(
         username to password
     }
 
-    override suspend fun clear() = withContext(Dispatchers.IO) {
-        prefs.edit().clear().apply()
+    override suspend fun clear() {
+        withContext(Dispatchers.IO) {
+            // B5-P2-7：同 save，清除也要同步落盘，免得标记已清、凭据还残留。
+            prefs.edit().clear().commit()
+        }
     }
 }

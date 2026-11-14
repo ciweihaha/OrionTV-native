@@ -9,8 +9,11 @@ import com.oriontv.BuildConfig
 import com.oriontv.core.util.VersionUtils
 import com.oriontv.data.api.AggApi
 import com.oriontv.data.repo.SettingsRepository
+import com.oriontv.ui.components.ToastEvent
+import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +45,9 @@ class UpdateViewModel @Inject constructor(
     val uiState: StateFlow<UpdateUiState> = _uiState.asStateFlow()
 
     private var installInFlight = false
+
+    /** 进行中的 APK 下载任务（B5-P2-6：取消入口用）。 */
+    private var downloadJob: Job? = null
 
     /** 当前版本是否低于目标版本。 */
     fun needsUpdate(currentVersion: String, latestVersion: String): Boolean =
@@ -79,7 +85,7 @@ class UpdateViewModel @Inject constructor(
                                 showUpdateCard = false,
                                 // B-P1-4：旧版下好的包已失效（当前已是最新），不清会残留“立即安装”。
                                 downloadedFilePath = null,
-                                toast = if (silent) null else "已是最新版本 v$current",
+                                toast = if (silent) null else nextToastEvent("已是最新版本 v$current"),
                             )
                         }
                     }
@@ -92,7 +98,7 @@ class UpdateViewModel @Inject constructor(
                                 showUpdateCard = false,
                                 // B-P1-4：同上，跳过的新版不是已下载的旧包。
                                 downloadedFilePath = null,
-                                toast = if (silent) null else "已跳过 v$latest，可在设置里重新检查",
+                                toast = if (silent) null else nextToastEvent("已跳过 v$latest，可在设置里重新检查"),
                             )
                         }
                     }
@@ -155,7 +161,9 @@ class UpdateViewModel @Inject constructor(
     fun startDownload() {
         val latest = _uiState.value.latestVersion ?: return
         if (_uiState.value.downloading) return
-        viewModelScope.launch {
+        // B5-P2-6：下载任务留 Job + 取消入口；取消后 downloading 清掉，
+        // 否则 startDownload 开头的 downloading 守卫会一直拦、再也下不了。
+        downloadJob = viewModelScope.launch {
             _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
@@ -172,10 +180,11 @@ class UpdateViewModel @Inject constructor(
                         downloading = false,
                         downloadProgress = 100,
                         downloadedFilePath = dest.absolutePath,
-                        toast = "下载完成，校验通过，可以安装了",
+                        toast = nextToastEvent("下载完成，校验通过，可以安装了"),
                     )
                 }
             } catch (e: CancellationException) {
+                _uiState.update { it.copy(downloading = false) }
                 throw e
             } catch (e: UpdateDownloadException) {
                 _uiState.update {
@@ -193,8 +202,16 @@ class UpdateViewModel @Inject constructor(
                         error = "下载失败：${e.message ?: "网络错误"}",
                     )
                 }
+            } finally {
+                downloadJob = null
             }
         }
+    }
+
+    /** 取消进行中的 APK 下载（更新卡片的取消入口用；未在下载时是空操作）。 */
+    fun cancelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
     }
 
     /** 调起系统安装器（防连按；调不起时报明确错误）。 */
@@ -238,7 +255,7 @@ class UpdateViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setUpdateSkipVersion(latest)
             _uiState.update {
-                it.copy(showUpdateCard = false, toast = "已跳过 v$latest")
+                it.copy(showUpdateCard = false, toast = nextToastEvent("已跳过 v$latest"))
             }
         }
     }
@@ -273,5 +290,5 @@ data class UpdateUiState(
     val downloadedFilePath: String? = null,
     val error: String? = null,
     /** 一次性提示（Toast，2 秒消失，UI 消费后清掉）。 */
-    val toast: String? = null,
+    val toast: ToastEvent? = null,
 )

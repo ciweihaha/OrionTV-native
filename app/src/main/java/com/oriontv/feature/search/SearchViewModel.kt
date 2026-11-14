@@ -125,13 +125,21 @@ class SearchViewModel @Inject constructor(
     }
 
     /** C4-P1-5：把当前搜索态写进 SavedStateHandle（query/结果/searchedQuery）。 */
+    /** 上次写进 SavedStateHandle 的结果列表引用（B5-P2-10：变化才重编 JSON）。 */
+    private var lastSavedResults: List<SearchResult>? = null
+
     private fun saveSearchState() {
         val state = _uiState.value
         savedStateHandle[SAVED_QUERY_KEY] = state.query
         savedStateHandle[SAVED_SEARCHED_QUERY_KEY] = state.searchedQuery
-        savedStateHandle[SAVED_RESULTS_KEY] = runCatching {
-            json.encodeToString(ListSerializer(SearchResult.serializer()), state.results)
-        }.getOrDefault("[]")
+        // B5-P2-10：每次按键都把全部搜索结果 JSON 写进 SavedStateHandle；
+        // 只在 results 引用变化时才编码写（query/searchedQuery 是廉价字符串，每次写无妨）。
+        if (state.results !== lastSavedResults) {
+            lastSavedResults = state.results
+            savedStateHandle[SAVED_RESULTS_KEY] = runCatching {
+                json.encodeToString(ListSerializer(SearchResult.serializer()), state.results)
+            }.getOrDefault("[]")
+        }
     }
 
     /** C4-P1-5：从 SavedStateHandle 恢复搜索态（切走再回、进程重建都不丢结果）。 */
