@@ -49,6 +49,13 @@ class SkipIntroCapsule(private val nowMs: () -> Long = System::currentTimeMillis
             visible = false
             return false
         }
+        // P2-4：已可见、但快进（或自然播放）已越过片头窗口时立即隐藏，
+        // 不等 10 秒超时：否则胶囊挂在已过片头的画面上，点了会 seek 回片头结束点附近。
+        // 只消耗过一次（shownThisEpisode 已置位），隐藏后本集不再出现。
+        if (visible && !inWindow) {
+            visible = false
+            return false
+        }
         if (!visible && IntroSkip.shouldShowSkipIntroCapsule(inWindow, shownThisEpisode, alreadySkipped)) {
             shownThisEpisode = true
             shownAtMs = nowMs()

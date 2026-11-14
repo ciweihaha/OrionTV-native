@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -66,13 +67,18 @@ internal fun shouldShowPlayerControls(
 ): Boolean = (controlsVisible || showNextEpisode) && !hasError
 
 /**
- * 左/右键是否由预览拦截（可单测，P1-2）：
- * 控制条实际显示且抽屉关闭时，左/右恒为快进预览（预览阶段拦截，焦点移动收不到）；
- * 按钮间移动改用上/下进出 + OK。抽屉打开或控制条未显示时不拦截，
- * 左/右仍交给焦点移动（抽屉内横向移动、错误页重试/返回切换）。
+ * 左/右键是否由预览拦截（可单测，P1-2，第 5 轮 P1-B 修订）：
+ * 控制条实际显示、抽屉关闭、且焦点不在控制条按钮行上时，左/右恒为快进预览
+ * （预览阶段拦截，焦点移动收不到）；焦点已在按钮行上时不拦截，
+ * 左/右在 8 个按钮之间横向移动（P1-B：按钮行是唯一横向移动的场景）。
+ * 抽屉打开或控制条未显示时不拦截，左/右仍交给焦点移动
+ * （抽屉内横向移动、错误页重试/返回切换）。
  */
-internal fun shouldInterceptSeekKeys(controlsShown: Boolean, drawerOpen: Boolean): Boolean =
-    controlsShown && !drawerOpen
+internal fun shouldInterceptSeekKeys(
+    controlsShown: Boolean,
+    drawerOpen: Boolean,
+    focusOnControls: Boolean = false,
+): Boolean = controlsShown && !drawerOpen && !focusOnControls
 
 /**
  * 播放页（ui-design.md §5.3）：
@@ -82,6 +88,9 @@ internal fun shouldInterceptSeekKeys(controlsShown: Boolean, drawerOpen: Boolean
  * 跳过片头胶囊默认 90 秒、可关闭，出现 10 秒后消失；
  * 播完后自动出下一集预告卡，3 秒倒计时，可取消；
  * 播放错误自动换源最多 2 次再报错；选集/换源/倍速为右侧抽屉。
+ * 控制条按钮行遥控路径（P1-B）：焦点在根部时左/右恒为快进预览；
+ * 按下键进入按钮行（焦点落首个按钮），行内左/右横向移动、OK 执行，
+ * 按上键回到根部（左/右恢复快进预览）；抽屉关闭后焦点也落回首个按钮。
  * 返回键层级：抽屉 → 控制条 → 退出。
  */
 @Composable
@@ -109,6 +118,9 @@ fun PlayScreen(
     var previewDirection by remember { mutableIntStateOf(0) }
     var previewThumbnail by remember { mutableStateOf<Bitmap?>(null) }
     val rootRequester = remember { FocusRequester() }
+    // 焦点是否在全屏根部（P1-B）：根部获焦时左/右恒为快进预览；
+    // 焦点进了控制条按钮行（或胶囊/预告卡按钮）时根部失焦，左/右交给按钮间移动。
+    var rootFocused by remember { mutableStateOf(false) }
     // 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。
     val controlsFirstButtonRequester = remember { FocusRequester() }
     // C5-P2-2：跳过片头胶囊的焦点锚点与是否获焦（胶囊消失时焦点回根用）。
@@ -128,10 +140,19 @@ fun PlayScreen(
     }
 
     // 从设置页返回 / 切回前台时刷新开播设置缓存（P2-9：轮询不再每 500ms 重读 DataStore）。
+    // 同时维护前台状态供轮询门控用：ON_PAUSE（切后台/PiP）时停 UI 刷新与断点保存，
+    // ON_RESUME 时恢复；后台播放开着时轮询仍全量推进（自动跳片头/下一集在后台也要走）。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshCachedSettings()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.setForeground(true)
+                    viewModel.refreshCachedSettings()
+                }
+                Lifecycle.Event.ON_PAUSE -> viewModel.setForeground(false)
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -154,6 +175,16 @@ fun PlayScreen(
     // 控制器随 durationMs 重建时，同步清掉旧落点（P2-6）：
     // 落点曾双份存放，控制器重建丢落点但 previewTargetMs 仍 >=0 会一直残留预览气泡。
     LaunchedEffect(previewController) {
+        previewTargetMs = -1L
+        previewDirection = 0
+        previewThumbnail = null
+    }
+
+    // 换集/换源后清掉旧落点（P2-3）：集次版本号每开播一次 +1，
+    // 新集时长与旧集相同时控制器不重建，没有这一环，待定落点与 2 秒提交定时器
+    // 会带到新集、到点对新集 seek 旧落点。
+    LaunchedEffect(uiState.episodeGeneration) {
+        previewController.cancel()
         previewTargetMs = -1L
         previewDirection = 0
         previewThumbnail = null
@@ -266,16 +297,19 @@ fun PlayScreen(
             .background(OrionColors.Background)
             .focusable()
             .focusRequester(rootRequester)
+            .onFocusChanged { rootFocused = it.isFocused }
             .onPreviewKeyEvent { event ->
-                // P1-2：控制条可见时左/右恒为快进预览——在预览（隧道）阶段拦截，
-                // 焦点移动收不到左/右 KeyDown，按钮间移动改用上/下进出 + OK。
-                // 只拦截非重复的 KeyDown（一次按键一步，与旧的松键触发同频；长按快进未实现，见 P2-9）；
-                // 抽屉打开或错误页时不拦截，左/右仍交给焦点移动。
+                // P1-2：控制条可见、抽屉关闭、焦点在根部时左/右恒为快进预览——
+                // 在预览（隧道）阶段拦截，焦点移动收不到左/右 KeyDown。
+                // P1-C/P2-10：重复 KeyDown 也拦截并步进（长按连续快进，每次 10 秒、
+                // 每次都重置 2 秒自动提交定时器），且一律消费——旧实现把 repeatCount != 0
+                // 的事件放行，重复事件会触发焦点移动、把焦点推出播放区（可落到导航轨）。
+                // 焦点已在按钮行上时不拦截，左/右在按钮间横向移动（P1-B）。
                 if (event.type != KeyEventType.KeyDown ||
-                    event.nativeKeyEvent.repeatCount != 0 ||
                     !shouldInterceptSeekKeys(
                         shouldShowPlayerControls(controlsVisible, uiState.error != null, uiState.showNextEpisode),
                         uiState.drawer != null,
+                        focusOnControls = !rootFocused,
                     )
                 ) {
                     return@onPreviewKeyEvent false
@@ -332,8 +366,46 @@ fun PlayScreen(
                             true
                         } else {
                             // 控制条可见时左/右已在预览阶段做过快进（P1-2），
+                            // 或焦点在按钮行上、已由焦点移动处理横向切换；
                             // 这里只消费、不再重复 nudge。
                             true
+                        }
+                    }
+                    // P1-B：下键是进入按钮行的确定性路径（根部焦点 → 首个按钮），
+                    // 上键是从按钮行回到根部的路径（左/右恢复快进预览）。
+                    // 下键能否从全屏根部经焦点搜索进入按钮行、以及上键回根后
+                    // 焦点是否稳定落在根部，需真机确认；静态上两条路径都是显式
+                    // requestFocus，不依赖焦点搜索的落点。
+                    Key.DirectionDown -> {
+                        when {
+                            uiState.drawer != null -> false // 抽屉内上下交给焦点移动
+                            !controlsVisible -> {
+                                pokeControls() // 控制条隐藏时下键只唤出，不进按钮行
+                                true
+                            }
+                            rootFocused -> {
+                                controlsFirstButtonRequester.requestFocus()
+                                true
+                            }
+                            else -> false // 焦点已在按钮行/胶囊上，上下交给焦点移动
+                        }
+                    }
+                    Key.DirectionUp -> {
+                        when {
+                            uiState.drawer != null -> false // 抽屉内上下交给焦点移动
+                            !rootFocused &&
+                                shouldShowPlayerControls(
+                                    controlsVisible,
+                                    uiState.error != null,
+                                    uiState.showNextEpisode,
+                                ) -> {
+                                rootRequester.requestFocus()
+                                true
+                            }
+                            else -> {
+                                pokeControls()
+                                false
+                            }
                         }
                     }
                     Key.DirectionCenter, Key.Enter -> {
@@ -428,6 +500,7 @@ fun PlayScreen(
                 showNextEpisode = uiState.showNextEpisode,
                 skipIntroRequester = skipIntroRequester,
                 onSkipIntroFocusChanged = { skipIntroFocused = it },
+                drawerOpen = uiState.drawer != null,
                 introEndMs = uiState.markedIntroEndMs,
                 outroStartMs = uiState.outroStartMs,
                 onMarkIntro = { viewModel.markIntroEnd(); pokeControls() },

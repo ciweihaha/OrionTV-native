@@ -59,8 +59,9 @@ suspend fun FocusRequester.requestFocusWithRetry(
 /**
  * 长按挡误触：长按后松手会跟一次 onClick，用 1 秒时间窗挡掉
  *（plan §3.3 第 8 条：首页卡片长按 1000ms、直播卡片长按收藏）。
- * 注意：播放页没有长按快进——不要再把“播放长按快进 300ms/10s”写进这里；
- * 播放页只有松键触发的 10 秒步进预览（P2-9 已确认不在本轮需求内，延期）。
+ * 注意：播放页长按快进第 5 轮已实现——PlayScreen 在预览阶段拦截重复左/右
+ * KeyDown 做连续 10 秒步进（P1-C/P2-10），重复事件一律消费、不推出焦点；
+ * 不要再把“播放页没有长按快进”写进这里。
  */
 class LongPressGuard(private val windowMs: Long = 1000L) {
     private var lastLongPressAtMs: Long = -1L

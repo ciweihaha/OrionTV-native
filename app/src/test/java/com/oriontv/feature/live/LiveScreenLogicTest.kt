@@ -1,5 +1,6 @@
 package com.oriontv.feature.live
 
+import androidx.compose.ui.input.key.Key
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -57,5 +58,23 @@ class LiveScreenLogicTest {
         // P1-8：弹窗打开时行不消费 Center 键，不会误切台
         assertFalse(shouldConsumeChannelRowKey(epgDialogOpen = true))
         assertTrue(shouldConsumeChannelRowKey(epgDialogOpen = false))
+    }
+
+    @Test
+    fun `epg dialog traps focus at first row and close button`() {
+        // P2-6：首行按上、关闭按钮（下标 n）按下时拦截，不让焦点移出弹窗落到背后频道行；
+        // 行间移动与末行下移到“关闭”按钮放行；未知焦点（-1）不拦截
+        assertTrue(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = 0, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = 2, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = 5, programmeCount = 5))
+        assertTrue(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = 5, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = 4, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = 0, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = -1, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = -1, programmeCount = 5))
+        assertFalse(shouldTrapEpgFocusKey(Key.DirectionLeft, focusedIndex = 0, programmeCount = 5))
+        // 无节目单时“关闭”按钮下标就是 0：按下拦截、上移放行（无行可去，由根部处理）
+        assertTrue(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = 0, programmeCount = 0))
+        assertTrue(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = 0, programmeCount = 0))
     }
 }
