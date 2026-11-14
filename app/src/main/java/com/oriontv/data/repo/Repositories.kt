@@ -107,6 +107,10 @@ class FavoritesRepository @Inject constructor(
 
     suspend fun toggle(key: String, favorite: Favorite): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
+            // D-P2-13（延期，客户端修不了）：服务端 toggle 是“先 GET 判存在、
+            // 再 POST/DELETE”的非原子操作；writeMutex 只串行化本进程内调用，
+            // 双端或跨进程并发点两次仍可能互相覆盖。根治需服务端提供原子
+            // toggle 接口（存在才删 / 不存在才加），客户端侧无法凭空造出。
             val baseUrl = settingsRepository.currentApiBaseUrl()
             val exists = runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
             if (exists) {

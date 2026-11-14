@@ -85,7 +85,10 @@ class LiveCacheStore @Inject constructor(
             M3uCache(ts = System.currentTimeMillis(), channels = channels),
             json,
         ) ?: return // 超 5MB 不落盘（与拉取上限对齐）
-        runCatching { m3uFile(m3uUrl).writeText(encoded) }
+        val file = m3uFile(m3uUrl)
+        runCatching { file.writeText(encoded) }
+        // D-P2-14：换 m3u 地址后删掉旧地址的孤儿缓存文件（只留当前这一个）。
+        runCatching { pruneStaleM3uCacheFiles(context.filesDir, keepFileName = file.name) }
     }
 
     fun readEpgCache(): EpgCache? {
@@ -101,4 +104,15 @@ class LiveCacheStore @Inject constructor(
         ) ?: return // 超 3MB 不落盘
         runCatching { epgFile().writeText(encoded) }
     }
+}
+
+/**
+ * 删掉除当前文件外的 `m3u_cache_*.json`（D-P2-14：换 m3u 地址后旧缓存文件
+ * 永久残留）。纯函数逻辑，可单测；其他文件不动。
+ */
+internal fun pruneStaleM3uCacheFiles(dir: File, keepFileName: String) {
+    dir.listFiles { f ->
+        f.isFile && f.name.startsWith("m3u_cache_") && f.name.endsWith(".json") &&
+            f.name != keepFileName
+    }?.forEach { runCatching { it.delete() } }
 }

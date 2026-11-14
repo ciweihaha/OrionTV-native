@@ -119,6 +119,7 @@ class HomeViewModel @Inject constructor(
             val recent = try {
                 loadCategory(HomeCategory.RECENT, "")
             } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不吞成 null（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (_: Exception) {
                 null

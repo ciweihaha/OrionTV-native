@@ -66,7 +66,10 @@ class SettingsRepository @Inject constructor(
         return currentStorageType() == "redis" && currentApiBaseUrl().isNotBlank()
     }
 
+    // D-P2-16：失败缓存的读写加 @Volatile，跨线程可见（之前最坏多跑一次拉取）。
+    @Volatile
     private var lastConfigFailureAtMs: Long = 0L
+    @Volatile
     private var lastConfigFailureUrl: String = ""
 
     /** B4-P2-7：refreshServerConfig 的互斥锁——并发换地址时两次拉取不再交错写 StorageType。 */

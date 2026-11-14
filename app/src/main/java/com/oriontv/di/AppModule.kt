@@ -14,7 +14,10 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Qualifier
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -23,10 +26,21 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
 
+/** 应用级协程作用域（D-P2-7/D-P1-6）：后台刷新 server-config、RN 首启迁移等不阻塞 UI 的一次性任务；随进程存活，不取消。 */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ApplicationScope
+
 /** Hilt 单例模块：网络、序列化、数据库。 */
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
@@ -114,6 +128,9 @@ object AppModule {
 class InMemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
+    // D-P2-6：读-改-写复合操作加锁（ConcurrentHashMap 只保证单步原子，
+    // 两路并发响应会丢一批 cookie）；去重按 name+domain+path，
+    // 同名不同 path 的 cookie 不再被误杀。
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val now = System.currentTimeMillis()
