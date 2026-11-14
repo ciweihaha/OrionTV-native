@@ -310,7 +310,3 @@ class MoonTvApi @Inject constructor(
 }
 
 class UnauthorizedException(message: String) : Exception(message)
-
-/** 不可重试的 HTTP 状态（4xx）：仅用于跳出 execute 的 IOException catch。 */
-private class NonRetryableHttpException(val statusCode: Int) :
-    IOException("HTTP $statusCode")

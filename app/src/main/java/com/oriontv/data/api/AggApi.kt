@@ -125,6 +125,6 @@ class AggApi @Inject constructor(
 class AggInvalidResponseException(message: String, cause: Throwable? = null) :
     IOException(message, cause)
 
-/** 不可重试的 HTTP 状态（4xx）：仅用于跳出 executeWithRetry 的 IOException catch。 */
-private class NonRetryableHttpException(val statusCode: Int) :
+/** 不可重试的 HTTP 状态（4xx）：仅用于跳出各 Api execute 的 IOException catch。 */
+internal class NonRetryableHttpException(val statusCode: Int) :
     IOException("HTTP $statusCode")
