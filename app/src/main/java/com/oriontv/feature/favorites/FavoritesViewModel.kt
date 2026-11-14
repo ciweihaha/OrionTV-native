@@ -89,12 +89,13 @@ class FavoritesViewModel @Inject constructor(
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。
             // 第 6 轮 P1-2/P2-7：refresh 整包替换 uiState，删除进行中的键集合与
             // 焦点恢复请求计数要带上，否则刷新一次就把守卫/落点请求清掉。
-            _uiState.value = FavoritesUiState(
+            // 第 7 轮 P2-3：同理带上 favoriteError——删失败提示的 2 秒 Toast
+            // 窗口内一次刷新（例如后台回前台的 ON_RESUME 重进）不能把它静默清掉。
+            _uiState.value = refreshedFavoritesState(
+                current = _uiState.value,
                 items = items,
                 playRecords = records,
                 loadFailed = favoritesRepository.loadFailed.value,
-                removingKeys = _uiState.value.removingKeys,
-                focusRestoreRequest = _uiState.value.focusRestoreRequest,
             )
         }
     }
@@ -116,18 +117,17 @@ class FavoritesViewModel @Inject constructor(
                 // 的 catch 弹提示；宽容版 isFavorite 失败返回 false，会让
                 // 删除静默 return、无事发生、无任何提示。
                 if (!favoritesRepository.isFavoriteStrict(key)) return@launch
+                // 第 7 轮 P2-3：焦点落点与恢复请求只在 toggle 成功后算——
+                // 旧实现在 toggle 之前就把 savedFocusKey 换掉、focusRestoreRequest+1，
+                // toggle 一抛错（B8-P1-2 的严格存在检查也会抛错进下面 catch），
+                // 计数已 +1 收不回，下次 items 一变就把焦点拉到下一张卡片，
+                // 用户明明没删成功却被挪了焦点。
+                favoritesRepository.toggle(key, favorite)
                 val items = _uiState.value.items
-                val idx = items.indexOfFirst { it.first == key }
-                savedFocusKey = when {
-                    idx < 0 -> null
-                    idx + 1 < items.size -> items[idx + 1].first
-                    idx - 1 >= 0 -> items[idx - 1].first
-                    else -> null
-                }
+                savedFocusKey = nextSavedFocusKey(items, key)
                 // 第 6 轮 P2-7：删后落点要恢复焦点——refresh 换掉 items 后
                 // 恢复 effect 须跑一次（平时例行刷新不跑）；计数 +1 通知界面。
                 _uiState.update { it.copy(focusRestoreRequest = it.focusRestoreRequest + 1) }
-                favoritesRepository.toggle(key, favorite)
                 refresh()
             } catch (e: CancellationException) {
                 throw e
@@ -170,4 +170,42 @@ data class FavoritesUiState(
     val removingKeys: Set<String> = emptySet(),
     /** 第 6 轮 P2-7：页内删除请求焦点恢复的计数（删后落点恢复跑一次；例行刷新不跑）。 */
     val focusRestoreRequest: Int = 0,
+)
+
+/**
+ * 第 7 轮 P2-3：删后焦点落点键（纯函数，可单测）——被删卡片的下一张，
+ * 末尾则上一张；只有一张或键不在列表里时 null（回首张卡片）。
+ * 入参是删除前的列表（toggle 只改仓库，界面列表要等 refresh 才换）。
+ */
+internal fun nextSavedFocusKey(
+    items: List<Pair<String, Favorite>>,
+    deletedKey: String,
+): String? {
+    val idx = items.indexOfFirst { it.first == deletedKey }
+    return when {
+        idx < 0 -> null
+        idx + 1 < items.size -> items[idx + 1].first
+        idx - 1 >= 0 -> items[idx - 1].first
+        else -> null
+    }
+}
+
+/**
+ * 第 7 轮 P2-3：refresh 整包重建 uiState（纯函数，可单测）——新拉到的
+ * 列表/记录/失败标记替换，删除进行中的键集合、焦点恢复请求计数与删失败
+ * 提示（favoriteError）保留：刷新一次不能把守卫、落点请求或 2 秒 Toast
+ * 窗口内的失败提示静默清掉。
+ */
+internal fun refreshedFavoritesState(
+    current: FavoritesUiState,
+    items: List<Pair<String, Favorite>>,
+    playRecords: Map<String, PlayRecord>,
+    loadFailed: Boolean,
+): FavoritesUiState = FavoritesUiState(
+    items = items,
+    playRecords = playRecords,
+    loadFailed = loadFailed,
+    favoriteError = current.favoriteError,
+    removingKeys = current.removingKeys,
+    focusRestoreRequest = current.focusRestoreRequest,
 )
