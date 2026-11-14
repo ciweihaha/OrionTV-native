@@ -28,7 +28,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.NavOptions
 import androidx.navigation.navDeepLink
+import androidx.navigation.navOptions
 import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
 import com.oriontv.feature.auth.LoginModal
@@ -166,11 +168,22 @@ fun OrionNavHost(
     }
 
     // C7-P2-4：详情/播放页导航去重——各页 onNavigate 共用它：快速双按 OK 或
-    // 重复深链时，栈顶已是同一路由（同参）不再堆叠；不同参仍是新页（换集/
-    // 换片正常进栈）。顶级页切换已有 launchSingleTop + popUpTo，这里只补
-    // 各页 onNavigate 的裸 navigate。
+    // 重复深链时，栈顶已是同一路由（同参）不再堆叠。
+    // 第 7 轮 P2-8 核对（已验证无问题，见 NavControllerImpl.launchSingleTopInternal
+    // 源码）：launchSingleTop 下同目的地异参不是“新页”——库会把栈顶原条目
+    // 原位替换成带新参数的新条目（参数不丢、不压栈），再调
+    // navigator.onLaunchSingleTop；PlayScreen 的 LaunchedEffect(source, id,
+    // episodeIndex, positionMs) 与 DetailScreen 的 LaunchedEffect(source, id)
+    // 都会因参数变化重跑 init，换集/换片正常生效。旧注释“不同参仍是新页”
+    // 说法不准，已按库行为改写；壳内无同目的地异参导航，只影响外部热启动深链。
     val navigateSingleTop: (OrionRoute) -> Unit = { route ->
         navController.navigate(route) { launchSingleTop = true }
+    }
+
+    // 第 7 轮 P2-1：回首页（收藏页空态“去首页”）走导航轨同款 popUpTo(Home)
+    // 路径，不留 Home→Favorites→Home 重复栈。
+    val navigateHome: () -> Unit = {
+        navController.navigate(OrionRoute.Home, topLevelNavOptions())
     }
 
     Box(
@@ -186,11 +199,7 @@ fun OrionNavHost(
                         // C4-P1-5：已在当前页时不导航——popUpTo(Home) 会销毁顶级页
                         //（点已选中直播项重开播放、搜索切走再回丢结果）。
                         if (route == currentRoute) return@NavRail
-                        navController.navigate(route) {
-                            popUpTo(OrionRoute.Home) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
+                        navController.navigate(route, topLevelNavOptions())
                     },
                 )
             }
@@ -215,6 +224,15 @@ fun OrionNavHost(
                     )
                 }
                 // P2-4：深层链接（adb/语音助手/外部调用可直达详情/播放）。
+                // 第 7 轮 P2-9 核对（已验证无问题，见 NavController 源码）：
+                // 缺参/非法参深链在 navigate(uri)/handleDeepLink 层就被拦住——
+                // 深链匹配不到（getMatchingArguments 要求必填参数齐全且可解析）
+                // 时 handleDeepLink 返回 false（冷启动留在首页），navigate(uri)
+                // 抛 IllegalArgumentException（热启动由 MainActivity 的
+                // runCatching 接住记日志丢弃），根本到不了组合体内的 toRoute()。
+                // 这里的 runCatching 是纵深防御：万一某条路径仍把坏参数带进来，
+                // 记日志后退回首页，不在组合体内崩溃（与本文件 currentRoute 解析
+                // 的 C5-P2-6 兜底同款做法）。
                 composable<OrionRoute.Detail>(
                     deepLinks = listOf(
                         navDeepLink {
@@ -222,13 +240,26 @@ fun OrionNavHost(
                         },
                     ),
                 ) { entry ->
-                    val route = entry.toRoute<OrionRoute.Detail>()
+                    val route = runCatching { entry.toRoute<OrionRoute.Detail>() }
+                        .onFailure { e ->
+                            Log.w("OrionNavHost", "详情路由解析失败，退回首页：${e.message}")
+                        }.getOrNull()
+                    if (route == null) {
+                        LaunchedEffect(Unit) {
+                            navController.popBackStack(OrionRoute.Home, inclusive = false)
+                        }
+                        return@composable
+                    }
                     DetailScreen(
                         source = route.source,
                         id = route.id,
                         title = route.title,
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
+                        // 第 7 轮 P1-1：全局弹窗开着时详情数据/错误到达不抢焦点。
+                        globalModalOpen = showLoginModal || showUpdateCard,
+                        // 第 7 轮豆瓣透传：首页来源的评分（搜索/收藏/深链无评分，null）。
+                        rate = route.rate,
                     )
                 }
                 composable<OrionRoute.Play>(
@@ -239,7 +270,16 @@ fun OrionNavHost(
                         },
                     ),
                 ) { entry ->
-                    val route = entry.toRoute<OrionRoute.Play>()
+                    val route = runCatching { entry.toRoute<OrionRoute.Play>() }
+                        .onFailure { e ->
+                            Log.w("OrionNavHost", "播放路由解析失败，退回首页：${e.message}")
+                        }.getOrNull()
+                    if (route == null) {
+                        LaunchedEffect(Unit) {
+                            navController.popBackStack(OrionRoute.Home, inclusive = false)
+                        }
+                        return@composable
+                    }
                     PlayScreen(
                         source = route.source,
                         id = route.id,
@@ -260,6 +300,8 @@ fun OrionNavHost(
                     FavoritesScreen(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
+                        // 第 7 轮 P2-1：空态“去首页”回栈到已有的 Home，不压新 Home。
+                        onGoHome = navigateHome,
                     )
                 }
                 composable<OrionRoute.Settings> {
@@ -316,4 +358,15 @@ fun OrionNavHost(
             }
         }
     }
+}
+
+/**
+ * 第 7 轮 P2-1：顶级页切换的导航选项（导航轨与收藏页空态“去首页”共用）：
+ * 回栈到已有的 Home（saveState + restoreState 保状态）、栈顶不重复。
+ * 纯构造，可单测。
+ */
+internal fun topLevelNavOptions(): NavOptions = navOptions {
+    popUpTo(OrionRoute.Home) { saveState = true }
+    launchSingleTop = true
+    restoreState = true
 }

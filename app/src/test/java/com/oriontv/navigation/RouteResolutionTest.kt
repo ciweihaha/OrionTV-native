@@ -1,7 +1,9 @@
 package com.oriontv.navigation
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -44,5 +46,28 @@ class RouteResolutionTest {
     @Test
     fun `null stays null`() {
         assertNull(railRouteFor(null))
+    }
+
+    @Test
+    fun `top level nav options pop up to home with state kept`() {
+        // 第 7 轮 P2-1：导航轨与收藏页空态“去首页”共用的顶层选项——
+        // launchSingleTop 不重复压栈、restoreState 恢复首页状态、
+        // popUpTo(Home) 存状态、不把 Home 也弹掉（inclusive 默认 false）。
+        val options = topLevelNavOptions()
+        assertTrue(options.shouldLaunchSingleTop())
+        assertTrue(options.shouldRestoreState())
+        assertTrue(options.shouldPopUpToSaveState())
+        assertFalse(options.isPopUpToInclusive())
+    }
+
+    @Test
+    fun `detail route carries home rating only when given`() {
+        // 第 7 轮豆瓣透传：首页来源的评分经导航参数带进详情；其他入口
+        // 不传时默认 null，不显示评分。
+        assertEquals(
+            "8.5",
+            OrionRoute.Detail(source = "agg", id = "1", title = "片名", rate = "8.5").rate,
+        )
+        assertNull(OrionRoute.Detail(source = "agg", id = "1", title = "片名").rate)
     }
 }

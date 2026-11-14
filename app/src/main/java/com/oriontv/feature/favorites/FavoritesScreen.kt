@@ -59,6 +59,11 @@ fun FavoritesScreen(
     viewModel: FavoritesViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * 第 7 轮 P2-1：空态“去首页”的回栈动作（NavHost 传入 popUpTo(Home)
+     * 路径）；为 null 时回落到 onNavigate(Home)（旧行为，防调用方漏传）。
+     */
+    onGoHome: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val firstCardRequester = remember { FocusRequester() }
@@ -158,7 +163,9 @@ fun FavoritesScreen(
                 text = if (uiState.loadFailed) "重试" else "去首页",
                 onClick = {
                     if (uiState.loadFailed) viewModel.refresh()
-                    else onNavigate(OrionRoute.Home)
+                    // 第 7 轮 P2-1：回栈到已有的 Home，不经 navigateSingleTop
+                    // 直推（栈里会留出 Home→Favorites→Home，返回先回收藏页）。
+                    else onGoHome?.invoke() ?: onNavigate(OrionRoute.Home)
                 },
                 modifier = Modifier.preferredFocus(goHomeRequester),
             )
