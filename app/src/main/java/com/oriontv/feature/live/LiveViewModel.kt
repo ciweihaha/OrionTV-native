@@ -61,6 +61,16 @@ class LiveViewModel @Inject constructor(
     /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /** 是否在前台（LiveScreen 的 ON_RESUME/ON_PAUSE 观察者维护；时钟门控见 startTicker，P2-9）。 */
+    @Volatile
+    var isForeground: Boolean = true
+        private set
+
+    /** 前台状态变化（供 LiveScreen 的生命周期观察者调用）。 */
+    fun setForeground(foreground: Boolean) {
+        isForeground = foreground
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             handlePlaybackError()
@@ -205,6 +215,8 @@ class LiveViewModel @Inject constructor(
         tickerJob = viewModelScope.launch {
             while (true) {
                 delay(30_000)
+                // P2-9 前台门控：切后台时不刷时钟 UI；恢复前台后下一跳继续。
+                if (!shouldRunTicker(isForeground)) continue
                 _uiState.update { it.copy(nowMs = System.currentTimeMillis()) }
             }
         }
@@ -212,6 +224,9 @@ class LiveViewModel @Inject constructor(
         epgRefreshJob = viewModelScope.launch {
             while (true) {
                 delay(10 * 60_000)
+                // P2-9 前台门控：切后台时不拉 EPG；直播本身不靠这个循环推进，
+                // 只停 UI 时钟与后台刷新，与后台播放开关无关。
+                if (!shouldRunTicker(isForeground)) continue
                 val now = System.currentTimeMillis()
                 // 缓存里已无正在播的节目才值得重拉（天光 v2.2.20 教训的反向运用）。
                 val epg = _uiState.value.epg
@@ -370,6 +385,9 @@ class LiveViewModel @Inject constructor(
     }
 
     private fun afterManualChannelChange(closePanel: Boolean = false) {
+        // P2-2：任何手动换台都取消数字键提交定时器并清缓冲——否则 1.5 秒内
+        // 按数字键再按上/下换台，定时器到点仍会把频道切回数字键那个台。
+        cancelDigitCommit()
         saveLastChannel()
         _uiState.update {
             it.copy(
@@ -392,6 +410,8 @@ class LiveViewModel @Inject constructor(
         val state = _uiState.value
         if (state.channels.isEmpty()) return
         if (!controller.changeLine(delta)) return // 单线路频道无动作
+        // P2-2：手动切线路同样取消数字键提交定时器（同换台）。
+        cancelDigitCommit()
         _uiState.update {
             it.copy(lineIndex = controller.lineIndex, failCount = controller.failCount)
         }
@@ -447,6 +467,19 @@ class LiveViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 取消数字键提交定时器并清缓冲（P2-2）：手动换台/切线路/开面板时调用，
+     * 否则 1500ms 定时器到点会把频道切回数字键缓冲的那个台。
+     * 注意：提交任务自身调 selectChannel 时也会走到这里（自取消），
+     * 取消是协作式的，其后无挂起点，不影响本次提交。
+     */
+    private fun cancelDigitCommit() {
+        digitCommitJob?.cancel()
+        digitCommitJob = null
+        controller.clearDigitBuffer()
+        _uiState.update { it.copy(digitBuffer = "") }
+    }
+
     // ---- 收藏 ----
 
     /** 菜单键收藏/取消收藏当前台。 */
@@ -484,6 +517,8 @@ class LiveViewModel @Inject constructor(
     }
 
     fun openPanel() {
+        // P2-2：开面板挑台时也取消数字键提交定时器，免得 1.5 秒后误切台。
+        cancelDigitCommit()
         _uiState.update {
             it.copy(
                 panelOpen = true,
@@ -496,7 +531,17 @@ class LiveViewModel @Inject constructor(
 
     fun closePanel() {
         panelTimerJob?.cancel()
+        // P2-13：面板打开期间断流（signalError 常驻、就绪超时已取消），
+        // 关面板时若仍未在播，重播当前台——让就绪超时/自动换台链重新接管，
+        // 否则播放器静置在错误态，需用户手动换台或按 OK 重试。
+        // 已在播（流已恢复）或无 signalError 时不动作；失败页（playbackFailed）
+        // 的重试仍走遮罩上的重试按钮，不在这里自动重试。
+        val hadSignalError = _uiState.value.signalError
+        val wasPlaying = _uiState.value.isPlaying
         _uiState.update { it.copy(panelOpen = false, epgDialogChannel = null) }
+        if (hadSignalError && !wasPlaying && _uiState.value.channels.isNotEmpty()) {
+            playCurrent()
+        }
     }
 
     fun setFocusedChannel(index: Int) {
@@ -610,6 +655,13 @@ class LiveViewModel @Inject constructor(
 
         /** 直播永远 1× 倍速（点播倍速不泄漏到直播）。 */
         const val LIVE_PLAYBACK_SPEED = 1f
+
+        /**
+         * 直播时钟/EPG 刷新是否应跑一跳（可单测，P2-9）：只在前台跑；
+         * 切后台时时钟与 EPG 刷新都停（直播本身不靠这个循环推进，
+         * 与后台播放开关无关；恢复前台后下一跳继续）。
+         */
+        internal fun shouldRunTicker(isForeground: Boolean): Boolean = isForeground
 
         /**
          * 面板定时器是否应挂起（可单测，P1-4）：面板打开且 EPG 弹窗未打开时才挂 15 秒定时器；

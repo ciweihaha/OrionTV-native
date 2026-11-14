@@ -14,4 +14,11 @@ class LiveViewModelLogicTest {
         assertFalse(LiveViewModel.shouldArmPanelTimer(panelOpen = false, epgDialogOpen = false))
         assertFalse(LiveViewModel.shouldArmPanelTimer(panelOpen = false, epgDialogOpen = true))
     }
+
+    @Test
+    fun `live ticker runs only in foreground`() {
+        // P2-9：切后台时时钟/EPG 刷新都停，恢复前台后下一跳继续
+        assertTrue(LiveViewModel.shouldRunTicker(isForeground = true))
+        assertFalse(LiveViewModel.shouldRunTicker(isForeground = false))
+    }
 }
