@@ -36,7 +36,24 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Build debug APK and run unit tests
-        run: ./gradlew assembleDebug testDebugUnitTest --stacktrace
+        run: |
+          ./gradlew assembleDebug testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
+          if [ "${BUILD_FAILED:-0}" = "1" ]; then
+            # 日志文件只能在 Actions 界面下载；把关键错误行打成 check-run 注解，
+            # 这样不用进界面也能从 API 读到失败原因（见注解）。
+            { grep -E "^e: " gradle-build.log | head -10 || true; echo "---TAIL---"; tail -15 gradle-build.log || true; } | sed 's/%/%25/g' | head -25 | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            exit 1
+          fi
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: gradle-build.log
+          retention-days: 7
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
