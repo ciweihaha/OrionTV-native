@@ -96,18 +96,17 @@ fun LiveScreen(
         rootRequester.requestFocus()
     }
 
-    fun digitOf(key: Key): Char? = when (key) {
-        Key.Digit0, Key.NumPad0 -> '0'
-        Key.Digit1, Key.NumPad1 -> '1'
-        Key.Digit2, Key.NumPad2 -> '2'
-        Key.Digit3, Key.NumPad3 -> '3'
-        Key.Digit4, Key.NumPad4 -> '4'
-        Key.Digit5, Key.NumPad5 -> '5'
-        Key.Digit6, Key.NumPad6 -> '6'
-        Key.Digit7, Key.NumPad7 -> '7'
-        Key.Digit8, Key.NumPad8 -> '8'
-        Key.Digit9, Key.NumPad9 -> '9'
-        else -> null
+    // 数字键：Compose 的 Key 没有 Digit0..9 常量，用原生 keyCode 映射
+    //（KEYCODE_0–9 / KEYCODE_NUMPAD_0–9）。
+    fun digitOf(event: KeyEvent): Char? {
+        val code = event.nativeKeyEvent.keyCode
+        if (code in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9) {
+            return '0' + (code - android.view.KeyEvent.KEYCODE_0)
+        }
+        if (code in android.view.KeyEvent.KEYCODE_NUMPAD_0..android.view.KeyEvent.KEYCODE_NUMPAD_9) {
+            return '0' + (code - android.view.KeyEvent.KEYCODE_NUMPAD_0)
+        }
+        return null
     }
 
     Box(
@@ -165,7 +164,7 @@ fun LiveScreen(
                     }
                     // 面板关闭时：数字键换台、菜单收藏、OK 开面板/重试、上/下换台、左/右切线路。
                     else -> {
-                        val digit = digitOf(event.key)
+                        val digit = digitOf(event)
                         when {
                             digit != null -> {
                                 viewModel.appendDigit(digit)
