@@ -42,7 +42,8 @@ import kotlinx.coroutines.withContext
  * 二维码 220×220 + 服务地址 + 4 位配对码；配对成功后自动关闭（由调用方
  * 订阅 RemoteInputManager.handshakes 后调 onDismiss）。
  * 服务未启动时显示红字原因，不放空白二维码。
- * 焦点（P1-5）：打开时落在“关闭”按钮上；方向键在弹窗内循环，不会移到背后页面。
+ * 焦点（P1-5）：打开时落在主操作上（服务未启动时“一键开启”，已启动时“关闭”）；
+ * 方向键在弹窗内循环，不会移到背后页面。
  * 焦点（P1-2，第 5 轮）：服务拉起后“一键开启”按钮消失时，焦点还给“关闭”。
  * 安全（P1-10）：明文提示 + 配对码 5 分钟有效；未启动时可一键开启（P2-14）。
  */
@@ -71,10 +72,16 @@ fun RemoteInputModal(
             withContext(Dispatchers.Default) { QrCodeGenerator.generateBitmap(serverUrl) }
         }
     }
-    // P1-5：打开即抢焦点到“关闭”主按钮（旧注释称默认落主按钮，实际并无 requestFocus）。
-    LaunchedEffect(Unit) { closeRequester.requestFocus() }
-
+    // 第 6 轮 P2-9：showEnableButton 须在初始焦点 effect 之前算好——打开即落主操作。
     val showEnableButton = onEnableRemoteInput != null && serverUrl.isNullOrBlank()
+
+    // P1-5：打开即抢焦点到主操作按钮。
+    // 第 6 轮 P2-9：之前恒抢“关闭”——服务未启动时（正是从搜索页点“手机扫码输入”
+    // 最常见的状态）用户需先横移一格才能点“开启远程输入”；现在未启动落“一键开启”，
+    // 已启动落“关闭”。服务拉起后按钮消失的回落仍由下面的 showEnableButton effect 管。
+    LaunchedEffect(Unit) {
+        if (showEnableButton) enableRequester.requestFocus() else closeRequester.requestFocus()
+    }
 
     // P1-2（第 5 轮）：服务拉起后“一键开启”按钮消失，焦点随之清除；
     // 状态翻转后把焦点还给“关闭”按钮，不只打开瞬间抢一次。
