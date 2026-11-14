@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.oriontv.BuildConfig
 import com.oriontv.core.util.VersionUtils
 import com.oriontv.data.api.AggApi
+import com.oriontv.data.api.AggInvalidResponseException
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.ui.components.ToastEvent
 import com.oriontv.ui.components.nextToastEvent
@@ -152,7 +153,7 @@ class UpdateViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isChecking = false,
-                        error = "检查更新失败：${e.message ?: "网络错误"}，请检查网络后重试",
+                        error = versionCheckError(e),
                     )
                 }
             }
@@ -291,6 +292,21 @@ class UpdateViewModel @Inject constructor(
  * 纯逻辑，可单测。
  */
 fun stripVersionPrefix(version: String): String = VersionUtils.stripVersionPrefix(version)
+
+/**
+ * P2-4（第 5 轮）：检查更新失败的文案分流（纯逻辑，可单测）。
+ * 版本号带 v 前缀时，AggApi.version() 在 strip 之前就抛
+ * AggInvalidResponseException（“版本号格式非法：v…”，正则在数据层），
+ * UpdateViewModel 侧的 stripVersionPrefix 根本跑不到——根治还得在 AggApi
+ * 里 strip（数据层未修，见汇报）。壳侧能做的防御：把这类失败的文案与
+ * 普通网络失败区分开，不让用户对着“检查网络”白折腾；同时 strip 层保留，
+ * 万一数据层修好、version() 真返回带 v 的版本，比较与下载地址仍正确。
+ */
+fun versionCheckError(e: Exception): String = when {
+    e is AggInvalidResponseException && e.message?.contains("版本号格式非法") == true ->
+        "检查更新失败：服务端版本号格式异常，请稍后重试"
+    else -> "检查更新失败：${e.message ?: "网络错误"}，请检查网络后重试"
+}
 
 data class UpdateUiState(
     val currentVersion: String = "",

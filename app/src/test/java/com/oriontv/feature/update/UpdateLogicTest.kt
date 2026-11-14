@@ -1,5 +1,6 @@
 package com.oriontv.feature.update
 
+import com.oriontv.data.api.AggInvalidResponseException
 import java.io.File
 import java.nio.file.Files
 import okhttp3.OkHttpClient
@@ -104,6 +105,24 @@ class UpdateLogicTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `version check error distinguishes bad version format`() {
+        // P2-4（第 5 轮）：带 v 前缀的版本号在 AggApi 层抛错，壳侧文案与网络
+        // 失败区分开；普通异常仍走原来的“检查网络”文案。
+        assertEquals(
+            "检查更新失败：服务端版本号格式异常，请稍后重试",
+            versionCheckError(AggInvalidResponseException("版本号格式非法：v2.0.1")),
+        )
+        assertEquals(
+            "检查更新失败：网络错误，请检查网络后重试",
+            versionCheckError(java.io.IOException("网络错误")),
+        )
+        assertEquals(
+            "检查更新失败：agg 返回 JSON 损坏，请检查网络后重试",
+            versionCheckError(AggInvalidResponseException("agg 返回 JSON 损坏")),
+        )
     }
 
     @Test
