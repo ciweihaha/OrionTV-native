@@ -314,6 +314,7 @@ fun LiveScreen(
                         }
                     }
                     // EPG 弹窗打开时：左右切台节目单，OK/返回关闭；上下留给列表焦点。
+                    // A9-P2-4：数字键也换台（先关弹窗+面板，再走 appendDigit）。
                     uiState.epgDialogChannel != null -> {
                         when (event.key) {
                             Key.DirectionLeft -> {
@@ -328,10 +329,20 @@ fun LiveScreen(
                                 viewModel.closeEpgDialog()
                                 true
                             }
-                            else -> false
+                            else -> {
+                                val digit = digitOf(event)
+                                if (digit != null) {
+                                    viewModel.closePanel()
+                                    viewModel.appendDigit(digit)
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                         }
                     }
                     // 面板打开时：返回关面板，菜单键打开焦点频道的节目单；其余放行给焦点移动。
+                    // A9-P2-4：数字键也换台（先关面板，再走 appendDigit）。
                     uiState.panelOpen -> {
                         when (event.key) {
                             Key.Back -> {
@@ -339,7 +350,12 @@ fun LiveScreen(
                                 true
                             }
                             else -> {
-                                if (isMenuKey(event)) {
+                                val digit = digitOf(event)
+                                if (digit != null) {
+                                    viewModel.closePanel()
+                                    viewModel.appendDigit(digit)
+                                    true
+                                } else if (isMenuKey(event)) {
                                     // A4-P2-7：焦点在分组 chip 上时行没消费按键，走到这里；
                                     // focusedChannelIndex 是旧值（上次聚焦的行），用它开 EPG
                                     // 会开到错台，改开当前播放台的节目单。

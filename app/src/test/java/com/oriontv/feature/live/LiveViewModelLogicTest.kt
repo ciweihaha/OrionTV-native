@@ -41,4 +41,17 @@ class LiveViewModelLogicTest {
         assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = true, loadFailed = true))
         assertFalse(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = false, loadFailed = false))
     }
+
+    @Test
+    fun `background playback starts only for a continuation`() {
+        // A9-P1-1：前台一律开播；后台只允许已开播过的延续（PiP 内断流恢复、
+        // 开关开着的继续播）；从未开播过时后台开播即无窗口后台音频（开关开）
+        // 或违背开关语义（开关关），一律暂缓、回前台再补开播。
+        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
+        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
+        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
+        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    }
 }

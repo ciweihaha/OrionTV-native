@@ -146,8 +146,11 @@ class LiveController(
         if (index !in channels.indices) return false
         if (index != currentIndex) {
             lineIndex = 0
-            triedLines.clear()
         }
+        // A9-P2-2：无条件清空已试线路集合——手动重选同台时 failCount 已清零、
+        // triedLines 仍是旧的，断流后备用线路直接被跳过；自动跳台换了台时
+        // 同样清（新台的线路集合与旧台无关；单台列表的同台跳台另有显式处理）。
+        triedLines.clear()
         currentIndex = index
         // 换台即开启新的稳定窗口：旧台的短暂播出不算新台的稳定播出。
         lastSuccessAtMs = null

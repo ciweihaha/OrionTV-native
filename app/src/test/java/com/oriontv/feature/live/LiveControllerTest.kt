@@ -58,6 +58,24 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `manual reselect of same channel clears tried lines`() {
+        // A9-P2-2：手动重选同台时 failCount 已清零、triedLines 仍是旧的，
+        // 断流后备用线路直接被跳过；重选后再次失败应能再试另一条线路。
+        val c = LiveController(threeChannels)
+        // 第 1 次失败：CCTV-1 有备用线路 → 试线路 2
+        val first = c.onPlaybackError(panelOpen = false)
+        assertTrue(first is LiveErrorAction.TryLine)
+        assertEquals(1, (first as LiveErrorAction.TryLine).lineIndex)
+        // 手动重选同台（不断流、不换台，只清失败态与已试线路）
+        c.selectChannel(0)
+        assertEquals(0, c.failCount)
+        // 再次失败：已试集合已清，应回头试线路 1，而不是直接跳下一台
+        val second = c.onPlaybackError(panelOpen = false)
+        assertTrue(second is LiveErrorAction.TryLine)
+        assertEquals(0, (second as LiveErrorAction.TryLine).lineIndex)
+    }
+
+    @Test
     fun `manual channel change resets fail count`() {
         val c = LiveController(threeChannels)
         c.onPlaybackError(panelOpen = false)

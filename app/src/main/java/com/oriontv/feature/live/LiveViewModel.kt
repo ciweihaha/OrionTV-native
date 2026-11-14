@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.oriontv.core.util.AppLog
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.play.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -61,6 +62,18 @@ class LiveViewModel @Inject constructor(
     /** A6-P2-5：“刷新直播源”在途任务——连点时第二次直接返回，不再并发拉网、
      * 两次 setChannels 交错写表。 */
     private var refreshJob: Job? = null
+    /** A9-P2-5：init() 在途任务——reload() 的守卫（快速双击失败页“重试”
+     * 不再并发跑两路 M3U 加载、两次 playCurrent()，与 refreshJob 同款）。 */
+    private var initJob: Job? = null
+    /** A9-P1-1：页面是否在前台（onPagePaused/onPageResumed 维护；应用内导航
+     * 切走不经过 Activity 生命周期，只看 isForeground 不够）。playCurrent()
+     * 开播前复核它，后台的新开播暂缓、回前台时 onPageResumed() 补开播。 */
+    @Volatile
+    private var pageActive: Boolean = true
+    /** A9-P1-1：本页是否已开播过一次——后台继续播只允许已开播过的延续
+     *（PiP 内断流恢复、开关开着的继续播）；从未开播过时后台开播即无窗口
+     * 后台音频（开关开）或违背开关语义（开关关）。 */
+    private var playbackStarted: Boolean = false
     /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -121,9 +134,12 @@ class LiveViewModel @Inject constructor(
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画；
         // 之前只有点播页读这个开关，直播页按 Home 从不进 PiP、回首页必停播。
         viewModelScope.launch {
-            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+            // B9-P2-1：DataStore 读失败不让协程未捕获崩溃；失败即保持现有值。
+            runCatching { settingsRepository.currentBackgroundPlayback() }
+                .onSuccess { playerManager.backgroundPlaybackEnabled = it }
+                .onFailure { AppLog.w("LiveViewModel", "后台播放开关读入失败，沿用现有值：${it.message}") }
         }
-        viewModelScope.launch {
+        initJob = viewModelScope.launch {
             val favJson = runCatching { settingsRepository.currentLiveFavChannelsJson() }.getOrDefault("")
             val favorites = runCatching {
                 json.decodeFromString<List<LiveFavChannel>>(favJson)
@@ -136,6 +152,9 @@ class LiveViewModel @Inject constructor(
 
             val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
             if (m3uUrl.isBlank()) {
+                // A9-P1-3：未配地址不置 initialised——否则 onPageResumed() 遇频道表
+                // 为空直接早退，用户在设置里填好 M3U 回来永远停在空态，只能杀进程。
+                initialised = false
                 _uiState.update {
                     it.copy(isLoading = false, m3uConfigured = false, favorites = favorites)
                 }
@@ -170,6 +189,9 @@ class LiveViewModel @Inject constructor(
 
     /** 手动重试加载（空态/失败页的“重试”按钮）。 */
     fun reload() {
+        // A9-P2-5：在途守卫——上一路加载还没跑完时直接返回，不并发跑两路
+        // M3U 加载、两次 playCurrent()（与 refreshJob 同款）。
+        if (initJob?.isActive == true) return
         // A4-P2-4：重载先停掉旧播放——否则失败时旧台音频继续播、UI 却显示加载失败。
         // 第 6 轮 P2-9：无归属的 stop() 改 stopIfOwner——本页没认领过播放（token 0）
         // 时不碰别人的播放（例如后台播放开着时点播页正在播）；只停自己那一代。
@@ -252,6 +274,11 @@ class LiveViewModel @Inject constructor(
 
     /** 开播当前台/线路：直播 15 秒就绪超时（plan §5.5），超时按断流处理。 */
     private fun playCurrent() {
+        // A9-P1-1：开播前复核页面仍在前台——加载期间按 Home 后，init 完成、
+        // 数字键 1.5 秒提交定时器到点、刷新完成都可能在后台调到这里；后台的
+        // 新开播暂缓（不认领、不碰播放器），回前台时 onPageResumed() 补开播；
+        // 已开播过的延续（PiP 内断流恢复、开关开着的继续播）不受影响。
+        if (!shouldStartPlayback(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
         // A4-P2-9：每次开播重新认领播放代际（错误/状态回调核对后再处理）。
         playbackToken = playerManager.claimPlayback()
         // 换台即开启新的稳定窗口：旧台的稳定确认任务不再有效（P1-6）。
@@ -264,6 +291,7 @@ class LiveViewModel @Inject constructor(
         // 点播 2× 倍速不泄漏到直播：PlayerManager 单例保留倍速，开播前复位 1×。
         playerManager.setPlaybackSpeed(LIVE_PLAYBACK_SPEED)
         playerManager.playUrl(url)
+        playbackStarted = true
         _uiState.update {
             it.copy(
                 currentIndex = controller.currentIndex,
@@ -312,11 +340,17 @@ class LiveViewModel @Inject constructor(
             is LiveErrorAction.GiveUp -> {
                 // 终端分支：就绪超时已无意义，取消它，免得 15 秒后多算一次失败并重复 Toast。
                 readyTimeoutJob?.cancel()
+                // C9-P2-1：失败页出现时若面板开着先关面板（再落焦点到“重试”）——
+                // 之前面板留在失败页底下，失败页的重试焦点与面板焦点打架；
+                // 与 C8-P2-3（播放页错误关抽屉）同款。
+                panelTimerJob?.cancel()
                 _uiState.update {
                     it.copy(
                         failCount = controller.failCount,
                         playbackFailed = true,
                         isBuffering = false,
+                        panelOpen = false,
+                        epgDialogChannel = null,
                     )
                 }
                 showToast(action.message)
@@ -353,9 +387,13 @@ class LiveViewModel @Inject constructor(
      * 开关开着时不暂停（画中画/后台音频继续），但定时器同样停——回页时重起。
      */
     fun onPagePaused() {
+        pageActive = false
         if (!playerManager.backgroundPlaybackEnabled) {
             playerManager.pauseIfOwner(playbackToken)
         }
+        // A9-P1-1：离页即取消数字键提交定时器——否则 1.5 秒后在后台切台开播
+        //（与 afterManualChannelChange/changeLine/openPanel 的取消同款）。
+        cancelDigitCommit()
         tickerJob?.cancel()
         epgRefreshJob?.cancel()
     }
@@ -371,7 +409,14 @@ class LiveViewModel @Inject constructor(
      * （init() 早退分支里不调，保持 init() 只负责首启加载）。
      */
     fun onPageResumed() {
-        if (!initialised || _uiState.value.channels.isEmpty()) return
+        pageActive = true
+        if (_uiState.value.channels.isEmpty()) {
+            // A9-P1-3：频道表为空时重走 init()——首装未配 M3U 时 init() 早退后
+            // initialised 已复位（见 init 的未配分支），用户填好地址回来能自动加载；
+            // 加载失败过（initialised 仍 true）时不自动重拉，失败页“重试”仍是入口。
+            if (!initialised) init()
+            return
+        }
         startTicker()
         if (!shouldResumePlayback(
                 playerManager.isCurrentOwner(playbackToken),
@@ -406,6 +451,13 @@ class LiveViewModel @Inject constructor(
     fun selectChannel(index: Int) {
         val state = _uiState.value
         if (index !in state.channels.indices) return
+        // A9-P2-3：点当前台只关面板、不重播——之前经 afterManualChannelChange →
+        // playCurrent() 无条件重开，同 URL 还先 stop() 再 playUrl()，从头重播。
+        // closePanel 的信号异常重播（P2-13）保留：信号断着时点当前台是恢复意图。
+        if (index == controller.currentIndex) {
+            closePanel()
+            return
+        }
         controller.selectChannel(index)
         afterManualChannelChange(closePanel = true)
     }
@@ -712,6 +764,18 @@ class LiveViewModel @Inject constructor(
          */
         internal fun shouldArmPanelTimer(panelOpen: Boolean, epgDialogOpen: Boolean): Boolean =
             panelOpen && !epgDialogOpen
+
+        /**
+         * 后台是否允许开播（可单测，A9-P1-1）：页面在前台时一律允许；
+         * 后台时只允许已开播过的延续（PiP 内断流恢复、开关开着的继续播），
+         * 从未开播过的新开播一律暂缓（开关开时是无 PiP 窗口的后台音频，
+         * 开关关时违背开关语义）；暂缓的开播由 onPageResumed() 回前台时补上。
+         */
+        internal fun shouldStartPlayback(
+            pageActive: Boolean,
+            backgroundPlaybackEnabled: Boolean,
+            playbackStarted: Boolean,
+        ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
 
         /**
          * 手动刷新后是否应按“刷新失败”提示（可单测，A8-P1-2）：拉网失败时
