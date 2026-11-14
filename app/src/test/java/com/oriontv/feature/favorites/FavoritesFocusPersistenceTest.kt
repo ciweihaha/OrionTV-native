@@ -13,14 +13,17 @@ import org.junit.Test
  * （即导航保存的返回栈状态 / 进程重建）时值还在。
  * ViewModel 本体不直接实例化（仓库要 Room/接口、单测里没有替身，和第 4 轮
  * SearchStatePersistenceTest 同款做法；接线由 CI 编译 + 全量测试覆盖）。
+ * 注意：读 Handle 必须写死类型（get<Int>/get<Boolean>），不能只写
+ * `handle[KEY] ?: -1` 再断言——assertEquals 的 long 重载会把泛型 T 推成 Long，
+ * 存的 Int 取出来转 Long 直接 ClassCastException（修复 1 的教训）。
  */
 class FavoritesFocusPersistenceTest {
 
     @Test
     fun `fresh handle returns defaults`() {
         val handle = SavedStateHandle()
-        assertFalse(handle[FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE] ?: false)
-        assertEquals(-1, handle[FavoritesViewModel.SAVED_FOCUS_INDEX] ?: -1)
+        assertFalse(handle.get<Boolean>(FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE) ?: false)
+        assertEquals(-1, handle.get<Int>(FavoritesViewModel.SAVED_FOCUS_INDEX) ?: -1)
     }
 
     @Test
@@ -28,8 +31,8 @@ class FavoritesFocusPersistenceTest {
         val handle = SavedStateHandle()
         handle[FavoritesViewModel.SAVED_FOCUS_INDEX] = 7
         handle[FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE] = true
-        assertEquals(7, handle[FavoritesViewModel.SAVED_FOCUS_INDEX])
-        assertEquals(true, handle[FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE])
+        assertEquals(7, handle.get<Int>(FavoritesViewModel.SAVED_FOCUS_INDEX))
+        assertEquals(true, handle.get<Boolean>(FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE))
     }
 
     @Test
@@ -42,13 +45,8 @@ class FavoritesFocusPersistenceTest {
                 FavoritesViewModel.SAVED_FOCUS_INDEX to 12,
             ),
         )
-        assertTrue(restored[FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE] ?: false)
-        // 注意：不能直接写 assertEquals(12, restored[...] ?: -1)——
-        // elvis 里的 -1 字面量会让重载解析走到 assertEquals(long, long)，
-        // 取指被推断成 Long，存的 Int 在运行时转 Long 抛 ClassCastException。
-        // 先读进定型 Int 变量再断言（第 5 轮测试 bug 的单行修复，生产代码不动）。
-        val restoredIndex: Int = restored[FavoritesViewModel.SAVED_FOCUS_INDEX] ?: -1
-        assertEquals(12, restoredIndex)
+        assertTrue(restored.get<Boolean>(FavoritesViewModel.SAVED_INITIAL_FOCUS_DONE) ?: false)
+        assertEquals(12, restored.get<Int>(FavoritesViewModel.SAVED_FOCUS_INDEX) ?: -1)
     }
 
     @Test
@@ -56,6 +54,6 @@ class FavoritesFocusPersistenceTest {
         val handle = SavedStateHandle()
         handle[FavoritesViewModel.SAVED_FOCUS_INDEX] = 3
         handle[FavoritesViewModel.SAVED_FOCUS_INDEX] = 9
-        assertEquals(9, handle[FavoritesViewModel.SAVED_FOCUS_INDEX])
+        assertEquals(9, handle.get<Int>(FavoritesViewModel.SAVED_FOCUS_INDEX))
     }
 }
