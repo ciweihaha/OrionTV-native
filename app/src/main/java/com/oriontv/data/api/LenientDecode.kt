@@ -1,17 +1,16 @@
 package com.oriontv.data.api
 
+import com.oriontv.core.util.AppLog
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import java.util.logging.Logger
 
 /**
  * 列表 / 表逐条容错解码：服务端一整页（表）里混进一条脏数据时，
  * 保留可解析条目、记日志，只丢脏条目，不让一条脏数据拖垮整页/整表（第 4 轮 P1-8）。
  */
 object LenientDecode {
-    private val logger = Logger.getLogger("LenientDecode")
 
     /** 逐条解码 JSON 数组，坏条目跳过并记数。 */
     fun <T> decodeList(json: Json, raw: JsonArray, serializer: KSerializer<T>): List<T> {
@@ -25,7 +24,8 @@ object LenientDecode {
             }
         }
         if (skipped > 0) {
-            logger.warning("列表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
+            // D-P2-11：走 AppLog（android.util.Log），java.util.logging 在真机上看不到。
+            AppLog.w("LenientDecode", "列表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
         }
         return out
     }
@@ -42,7 +42,7 @@ object LenientDecode {
             }
         }
         if (skipped > 0) {
-            logger.warning("表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
+            AppLog.w("LenientDecode", "表解码跳过 $skipped 条损坏条目（共 ${raw.size} 条）")
         }
         return out
     }

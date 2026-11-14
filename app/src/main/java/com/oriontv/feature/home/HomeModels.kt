@@ -2,6 +2,7 @@ package com.oriontv.feature.home
 
 import com.oriontv.data.api.AggVideoItem
 import com.oriontv.data.api.DoubanItem
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 
 /**
@@ -81,8 +82,8 @@ fun mapDoubanItem(item: DoubanItem): HomeRowItem = HomeRowItem(
 
 /** 播放记录 → 最近播放断点卡片（记录键 `${source}+${id}` 拆回 source/id）。 */
 fun mapPlayRecord(key: String, record: PlayRecord): HomeRowItem {
-    val source = key.substringBefore("+", "")
-    val id = key.substringAfter("+", "")
+    // D-P2-3：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义）。
+    val (source, id) = MoonTvApi.splitKey(key)
     return HomeRowItem(
         id = id,
         source = source,
