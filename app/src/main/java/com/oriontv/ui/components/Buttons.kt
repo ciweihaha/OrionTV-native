@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
@@ -53,6 +54,8 @@ fun PrimaryButton(
                 }
             }
             .orionFocus(focused, Capsule)
+            // P2-6：禁用态降透明度，与可用态肉眼可区分。
+            .alpha(if (enabled) 1f else 0.4f)
             .background(OrionColors.Brand, Capsule)
             .padding(horizontal = 28.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
@@ -82,6 +85,8 @@ fun SecondaryButton(
                 }
             }
             .orionFocus(focused, Capsule)
+            // P2-6：禁用态降透明度，与可用态肉眼可区分。
+            .alpha(if (enabled) 1f else 0.4f)
             .background(OrionColors.Surface, Capsule)
             .padding(horizontal = 28.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
