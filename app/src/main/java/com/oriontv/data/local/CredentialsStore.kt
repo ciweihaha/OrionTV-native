@@ -11,6 +11,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * 登录凭据存储口（D-P1-4）：AuthRepository 只依赖接口，单测可用内存假实现，
+ * 不用 MockK、不用真 Keystore。三方法均为 suspend（B-P2-18：实现切 IO 线程）。
+ */
+interface CredentialStore {
+    suspend fun save(username: String, password: String)
+
+    /** 返回已保存的 (账号, 密码)，无保存时返回 null。 */
+    suspend fun load(): Pair<String, String>?
+
+    suspend fun clear()
+}
+
+/**
  * 登录凭据安全存储（plan §5.4 mytv_login_credentials）：
  * EncryptedSharedPreferences + Keystore，绝不明文落盘；读/写失败 rethrow。
  * 真会话 cookie 在 OkHttp CookieJar 里，这里只存账号密码（供自动续期用）。
@@ -18,7 +31,7 @@ import javax.inject.Singleton
 @Singleton
 class CredentialsStore @Inject constructor(
     @ApplicationContext private val context: Context,
-) {
+) : CredentialStore {
     private val prefs by lazy {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -37,7 +50,7 @@ class CredentialsStore @Inject constructor(
      * EncryptedSharedPreferences 首次访问含 Keystore/磁盘 IO，之前在主线程
      * 协程上下文（AuthViewModel、OrionNavHost 的 LaunchedEffect）里同步调。
      */
-    suspend fun save(username: String, password: String) = withContext(Dispatchers.IO) {
+    override suspend fun save(username: String, password: String) = withContext(Dispatchers.IO) {
         prefs.edit()
             .putString("username", username)
             .putString("password", password)
@@ -45,13 +58,13 @@ class CredentialsStore @Inject constructor(
     }
 
     /** 返回已保存的 (账号, 密码)，无保存时返回 null。 */
-    suspend fun load(): Pair<String, String>? = withContext(Dispatchers.IO) {
+    override suspend fun load(): Pair<String, String>? = withContext(Dispatchers.IO) {
         val username = prefs.getString("username", null) ?: return@withContext null
         val password = prefs.getString("password", null) ?: return@withContext null
         username to password
     }
 
-    suspend fun clear() = withContext(Dispatchers.IO) {
+    override suspend fun clear() = withContext(Dispatchers.IO) {
         prefs.edit().clear().apply()
     }
 }
