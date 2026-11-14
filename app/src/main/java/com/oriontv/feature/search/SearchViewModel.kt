@@ -31,7 +31,7 @@ class SearchViewModel @Inject constructor(
     private val moonTvApi: MoonTvApi,
     private val settingsRepository: SettingsRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
-    remoteInputManager: RemoteInputManager,
+    private val remoteInputManager: RemoteInputManager,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
@@ -45,6 +45,10 @@ class SearchViewModel @Inject constructor(
     private val cache = SearchCache()
     private var searchJob: Job? = null
     private var generation = 0
+
+    /** P1-4：首进才落搜索框锚点；返回时恢复 savedResultIndex。 */
+    var initialFocusDone: Boolean = false
+    var savedResultIndex: Int = -1
 
     init {
         viewModelScope.launch {
@@ -114,7 +118,8 @@ class SearchViewModel @Inject constructor(
         }
         try {
             val results = moonTvApi.searchVideos(baseUrl, query)
-            cache.put(query, results)
+            // P2-11：空结果不缓存（服务端刚上新内容时用户不再持续看到空结果）。
+            if (shouldCacheSearchResults(results)) cache.put(query, results)
             // 无痕模式不写搜索历史（阶段 4）。
             if (!settingsRepository.incognitoMode.first()) {
                 searchHistoryRepository.add(query)
@@ -169,11 +174,22 @@ class SearchViewModel @Inject constructor(
         )
     }
 
+    /** P2-14：扫码弹窗内一键开启远程输入（存设置 + 拉起服务）。 */
+    fun enableRemoteInput() {
+        viewModelScope.launch {
+            settingsRepository.setRemoteInputEnabled(true)
+            remoteInputManager.start()
+        }
+    }
+
     companion object {
         /** 输入防抖 300ms（plan §3.2）。 */
         const val DEBOUNCE_MS = 300L
     }
 }
+
+/** P2-11：只缓存非空结果；空结果不进缓存（纯逻辑，可单测）。 */
+fun shouldCacheSearchResults(results: List<SearchResult>): Boolean = results.isNotEmpty()
 
 /** 搜索错误分型（ui-design.md §5.5：错误分型提示，不是一句“失败”）。 */
 sealed interface SearchError {
