@@ -1,14 +1,18 @@
 package com.oriontv.feature.update
 
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -21,6 +25,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * - 失败重试 3 次，退避 3s × 次数；SHA256 校验失败不重试；
  * - 校验走 `<url>.sha256`（4KB 上限，支持 `hash  filename` 或纯 hash）；
  * - 旧 APK 只保留最新 2 个。
+ * - 断点续传（D-P1-5）：读超时放宽到 60 秒；中途失败不删残文件，
+ *   重试时带 `Range: bytes=<已下>-` 从断点续下（服务端返回 206）；
+ *   服务端不支持 Range（回 200）时截断重下，416 时删残文件重下。
  *
  * 注意：[ioDispatcher] 有默认参数，Hilt 不会用默认值注入——
  * 由 AppModule 用 @Provides 显式构造（已知坑，见 CONTRACT §2.1 备注）。
@@ -48,7 +55,7 @@ class UpdateDownloader @Inject constructor(
     suspend fun headApkSizeBytes(url: String): Long? = withContext(ioDispatcher) {
         try {
             val request = Request.Builder().url(url).head().build()
-            okHttpClient.newCall(request).execute().use { response ->
+            okHttpClient.newCall(request).executeCancellable().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 val len = response.header("Content-Length")?.toLongOrNull() ?: return@withContext null
                 len
@@ -64,6 +71,10 @@ class UpdateDownloader @Inject constructor(
      * 下载 APK 到 [destFile]，流式写盘并计数，超 200MB 立即停并删残文件。
      * 进度回调 [onProgress]（已写字节，总字节，-1 表示未知）。
      * 成功返回文件；失败抛 [UpdateDownloadException]（带是否可重试的 [UpdateError]）。
+     *
+     * 断点续传（D-P1-5）：下载专用客户端读超时 60 秒；中途失败/取消不删残文件，
+     * 下一次尝试带 `Range` 从断点续下。服务端不支持 Range（回 200）时截断重下；
+     * 416（断点失效，如服务端文件已换）删残文件重下。
      */
     suspend fun downloadApk(
         url: String,
@@ -77,24 +88,29 @@ class UpdateDownloader @Inject constructor(
                 "安装包体积 ${formatSize(declared)}，超过 200MB 上限",
             )
         }
+        // D-P1-5：下载专用客户端，读超时 60 秒（共享客户端 15 秒，抖动 WiFi 下一次
+        // 停顿就丢掉全部进度）。
+        val downloadClient = okHttpClient.newBuilder()
+            .readTimeout(ApiClient.DOWNLOAD_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
         var lastError: Exception? = null
         // MAX_RETRIES 是重试次数（不含首次），与 ApiClient 一致：1 次初试 + 3 次重试。
         // 原来 repeat(MAX_RETRIES) 只发 3 次（初试 + 2 次重试），与文档“失败重试 3 次”不符。
         repeat(MAX_RETRIES + 1) { attempt ->
             try {
                 destFile.parentFile?.mkdirs()
-                // B4-P2-9：断点续传——半截文件存在时带 Range 续下，不从头重下。
-                val existing = if (destFile.exists()) destFile.length() else 0L
+                val resumedFrom = if (destFile.exists()) destFile.length() else 0L
                 val requestBuilder = Request.Builder().url(url).get()
-                if (existing > 0) {
-                    requestBuilder.header("Range", "bytes=$existing-")
+                if (resumedFrom > 0) {
+                    requestBuilder.header("Range", "bytes=$resumedFrom-")
                 }
-                okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                val request = requestBuilder.build()
+                downloadClient.newCall(request).executeCancellable().use { response ->
                     if (!response.isSuccessful) {
-                        if (response.code == 416) {
-                            // 半截文件比服务端还新/无效：删后重下（下一轮重试从 0 开始）。
+                        if (response.code == 416 && resumedFrom > 0) {
+                            // 断点失效（服务端文件已换）：删残文件，可重试重下。
                             destFile.delete()
-                            throw IOException("断点无效（416），已删半截文件重下")
+                            throw IOException("下载失败：HTTP 416，断点失效，从头重下")
                         }
                         if (!ApiClient.shouldRetryOnStatus(response.code)) {
                             // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
@@ -107,15 +123,34 @@ class UpdateDownloader @Inject constructor(
                         throw IOException("下载失败：HTTP ${response.code}")
                     }
                     val body = response.body ?: throw IOException("下载失败：响应体为空")
-                    // 206 才续写；200 说明服务端不支持 Range，从头写（截断旧半截文件）。
-                    val resume = response.code == 206 && existing > 0
-                    val startAt = if (resume) existing else 0L
-                    val total = if (resume) startAt + body.contentLength() else body.contentLength()
-                    var written = startAt
+                    val isResume = response.code == 206
+                    if (isResume) {
+                        // 206 必须从断点处续上，否则追加会写坏文件：起点不对就删残文件重下。
+                        val rangeStart = response.header("Content-Range")
+                            ?.substringAfter("bytes ", "")
+                            ?.substringBefore("-")
+                            ?.toLongOrNull()
+                        if (rangeStart != null && rangeStart != resumedFrom) {
+                            destFile.delete()
+                            throw IOException("下载失败：服务端续传起点 $rangeStart 与断点 $resumedFrom 不一致，从头重下")
+                        }
+                    }
+                    val total = if (isResume) {
+                        response.header("Content-Range")
+                            ?.substringAfterLast("/", "")
+                            ?.toLongOrNull()
+                            ?: (resumedFrom + body.contentLength())
+                    } else {
+                        body.contentLength()
+                    }
+                    var written = if (isResume) resumedFrom else 0L
                     body.byteStream().use { input ->
-                        java.io.FileOutputStream(destFile, resume).use { output ->
+                        // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
+                        FileOutputStream(destFile, isResume).use { output ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
+                                // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
+                                currentCoroutineContext().ensureActive()
                                 val read = input.read(buffer)
                                 if (read < 0) break
                                 written += read
@@ -137,12 +172,12 @@ class UpdateDownloader @Inject constructor(
                 destFile.delete()
                 throw e
             } catch (e: CancellationException) {
-                // 取消不重试；删掉未下完的残文件。
-                destFile.delete()
+                // 取消不重试；残文件保留，下次下载从断点续下（D-P1-5）。
                 throw e
             } catch (e: Exception) {
                 lastError = e
                 // B4-P2-9：可重试失败保留半截文件，下次尝试用 Range 续传；不再每次删。
+                // 中途失败不删残文件，下一次尝试从断点续下（D-P1-5）。
                 if (attempt < MAX_RETRIES) {
                     delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
                 }
@@ -163,7 +198,7 @@ class UpdateDownloader @Inject constructor(
         repeat(3) { attempt ->
             try {
                 val request = Request.Builder().url(sha256Url).get().build()
-                okHttpClient.newCall(request).execute().use { response ->
+                okHttpClient.newCall(request).executeCancellable().use { response ->
                     if (!response.isSuccessful) {
                         // B4-P2-10：5xx/429 是瞬时失败，按注释重试 2 次；4xx 确定性失败直接 null。
                         if (response.code == 429 || response.code in 500..599) {
