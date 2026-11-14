@@ -28,4 +28,32 @@ class PlayScreenLogicTest {
         assertFalse(shouldInterceptSeekKeys(controlsShown = true, drawerOpen = true))
         assertFalse(shouldInterceptSeekKeys(controlsShown = false, drawerOpen = false))
     }
+
+    @Test
+    fun `seek keys not intercepted while focus is on control buttons`() {
+        // P1-B：第 5 轮焦点模型——焦点已在按钮行上时左/右在按钮间横向移动，
+        // 不再被预览拦截；焦点回到根部时左/右恢复快进预览。
+        assertFalse(
+            shouldInterceptSeekKeys(
+                controlsShown = true,
+                drawerOpen = false,
+                focusOnControls = true,
+            ),
+        )
+        assertTrue(
+            shouldInterceptSeekKeys(
+                controlsShown = true,
+                drawerOpen = false,
+                focusOnControls = false,
+            ),
+        )
+        // 抽屉打开时无论焦点在哪都不拦截（抽屉内横向移动）
+        assertFalse(
+            shouldInterceptSeekKeys(
+                controlsShown = true,
+                drawerOpen = true,
+                focusOnControls = true,
+            ),
+        )
+    }
 }
