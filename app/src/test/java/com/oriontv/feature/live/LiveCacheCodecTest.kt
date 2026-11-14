@@ -75,4 +75,15 @@ class LiveCacheCodecTest {
         assertNull(LiveCacheCodec.decodeM3u("{not json", json))
         assertNull(LiveCacheCodec.decodeEpg("", json))
     }
+
+    @Test
+    fun `decode drops channels with empty urls`() {
+        // P2-13：urls:[] 脏缓存解码后滤掉该频道，不让 Channel.url 崩溃
+        val dirty = """{"ts":1,"channels":[
+            {"id":"http://a/1.m3u8","name":"CCTV-1","urls":["http://a/1.m3u8"]},
+            {"id":"x","name":"Dirty","urls":[]}
+        ]}"""
+        val decoded = LiveCacheCodec.decodeM3u(dirty, json)
+        assertEquals(listOf("CCTV-1"), decoded?.channels?.map { it.name })
+    }
 }

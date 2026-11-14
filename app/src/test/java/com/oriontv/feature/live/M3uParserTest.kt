@@ -33,7 +33,76 @@ class M3uParserTest {
     }
 
     @Test
-    fun `same url only kept once`() {
+    fun `three same-name lines merge without crashing`() {
+        // P0-1：旧实现第 3 条同名线路 indexOf 返回 -1，IndexOutOfBoundsException 整表失败
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1-a.m3u8
+            #EXTINF:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1-b.m3u8
+            #EXTINF:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1-c.m3u8
+            #EXTINF:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1-d.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(1, channels.size)
+        assertEquals(
+            listOf(
+                "http://example.com/cctv1-a.m3u8",
+                "http://example.com/cctv1-b.m3u8",
+                "http://example.com/cctv1-c.m3u8",
+                "http://example.com/cctv1-d.m3u8",
+            ),
+            channels[0].urls,
+        )
+        assertEquals("http://example.com/cctv1-a.m3u8", channels[0].url)
+    }
+
+    @Test
+    fun `hash lines between extinf and url do not drop the channel`() {
+        // P2-3：#EXTVLCOPT / #EXTGRP 夹在 #EXTINF 与流地址之间时频道曾被丢掉
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="cctv1" group-title="央视",CCTV1
+            #EXTVLCOPT:network-caching=1000
+            #EXTGRP:央视
+            http://example.com/cctv1.m3u8
+            #EXTINF:-1 tvg-id="cctv5",CCTV5
+            http://example.com/cctv5.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV5"), channels.map { it.name })
+        assertEquals("http://example.com/cctv1.m3u8", channels[0].url)
+    }
+
+    @Test
+    fun `merge fills blank attrs from later lines`() {
+        // P2-4：首条无 logo/group/tvgId 时用后条补齐，首条已有的不被覆盖
+        val content = """
+            #EXTM3U
+            #EXTINF:-1,CCTV1
+            http://example.com/cctv1-a.m3u8
+            #EXTINF:-1 tvg-id="cctv1" tvg-logo="http://example.com/cctv1.png" group-title="央视",CCTV1
+            http://example.com/cctv1-b.m3u8
+            #EXTINF:-1 tvg-id="other" tvg-logo="http://example.com/other.png" group-title="其他",CCTV1
+            http://example.com/cctv1-c.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(1, channels.size)
+        assertEquals("cctv1", channels[0].tvgId)
+        assertEquals("http://example.com/cctv1.png", channels[0].logo)
+        assertEquals("央视", channels[0].group)
+        assertEquals(3, channels[0].urls.size)
+    }
+
+    @Test
+    fun `empty urls channel url is empty string not crash`() {
+        // P2-13：urls:[] 脏数据下 url 不再抛 NoSuchElementException
+        val channel = M3uParser.Channel(id = "x", name = "X", urls = emptyList())
+        assertEquals("", channel.url)
+    }
         val channels = M3uParser.parse(sample)
         val allUrls = channels.flatMap { it.urls }
         assertEquals(3, allUrls.size)

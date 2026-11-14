@@ -6,9 +6,13 @@ import kotlinx.serialization.Serializable
  * M3U 解析（plan §5.3）：
  * - 逐行解析 `#EXTINF:`，取第一个不在双引号内的逗号之后为台名；
  * - 属性取 `tvg-logo`、`group-title`、`tvg-id`；
- * - 下一行非 `#` 开头且含 `://` 的为流地址；
+ * - 下一行非 `#` 开头且含 `://` 的为流地址；`#EXTINF` 与地址之间的
+ *   `#` 行（`#EXTVLCOPT`、`#EXTGRP` 等）跳过继续找地址，遇下一个
+ *   `#EXTINF` 才停；
  * - 同一 URL 只留第一次出现；`id` 即 URL 本身；
- * - 同名频道合并多线路（`urls[]`，`url` 恒等于 `urls[0]`，台名为 `Unknown` 的不参与合并）。
+ * - 同名频道合并多线路（`urls[]`，`url` 恒等于 `urls[0]`，台名为 `Unknown` 的不参与合并），
+ *   合并时同步更新 byName（否则第 3 条同名线路 `indexOf` 返回 -1 崩溃），
+ *   首条 tvgId/logo/group 为空时用后条补齐。
  * `getPlayableUrl` 是恒等函数，流地址直接播放；没有任何 302 特殊处理。
  */
 object M3uParser {
@@ -20,10 +24,10 @@ object M3uParser {
         val logo: String? = null,
         val group: String? = null,
         val tvgId: String? = null,
-        /** 多线路；url 恒等于 urls[0]。 */
+        /** 多线路；url 恒等于 urls[0]（urls 为空时为空串，不崩溃）。 */
         val urls: List<String>,
     ) {
-        val url: String get() = urls.first()
+        val url: String get() = urls.firstOrNull().orEmpty()
     }
 
     fun parse(content: String): List<Channel> {
@@ -35,7 +39,8 @@ object M3uParser {
             if (line.startsWith("#EXTINF:")) {
                 val name = extractName(line)
                 val attrs = extractAttrs(line)
-                // 下一行非 # 开头且含 :// 的为流地址
+                // 下一行非 # 开头且含 :// 的为流地址；#EXTINF 与地址之间的
+                // # 行（#EXTVLCOPT、#EXTGRP 等）跳过继续找，遇下一个 #EXTINF 才停。
                 var j = i + 1
                 var url: String? = null
                 while (j < lines.size) {
@@ -44,7 +49,12 @@ object M3uParser {
                         j++
                         continue
                     }
-                    if (!next.startsWith("#") && next.contains("://")) {
+                    if (next.startsWith("#EXTINF:")) break
+                    if (next.startsWith("#")) {
+                        j++
+                        continue
+                    }
+                    if (next.contains("://")) {
                         url = next
                     }
                     break
@@ -83,8 +93,18 @@ object M3uParser {
                 byName[channel.name] = channel
                 merged.add(channel)
             } else {
+                // 合并后必须同步更新 byName：否则第 3 条同名线路到来时
+                // merged.indexOf(existing) 找不到旧对象返回 -1，越界崩溃。
+                // 首条 tvgId/logo/group 为空时用后条补齐（只补空项，不覆盖首条）。
+                val mergedChannel = existing.copy(
+                    urls = existing.urls + channel.url,
+                    logo = existing.logo?.takeIf { it.isNotBlank() } ?: channel.logo,
+                    group = existing.group?.takeIf { it.isNotBlank() } ?: channel.group,
+                    tvgId = existing.tvgId?.takeIf { it.isNotBlank() } ?: channel.tvgId,
+                )
                 val index = merged.indexOf(existing)
-                merged[index] = existing.copy(urls = existing.urls + channel.url)
+                merged[index] = mergedChannel
+                byName[channel.name] = mergedChannel
             }
         }
         return merged

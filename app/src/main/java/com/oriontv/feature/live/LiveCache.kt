@@ -34,6 +34,9 @@ object LiveCacheCodec {
 
     fun decodeM3u(text: String, json: Json): M3uCache? =
         runCatching { json.decodeFromString<M3uCache>(text) }.getOrNull()
+            // 脏缓存（urls:[] 的频道）解码成功后 Channel.url 会崩溃：
+            // 解码时直接滤掉 urls 为空的频道（url 本身也已改 firstOrNull 兜底）。
+            ?.let { cache -> cache.copy(channels = cache.channels.filter { it.urls.isNotEmpty() }) }
 
     fun encodeEpg(cache: EpgCache, json: Json): String? {
         val text = json.encodeToString(cache)
