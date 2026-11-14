@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -67,6 +68,10 @@ fun PlayerControls(
     outroStartMs: Long? = null,
     /** 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。 */
     firstButtonRequester: FocusRequester? = null,
+    /** C5-P2-2：跳过片头胶囊的焦点锚点 + 焦点变化回调（供 PlayScreen 跟踪
+     * 胶囊是否获焦，胶囊 10 秒消失时若焦点在它上面则焦点回根）。 */
+    skipIntroRequester: FocusRequester? = null,
+    onSkipIntroFocusChanged: (Boolean) -> Unit = {},
     onPlayPause: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
@@ -147,7 +152,15 @@ fun PlayerControls(
                 onClick = onSkipIntro,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 48.dp, bottom = 180.dp),
+                    .padding(end = 48.dp, bottom = 180.dp)
+                    .then(
+                        if (skipIntroRequester != null) {
+                            Modifier.preferredFocus(skipIntroRequester)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .onFocusChanged { onSkipIntroFocusChanged(it.isFocused) },
             )
         }
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -47,8 +48,10 @@ import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.ui.components.CategoryChip
+import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -108,6 +111,9 @@ fun PlayScreen(
     val rootRequester = remember { FocusRequester() }
     // 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。
     val controlsFirstButtonRequester = remember { FocusRequester() }
+    // C5-P2-2：跳过片头胶囊的焦点锚点与是否获焦（胶囊消失时焦点回根用）。
+    val skipIntroRequester = remember { FocusRequester() }
+    var skipIntroFocused by remember { mutableStateOf(false) }
     // 播放错误页“重试”按钮的焦点：错误出现时默认落到它（P2-3，与直播失败页一致）。
     val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
@@ -173,12 +179,23 @@ fun PlayScreen(
     }
 
     // 抽屉关闭后焦点落回控制条首选按钮（P1-9）；只在“从打开变关闭”时触发，不抢初始焦点。
+    // C5-P2-1：固定 delay(100)+单次请求改 requestFocusWithRetry；仍失败回退到根。
     LaunchedEffect(uiState.drawer) {
         val wasOpen = previousDrawer != null
         previousDrawer = uiState.drawer
         if (uiState.drawer == null && wasOpen) {
-            delay(100)
-            controlsFirstButtonRequester.requestFocus()
+            if (!controlsFirstButtonRequester.requestFocusWithRetry()) {
+                rootRequester.requestFocus()
+            }
+        }
+    }
+
+    // C5-P2-2：跳过片头胶囊 10 秒消失时若焦点在胶囊上则焦点回根——之前
+    // 胶囊卸载后焦点留在已卸载的按钮上，遥控器数秒内按什么都没反应。
+    LaunchedEffect(uiState.skipIntroVisible) {
+        if (!uiState.skipIntroVisible && skipIntroFocused) {
+            skipIntroFocused = false
+            rootRequester.requestFocus()
         }
     }
 
@@ -351,9 +368,21 @@ fun PlayScreen(
         )
 
         if (uiState.isLoading) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
+            LoadingAnimation()
+        }
+
+        // A5-P2-5：isBuffering 写而不读，卡顿无提示——加载态已过、又开始
+        // 缓冲时顶部叠一个小提示（复用“正在加载…”样式）；初始加载不叠加。
+        if (uiState.isBuffering && !uiState.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 32.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
                 Text(
-                    text = "正在加载…",
+                    text = "正在缓冲…",
                     style = OrionTextStyles.Body,
                     color = OrionColors.TextSecondary,
                 )
@@ -396,6 +425,8 @@ fun PlayScreen(
                 posterUrl = uiState.current?.poster.orEmpty(),
                 showSkipIntro = uiState.skipIntroVisible,
                 showNextEpisode = uiState.showNextEpisode,
+                skipIntroRequester = skipIntroRequester,
+                onSkipIntroFocusChanged = { skipIntroFocused = it },
                 introEndMs = uiState.markedIntroEndMs,
                 outroStartMs = uiState.outroStartMs,
                 onMarkIntro = { viewModel.markIntroEnd(); pokeControls() },

@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -49,6 +51,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
@@ -60,6 +64,7 @@ import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.BrandProgressBar
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.ConfirmDialog
+import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
@@ -82,12 +87,13 @@ internal fun resolvePanelFocusIndex(
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
 /**
- * 根部 OK 是否走重试（可单测，P2-8）：失败遮罩出现（GiveUp，failCount>5）时根部 OK 也重试，
- * 与遮罩上获焦的“重试”按钮一致；未耗尽上限但失败过时（failCount 1..5）同样重试；
- * 其余情况 OK 打开频道面板。
+ * 根部 OK 是否走重试（可单测，P2-8）：
+ * A5-P2-4：只在 playbackFailed（自动处理耗尽、失败页已出）时重试；
+ * failCount 1..5 时 OK 改重试与设计 §5.4 不符（失败未耗尽时 OK 应开面板），
+ * 注释里“有意为之”的旧行为已废弃。
  */
 internal fun shouldRetryOnOk(playbackFailed: Boolean, failCount: Int): Boolean =
-    playbackFailed || (failCount in 1..LiveController.MAX_AUTO_FAIL)
+    playbackFailed
 
 /**
  * 直播页（ui-design.md §5.4）：
@@ -125,6 +131,26 @@ fun LiveScreen(
     LaunchedEffect(Unit) {
         viewModel.init()
         rootRequester.requestFocus()
+    }
+
+    // A5-P1-1/A5-P1-2/A5-P2-10：离页/回页的播放与定时器接线。
+    // ON_PAUSE（切后台、进画中画）与 onDispose（导航轨切走本页）都走
+    // onPagePaused：开关关着即停本页音频，时钟/EPG 刷新定时器随页停；
+    // ON_RESUME 走 onPageResumed：定时器重起，播放器被抢走/停掉时重开播。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.onPageResumed()
+                Lifecycle.Event.ON_PAUSE -> viewModel.onPagePaused()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onPagePaused()
+        }
     }
 
     // 关闭面板/弹窗/退出确认、或空态加载出频道后，焦点回根
@@ -278,9 +304,23 @@ fun LiveScreen(
         )
 
         if (uiState.isLoading) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
+            LoadingAnimation(message = "正在加载频道…")
+        }
+
+        // A5-P2-5：isBuffering 写而不读，卡顿无提示——频道已出、正在缓冲时
+        // 顶部叠一个小提示（复用“正在加载…”样式）；加载频道/失败页时不叠加。
+        if (uiState.isBuffering && !uiState.isLoading &&
+            uiState.channels.isNotEmpty() && !uiState.playbackFailed
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 32.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
                 Text(
-                    text = "正在加载频道…",
+                    text = "正在缓冲…",
                     style = OrionTextStyles.Body,
                     color = OrionColors.TextSecondary,
                 )

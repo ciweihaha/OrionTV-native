@@ -39,6 +39,7 @@ import com.oriontv.core.focus.preferredFocus
 import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
+import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.VideoCard
@@ -177,11 +178,8 @@ fun HomeScreen(
             }
             if (uiState.isLoading && uiState.rows.isEmpty()) {
                 item {
-                    Text(
-                        text = "正在加载…",
-                        style = OrionTextStyles.Body,
-                        color = OrionColors.TextSecondary,
-                    )
+                    // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
+                    LoadingAnimation()
                 }
             }
             if (uiState.error != null && uiState.rows.isEmpty()) {

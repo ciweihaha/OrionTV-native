@@ -108,11 +108,20 @@ class LiveController(
         restoreName: String? = null,
     ) {
         channels = newChannels
-        val restored = restoreUrl?.let { url ->
-            newChannels.indexOfFirst {
+        // A5-P1-4：URL 精确匹配不到时回退匹配——手动刷新直播源后当前台 URL
+        // 若已轮换，旧实现直接落 0 台静默开播 1 台。回退顺序：(url, name) →
+        // url 单独（同流改名）→ name 单独（同名换址）→ 仍找不到才落 0 台。
+        val restored: Int? = restoreUrl?.let { url ->
+            val byUrlAndName = newChannels.indexOfFirst {
                 it.url == url && (restoreName == null || it.name == restoreName)
             }
-        }.takeIf { it != null && it >= 0 }
+            if (byUrlAndName >= 0) return@let byUrlAndName
+            val byUrl = newChannels.indexOfFirst { it.url == url }
+            if (byUrl >= 0) return@let byUrl
+            null
+        } ?: restoreName?.let { name ->
+            newChannels.indexOfFirst { it.name == name }.takeIf { it >= 0 }
+        }
         currentIndex = restored ?: 0
         lineIndex = 0
         failCount = 0

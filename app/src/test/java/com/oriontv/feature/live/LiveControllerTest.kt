@@ -286,6 +286,27 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `restore falls back to name when url rotated`() {
+        // A5-P1-4：手动刷新后当前台 URL 已轮换，按 name 回退找回同名台，
+        // 不再静默跳到 1 台开播；同名多条时取第一条；名也找不到才落 0 台
+        val fresh = listOf(
+            channel("CCTV-1", listOf("http://b/1.m3u8")),
+            channel("广东卫视", listOf("http://b/gd.m3u8")),
+            channel("深圳卫视", listOf("http://b/sz.m3u8")),
+        )
+        val c = LiveController()
+        c.setChannels(fresh, restoreUrl = "http://a/gd.m3u8", restoreName = "广东卫视")
+        assertEquals(1, c.currentIndex)
+        assertEquals("广东卫视", c.currentChannel?.name)
+        // URL 在新表里但改了名：按 URL 找回
+        c.setChannels(fresh, restoreUrl = "http://b/sz.m3u8", restoreName = "深圳台")
+        assertEquals(2, c.currentIndex)
+        // URL 与名都对不上：落 0 台
+        c.setChannels(fresh, restoreUrl = "http://a/none.m3u8", restoreName = "不存在的台")
+        assertEquals(0, c.currentIndex)
+    }
+
+    @Test
     fun `index of channel distinguishes duplicate urls by identity`() {
         // P2-4：同 URL 出现两次时，点第二条不再落到第一条
         val first = channel("卫视", listOf("http://a/shared.m3u8"))

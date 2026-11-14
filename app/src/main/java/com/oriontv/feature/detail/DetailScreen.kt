@@ -38,6 +38,7 @@ import com.oriontv.core.focus.preferredFocus
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
+import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
@@ -122,11 +123,9 @@ private fun DetailScreenContent(
     ) {
             if (uiState.isLoading && uiState.current == null) {
                 item {
-                    Text(
-                        text = "正在加载详情…",
-                        style = OrionTextStyles.Body,
-                        color = OrionColors.TextSecondary,
-                    )
+                    // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画），
+                    // 不再用纯文字“正在加载详情…”。
+                    LoadingAnimation(message = "正在加载详情…")
                 }
             }
             if (uiState.error != null && uiState.current == null) {

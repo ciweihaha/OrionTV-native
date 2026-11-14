@@ -40,12 +40,14 @@ class LiveScreenLogicTest {
     }
 
     @Test
-    fun `root ok retries when playback failed even after giveup`() {
-        // P2-8：GiveUp（failCount=6）时根部 OK 也走重试，与遮罩按钮一致
+    fun `root ok retries only when playback failed`() {
+        // A5-P2-4：只在 playbackFailed（失败页已出）时重试；failCount 1..5
+        // 时 OK 开面板（与设计 §5.4 一致），旧“失败过就重试”已废弃
         assertTrue(shouldRetryOnOk(playbackFailed = true, failCount = 6))
         assertTrue(shouldRetryOnOk(playbackFailed = true, failCount = 0))
-        // 未耗尽但失败过：重试
-        assertTrue(shouldRetryOnOk(playbackFailed = false, failCount = 3))
+        // 未耗尽但失败过：开面板，不重试
+        assertFalse(shouldRetryOnOk(playbackFailed = false, failCount = 3))
+        assertFalse(shouldRetryOnOk(playbackFailed = false, failCount = 1))
         // 没失败过：开面板
         assertFalse(shouldRetryOnOk(playbackFailed = false, failCount = 0))
     }

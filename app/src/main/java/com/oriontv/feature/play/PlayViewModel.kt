@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /** 播放抽屉：选集 / 换源 / 倍速（三者互斥，打开时焦点落在当前项）。 */
@@ -60,6 +61,12 @@ class PlayViewModel @Inject constructor(
     private var pollJob: Job? = null
     private var readyTimeoutJob: Job? = null
     private var searchJob: Job? = null
+    /** A5-P1-5：开播串行化——startEpisode 六处原来都是 fire-and-forget，
+     * 并发开播会让 UI 与播放器演到不同集、断点存错集。同一时刻只留一次开播。 */
+    private var startEpisodeJob: Job? = null
+    /** A5-P1-5：开播代际——开播时快照，收尾（播流、写状态）前复核；
+     * 旧开播在同步尾巴里没被取消拦住时，不再覆盖新开播的状态。 */
+    private var startEpisodeGeneration = 0
     /** 抓帧串行化（P2-7）：同一时刻只保留一次 MediaMetadataRetriever 抓帧。 */
     private val previewFrameMutex = Mutex()
     /** 退出时保存断点用：onCleared 时 viewModelScope 已取消，不能用它写库。 */
@@ -130,7 +137,7 @@ class PlayViewModel @Inject constructor(
                     if (state.current == null && results.isNotEmpty()) {
                         val first = results.firstOrNull { it.source == source } ?: results[0]
                         _uiState.update { it.copy(results = results, current = first) }
-                        viewModelScope.launch { startEpisode(first, state.episodeIndex) }
+                        launchStartEpisode(first, state.episodeIndex)
                     } else {
                         _uiState.update { it.copy(results = results) }
                     }
@@ -167,8 +174,22 @@ class PlayViewModel @Inject constructor(
         playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
     }
 
+    /** A5-P1-5：开播的唯一入口——取消旧开播再起新的（旧开播在挂起点被取消；
+     * 已跑进同步尾巴的旧开播由 startEpisode 内的代际校验拦住）。 */
+    private fun launchStartEpisode(
+        result: SearchResult,
+        episodeIndex: Int,
+        startPositionMs: Long? = null,
+    ) {
+        startEpisodeJob?.cancel()
+        startEpisodeJob = viewModelScope.launch {
+            startEpisode(result, episodeIndex, startPositionMs)
+        }
+    }
+
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
     private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
+        val generation = ++startEpisodeGeneration
         // A4-P2-8：新一集开播的挂起操作（读设置/断点，服务端模式下还有网络读）
         // 期间旧的就绪超时仍挂着，可能误触自动换源；开播先取消旧超时。
         readyTimeoutJob?.cancel()
@@ -210,7 +231,11 @@ class PlayViewModel @Inject constructor(
         lastSavedPositionMs = -1L
         markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
         playerManager.setPlaybackSpeed(rate)
+        // A5-P1-5：播流前复核代际——挂起读数期间已有新开播时，旧开播不再碰播放器。
+        if (generation != startEpisodeGeneration) return
         playerManager.playUrl(episodes[episodeIndex], startPosition)
+        // A5-P1-5：收尾写状态前再复核一次代际，旧开播不覆盖新开播的集/状态。
+        if (generation != startEpisodeGeneration) return
         _uiState.update {
             it.copy(
                 isLoading = true,
@@ -273,9 +298,8 @@ class PlayViewModel @Inject constructor(
                         error = null,
                     )
                 }
-                viewModelScope.launch {
-                    startEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
-                }
+                // A5-P1-5：自动换源也走串行开播入口，不与手动选集并发。
+                launchStartEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
                 return
             }
         }
@@ -315,6 +339,9 @@ class PlayViewModel @Inject constructor(
         pollJob = viewModelScope.launch {
             while (true) {
                 delay(500)
+                // A5-P2-2：轮询开头判归属——播放器被直播页抢走后，本页的
+                // 轮询不再读位置/写状态（之前无归属校验，跨页互相覆盖进度）。
+                if (!playerManager.isCurrentOwner(playbackToken)) continue
                 val position = playerManager.currentPositionMs
                 val duration = playerManager.durationMs
                 val buffered = playerManager.bufferedPositionMs
@@ -489,7 +516,7 @@ class PlayViewModel @Inject constructor(
         if (next >= current.episodes.size) return
         nextEpisodeDismissedForIndex = -1
         _uiState.update { it.copy(showNextEpisode = false) }
-        viewModelScope.launch { startEpisode(current, next) }
+        launchStartEpisode(current, next)
     }
 
     /** 取消下一集预告：记一笔，播完也不再重弹、不自动播下一集（P1-1）；换集时清除。 */
@@ -507,7 +534,7 @@ class PlayViewModel @Inject constructor(
         }
         nextEpisodeDismissedForIndex = -1
         _uiState.update { it.copy(showNextEpisode = false, drawer = null) }
-        viewModelScope.launch { startEpisode(current, index) }
+        launchStartEpisode(current, index)
     }
 
     /** 换源：不丢集数（集号不变），保进度续播（从当前进度开始，不从 0 播）。 */
@@ -516,7 +543,7 @@ class PlayViewModel @Inject constructor(
         val next = state.results.firstOrNull { it.source == source } ?: return
         val episode = state.episodeIndex.coerceAtMost((next.episodes.size - 1).coerceAtLeast(0))
         _uiState.update { it.copy(drawer = null) }
-        viewModelScope.launch { startEpisode(next, episode, playerManager.currentPositionMs) }
+        launchStartEpisode(next, episode, playerManager.currentPositionMs)
     }
 
     fun setPlaybackSpeed(rate: Float) {
@@ -538,24 +565,29 @@ class PlayViewModel @Inject constructor(
     suspend fun grabPreviewFrame(url: String, timeMs: Long): Bitmap? =
         // 同一时刻只保留一次抓帧（P2-7）：Mutex 串行化，快速连按不在 IO 池里堆 retriever；
         // 取消的等待者直接出队，不执行抓帧。
-        previewFrameMutex.withLock {
-            withContext(Dispatchers.IO) {
-                try {
-                    val retriever = MediaMetadataRetriever()
+        // A5-P2-6：setDataSource 是阻塞调用，取消中断不了——外包 1500ms 超时，
+        // 超时直接回 null（调用方用海报兜底），不再让一次抓帧拖住落点预览；
+        // 超时后底层阻塞调用仍在 IO 线程跑完才释放 Mutex，属已知代价。
+        withTimeoutOrNull(PREVIEW_FRAME_TIMEOUT_MS) {
+            previewFrameMutex.withLock {
+                withContext(Dispatchers.IO) {
                     try {
-                        retriever.setDataSource(url, mapOf())
-                        retriever.getFrameAtTime(
-                            timeMs * 1000,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        )
-                    } finally {
-                        retriever.release()
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(url, mapOf())
+                            retriever.getFrameAtTime(
+                                timeMs * 1000,
+                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            )
+                        } finally {
+                            retriever.release()
+                        }
+                    } catch (e: CancellationException) {
+                        // 取消异常必须重抛：runCatching 吞掉它会让已取消的协程继续跑。
+                        throw e
+                    } catch (_: Exception) {
+                        null
                     }
-                } catch (e: CancellationException) {
-                    // 取消异常必须重抛：runCatching 吞掉它会让已取消的协程继续跑。
-                    throw e
-                } catch (_: Exception) {
-                    null
                 }
             }
         }
@@ -566,7 +598,7 @@ class PlayViewModel @Inject constructor(
         _uiState.update { it.copy(error = null, autoSwitchAttempts = 0, isLoading = true) }
         viewModelScope.launch {
             if (current != null) {
-                startEpisode(current, state.episodeIndex)
+                launchStartEpisode(current, state.episodeIndex)
             } else {
                 initialised = false
                 // 拆键按最后一个 + 切分（与 RN 一致）：键由两段转义后用 + 连接，
@@ -637,6 +669,9 @@ class PlayViewModel @Inject constructor(
     companion object {
         /** 播错自动换源最多 2 次（ui-design.md §5.3）。 */
         const val MAX_AUTO_SWITCH = 2
+
+        /** A5-P2-6：抓帧超时 1500ms——setDataSource 阻塞不可取消，超时即放弃、用海报兜底。 */
+        const val PREVIEW_FRAME_TIMEOUT_MS = 1500L
 
         /** 临近片尾阈值（复用下一集预告的 10 秒窗口）：距片尾不到它即视为看完。 */
         const val END_THRESHOLD_MS = 10_000L

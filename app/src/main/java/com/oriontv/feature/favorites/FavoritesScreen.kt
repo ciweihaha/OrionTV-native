@@ -29,6 +29,7 @@ import com.oriontv.core.focus.preferredFocus
 import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.navigation.OrionRoute
+import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
@@ -126,11 +127,8 @@ fun FavoritesScreen(
             Spacer(modifier = Modifier.height(8.dp))
         }
         if (uiState.isLoading) {
-            Text(
-                text = "正在加载…",
-                style = OrionTextStyles.Body,
-                color = OrionColors.TextSecondary,
-            )
+            // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
+            LoadingAnimation()
             return@Column
         }
         LazyVerticalGrid(

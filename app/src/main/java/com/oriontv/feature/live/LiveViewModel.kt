@@ -103,7 +103,8 @@ class LiveViewModel @Inject constructor(
     fun init() {
         if (initialised) return
         initialised = true
-        playbackToken = playerManager.claimPlayback()
+        // A5-P2-9：init() 里的 claim 已删——playCurrent() 开播时自会认领，
+        // 这里先认领一次纯属多余（首个代际从未播过任何内容就被下一代取代）。
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画；
         // 之前只有点播页读这个开关，直播页按 Home 从不进 PiP、回首页必停播。
         viewModelScope.launch {
@@ -309,11 +310,40 @@ class LiveViewModel @Inject constructor(
         stablePlayJob?.cancel()
         stablePlayJob = viewModelScope.launch {
             delay(LiveController.STABLE_PLAYBACK_MS)
+            // A5-P2-1：回调里复核归属——10 秒内切到点播页开播后，本页的旧
+            // 确认任务不能清掉点播页的失败计数（归属已易主时直接作废）。
+            if (!playerManager.isCurrentOwner(playbackToken)) return@launch
             if (!playerManager.isPlaying) return@launch
             if (controller.confirmStablePlayback(System.currentTimeMillis())) {
                 _uiState.update { it.copy(failCount = 0) }
             }
         }
+    }
+
+    /**
+     * 离页（A5-P1-2/A5-P2-10，供 LiveScreen 的 ON_PAUSE 与 onDispose 调用）：
+     * 后台播放开关关着时暂停本页的播放（导航轨切走直播页也一样，之前音频
+     * 继续播）；时钟与 EPG 刷新定时器随页停掉，切走后不再后台空转。
+     * 开关开着时不暂停（画中画/后台音频继续），但定时器同样停——回页时重起。
+     */
+    fun onPagePaused() {
+        if (!playerManager.backgroundPlaybackEnabled) {
+            playerManager.pauseIfOwner(playbackToken)
+        }
+        tickerJob?.cancel()
+        epgRefreshJob?.cancel()
+    }
+
+    /**
+     * 回页（A5-P1-1，供 LiveScreen 的 ON_RESUME 调用）：ViewModel 因 saveState
+     * 存活、init() 早退，而播放器已被点播页停掉/抢走，旧实现直接黑屏。
+     * 定时器重起；当前不是本页 token 所有者或未在播时，重新认领并开播当前台。
+     */
+    fun onPageResumed() {
+        if (!initialised || _uiState.value.channels.isEmpty()) return
+        startTicker()
+        if (playerManager.isCurrentOwner(playbackToken) && playerManager.isPlaying) return
+        playCurrent()
     }
 
     /** OK 重试当前台（失败过且未耗尽自动跳台上限时，OK 不开面板、改重试）。 */
