@@ -16,28 +16,36 @@ import com.oriontv.ui.theme.OrionDimens
 /**
  * 焦点三件套（ui-design.md §4，全部可聚焦组件统一用这一套）：
  * 放大 1.08 + 2dp 品牌色描边 + 柔和阴影（elevation 8dp），120ms 缓动。
- * 缓动动画（animateFloatAsState tween 120ms）由 M1 在接入真实焦点流时补；
- * 骨架先保证放大/描边/阴影三态正确。
+ * 注意：orionFocus 不是 @Composable（调用方直接链式用），缩放缓动用
+ * Modifier.graphicsLayer 的 animateFloatAsState 需要组合作用域——这里改成
+ * @Composable 扩展，内部用 animateFloatAsState(tween(120)) 做 120ms 缓动。
  */
+@Composable
 fun Modifier.orionFocus(
     focused: Boolean,
     shape: Shape = RoundedCornerShape(OrionDimens.CardCornerRadius),
-): Modifier = this
-    .shadow(
-        elevation = if (focused) OrionDimens.FocusElevation else 0.dp,
-        shape = shape,
+): Modifier {
+    val scale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (focused) OrionDimens.FocusScale else 1f,
+        animationSpec = androidx.compose.animation.core.tween(120),
+        label = "orionFocusScale",
     )
-    .graphicsLayer {
-        val s = if (focused) OrionDimens.FocusScale else 1f
-        scaleX = s
-        scaleY = s
-    }
-    .clip(shape)
-    .border(
-        width = if (focused) OrionDimens.FocusBorderWidth else 0.dp,
-        color = if (focused) OrionColors.Brand else Color.Transparent,
-        shape = shape,
-    )
+    return this
+        .shadow(
+            elevation = if (focused) OrionDimens.FocusElevation else 0.dp,
+            shape = shape,
+        )
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
+        .clip(shape)
+        .border(
+            width = if (focused) OrionDimens.FocusBorderWidth else 0.dp,
+            color = if (focused) OrionColors.Brand else Color.Transparent,
+            shape = shape,
+        )
+}
 
 /** 焦点描边（不需要阴影/放大的小组件用，如 chip 内层）。 */
 @Composable

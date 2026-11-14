@@ -63,6 +63,8 @@ class PlayViewModel @Inject constructor(
     private var introSkippedThisEpisode = false
     private var skipIntroShownAtMs: Long = 0L
     private var nextEpisodeShownForIndex: Int = -1
+    /** 本片手动标记的片头结束时间（毫秒），null 表示没标过（用默认时长兜底）。 */
+    private var markedIntroEndMs: Long? = null
     private var currentKey: String = ""
     private var routePositionMs: Long = 0L
     private var initialised = false
@@ -88,6 +90,10 @@ class PlayViewModel @Inject constructor(
         initialised = true
         currentKey = "$source+$id"
         routePositionMs = positionMs
+        // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
+        viewModelScope.launch {
+            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+        }
         _uiState.update {
             it.copy(
                 isLoading = true,
@@ -134,7 +140,9 @@ class PlayViewModel @Inject constructor(
         val key = "${result.source}+${result.id.orEmpty()}"
         currentKey = key
         val settings = playerSettingsRepository.get(key)
-        val rate = settings?.playbackRate ?: 1f
+        // 倍速记忆关掉时一律 1×（阶段 4）；开着才恢复该片保存的倍速。
+        val speedMemory = settingsRepository.currentSpeedMemory()
+        val rate = if (speedMemory) settings?.playbackRate ?: 1f else 1f
         // 断点：路由带来的位置优先，否则取该集的播放记录。
         val startPosition = if (routePositionMs > 0) {
             routePositionMs.also { routePositionMs = 0L }
@@ -150,6 +158,7 @@ class PlayViewModel @Inject constructor(
         skipIntroShownAtMs = 0L
         nextEpisodeShownForIndex = -1
         lastSavedPositionMs = -1L
+        markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
         playerManager.setPlaybackSpeed(rate)
         playerManager.playUrl(episodes[episodeIndex], startPosition)
         _uiState.update {
@@ -161,8 +170,14 @@ class PlayViewModel @Inject constructor(
                 positionMs = startPosition,
                 breakpointMs = startPosition,
                 playbackRate = rate,
-                introEndMs = settings?.introEndTime
-                    ?: (settingsRepository.introSkipSeconds.first() * 1000L),
+                // 手动标记优先，没标过用设置里的默认片头时长兜底（0=不跳）。
+                introEndMs = IntroSkip.resolveIntroEndMs(
+                    settings?.introEndTime,
+                    settingsRepository.introSkipSeconds.first(),
+                ),
+                // 片尾标记：绝对位置，播到该处提前弹下一集预告。
+                markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 },
+                outroStartMs = settings?.outroStartTime?.takeIf { it > 0 },
                 showNextEpisode = false,
                 drawer = null,
             )
@@ -256,10 +271,12 @@ class PlayViewModel @Inject constructor(
                 if (wasLoading && (duration > 0 || playing)) readyTimeoutJob?.cancel()
                 // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失。
                 updateSkipIntroVisibility(position)
-                // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）。
+                // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
+                // 标过片尾的，播到片尾标记处就提前出预告。
                 if (duration > 0 && state.episodeIndex < (state.current?.episodes?.size ?: 0) - 1 &&
                     nextEpisodeShownForIndex != state.episodeIndex &&
-                    duration - position in 1..10_000
+                    (duration - position in 1..10_000 ||
+                        IntroSkip.isAtOutro(position, duration, state.outroStartMs))
                 ) {
                     nextEpisodeShownForIndex = state.episodeIndex
                     viewModelScope.launch {
@@ -311,12 +328,66 @@ class PlayViewModel @Inject constructor(
         seekTo(playerManager.currentPositionMs + deltaMs)
     }
 
-    /** 跳过片头：跳到片头结束点（默认 90 秒或已标记点）。 */
+    /** 跳过片头：跳到片头结束点（手动标记优先，否则默认时长）。 */
     fun skipIntro() {
         val target = _uiState.value.introEndMs
         if (target > 0) seekTo(target)
         introSkippedThisEpisode = true
         _uiState.update { it.copy(skipIntroVisible = false) }
+    }
+
+    /**
+     * 手动标记片头（RN playerStore.setIntroEndTime 对照）：
+     * 没标过 → 把当前位置记为片头结束点，跳过片头从此按标记值走；
+     * 已标过 → 再点一次清除标记（恢复默认时长兜底）。
+     */
+    fun markIntroEnd() {
+        val position = playerManager.currentPositionMs
+        if (position <= 0) return
+        viewModelScope.launch {
+            if (markedIntroEndMs != null) {
+                markedIntroEndMs = null
+                playerSettingsRepository.update(currentKey) { it.copy(introEndTime = null) }
+                val fallback = settingsRepository.introSkipSeconds.first() * 1000L
+                _uiState.update {
+                    it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = "已清除片头标记")
+                }
+            } else {
+                markedIntroEndMs = position
+                playerSettingsRepository.update(currentKey) { it.copy(introEndTime = position) }
+                _uiState.update {
+                    it.copy(introEndMs = position, markedIntroEndMs = position, toast = "片头已标记为 ${formatTime(position)}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 手动标记片尾（RN playerStore.setOutroStartTime 对照，语义有改动）：
+     * 没标过 → 把当前位置记为片尾开始点，播到此处提前弹下一集预告；
+     * 已标过 → 再点一次清除标记。
+     * RN 存的是“剩余时长”（duration - position）且从未被消费；
+     * 原生版存绝对位置并真实使用（见 IntroSkip）。
+     */
+    fun markOutroStart() {
+        val position = playerManager.currentPositionMs
+        val duration = playerManager.durationMs
+        if (position <= 0 || duration <= 0) return
+        viewModelScope.launch {
+            if (_uiState.value.outroStartMs != null) {
+                playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = null) }
+                _uiState.update { it.copy(outroStartMs = null, toast = "已清除片尾标记") }
+            } else {
+                playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = position) }
+                _uiState.update {
+                    it.copy(outroStartMs = position, toast = "片尾已标记为 ${formatTime(position)}")
+                }
+            }
+        }
+    }
+
+    fun consumeToast() {
+        _uiState.update { it.copy(toast = null) }
     }
 
     fun playNextEpisode() {
@@ -355,8 +426,11 @@ class PlayViewModel @Inject constructor(
     fun setPlaybackSpeed(rate: Float) {
         playerManager.setPlaybackSpeed(rate)
         _uiState.update { it.copy(playbackRate = rate, drawer = null) }
+        // 倍速记忆关掉时只改当次播放，不持久化（阶段 4）。
         viewModelScope.launch {
-            playerSettingsRepository.update(currentKey) { it.copy(playbackRate = rate) }
+            if (settingsRepository.currentSpeedMemory()) {
+                playerSettingsRepository.update(currentKey) { it.copy(playbackRate = rate) }
+            }
         }
     }
 
@@ -435,8 +509,17 @@ class PlayViewModel @Inject constructor(
         readyTimeoutJob?.cancel()
         searchJob?.cancel()
         playerManager.removeListener(playerListener)
-        playerManager.pause()
-        playerManager.stop()
+        // 后台播放开着：退出播放页后继续播（画中画/后台音频），不 pause、不 stop；
+        // 关着：沿用旧行为，退出即停播。
+        cleanupScope.launch {
+            if (settingsRepository.currentBackgroundPlayback()) {
+                playerManager.backgroundPlaybackEnabled = true
+            } else {
+                playerManager.backgroundPlaybackEnabled = false
+                playerManager.pause()
+                playerManager.stop()
+            }
+        }
         // cleanupScope 不在这里 cancel：断点保存协程要在 onCleared 之后跑完。
         super.onCleared()
     }
@@ -467,6 +550,12 @@ data class PlayUiState(
     val isBuffering: Boolean = false,
     val playbackRate: Float = 1f,
     val showNextEpisode: Boolean = false,
+    /** 手动标记的片头结束时间（毫秒）；null 表示没标过（显示“标记片头”）。 */
+    val markedIntroEndMs: Long? = null,
+    /** 手动标记的片尾开始时间（毫秒，绝对位置）；null 表示没标过。 */
+    val outroStartMs: Long? = null,
+    /** 一次性提示（标记成功/清除，Toast，2 秒消失）。 */
+    val toast: String? = null,
     val autoSwitchAttempts: Int = 0,
     val failedSources: Set<String> = emptySet(),
     val skipIntroVisible: Boolean = false,

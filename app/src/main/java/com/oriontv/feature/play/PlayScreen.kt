@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -45,7 +44,6 @@ import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
-import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
 import kotlinx.coroutines.delay
 
@@ -83,6 +81,14 @@ fun PlayScreen(
         viewModel.init(source, id, title, episodeIndex, positionMs)
     }
     LaunchedEffect(Unit) { rootRequester.requestFocus() }
+
+    // 标记成功/清除提示：Toast 底部居中，2 秒消失（ui-design.md §5.8）。
+    LaunchedEffect(uiState.toast) {
+        if (uiState.toast != null) {
+            delay(2000)
+            viewModel.consumeToast()
+        }
+    }
 
     fun pokeControls() {
         controlsVisible = true
@@ -249,6 +255,10 @@ fun PlayScreen(
                 posterUrl = uiState.current?.poster.orEmpty(),
                 showSkipIntro = uiState.skipIntroVisible,
                 showNextEpisode = uiState.showNextEpisode,
+                introEndMs = uiState.markedIntroEndMs,
+                outroStartMs = uiState.outroStartMs,
+                onMarkIntro = { viewModel.markIntroEnd(); pokeControls() },
+                onMarkOutro = { viewModel.markOutroStart(); pokeControls() },
                 onPlayPause = { viewModel.togglePlayPause(); pokeControls() },
                 onSeekBack = {
                     previewTargetMs = previewController.nudge(uiState.positionMs, -1)
@@ -266,6 +276,19 @@ fun PlayScreen(
                 onOpenSources = { viewModel.openDrawer(PlayDrawer.SOURCES); pokeControls() },
                 modifier = Modifier.fillMaxSize(),
             )
+        }
+
+        // 标记提示 Toast。
+        if (uiState.toast != null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                com.oriontv.ui.components.OrionToast(
+                    message = uiState.toast ?: "",
+                    modifier = Modifier.padding(bottom = 48.dp),
+                )
+            }
         }
 
         // 右侧抽屉：选集 / 换源 / 倍速。
@@ -296,29 +319,43 @@ fun PlayScreen(
     }
 }
 
-/** 右侧抽屉（宽 480dp，全高，浮层底；打开时焦点落在当前项）。 */
+/** 右侧抽屉（宽 480dp，全高，浮层底；打开时焦点落在当前项；滑入 180ms，ui-design.md §4）。 */
 @Composable
 private fun PlayDrawerPanel(
     title: String,
     content: @Composable () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.5f)),
-        contentAlignment = Alignment.CenterEnd,
+    androidx.compose.animation.AnimatedVisibility(
+        visible = true,
+        enter = androidx.compose.animation.slideInHorizontally(
+            initialOffsetX = { it },
+            animationSpec = androidx.compose.animation.core.tween(180),
+        ) + androidx.compose.animation.fadeIn(
+            animationSpec = androidx.compose.animation.core.tween(180),
+        ),
+        exit = androidx.compose.animation.slideOutHorizontally(
+            targetOffsetX = { it },
+            animationSpec = androidx.compose.animation.core.tween(180),
+        ),
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxHeight()
-                .width(480.dp)
-                .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
-                .background(OrionColors.Overlay)
-                .padding(24.dp),
+                .fillMaxSize()
+                .background(OrionColors.Background.copy(alpha = 0.5f)),
+            contentAlignment = Alignment.CenterEnd,
         ) {
-            Text(text = title, style = OrionTextStyles.SectionTitle)
-            Spacer(modifier = Modifier.height(16.dp))
-            content()
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(480.dp)
+                    .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                    .background(OrionColors.Overlay)
+                    .padding(24.dp),
+            ) {
+                Text(text = title, style = OrionTextStyles.SectionTitle)
+                Spacer(modifier = Modifier.height(16.dp))
+                content()
+            }
         }
     }
 }

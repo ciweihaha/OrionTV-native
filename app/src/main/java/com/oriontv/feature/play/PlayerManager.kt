@@ -28,6 +28,14 @@ class PlayerManager @Inject constructor(
         ExoPlayer.Builder(context).build()
     }
 
+    /**
+     * 后台播放开关（设置页“后台播放与画中画”）：PlayViewModel 开播时从设置读入，
+     * MainActivity.onUserLeaveHint 据此决定是否进画中画，PlayViewModel.onCleared
+     * 据此决定退出播放页后是停播还是继续播。
+     */
+    @Volatile
+    var backgroundPlaybackEnabled: Boolean = false
+
     /** 当前播放状态（沿用 RN PlaybackStatus 形状）。 */
     data class PlaybackStatus(
         val isLoaded: Boolean = false,
@@ -51,8 +59,7 @@ class PlayerManager @Inject constructor(
         data class Other(val message: String? = null) : PlayerError
     }
 
-    fun playUrl(url: String, startPositionMs: Long = 0L) {
-        player.setMediaItem(MediaItem.fromUri(url))
+    fun playUrl(url: String, startPositionMs: Long = 0L) {        player.setMediaItem(MediaItem.fromUri(url))
         if (startPositionMs > 0) player.seekTo(startPositionMs)
         player.prepare()
         player.play()

@@ -59,10 +59,14 @@ fun PlayerControls(
     posterUrl: String = "",
     showSkipIntro: Boolean,
     showNextEpisode: Boolean,
+    introEndMs: Long? = null,
+    outroStartMs: Long? = null,
     onPlayPause: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
     onSkipIntro: () -> Unit,
+    onMarkIntro: () -> Unit = {},
+    onMarkOutro: () -> Unit = {},
     onNextEpisode: () -> Unit,
     onCancelNextEpisode: () -> Unit,
     onOpenEpisodes: () -> Unit,
@@ -189,6 +193,15 @@ fun PlayerControls(
                 SecondaryButton(text = if (isPlaying) "暂停" else "播放", onClick = onPlayPause)
                 SecondaryButton(text = "-10 秒", onClick = onSeekBack)
                 SecondaryButton(text = "+10 秒", onClick = onSeekForward)
+                // 手动标记片头/片尾（阶段 4）：再点一次清除标记；已标记显示时间。
+                SecondaryButton(
+                    text = if (introEndMs != null) "片头 ${formatTime(introEndMs)}" else "标记片头",
+                    onClick = onMarkIntro,
+                )
+                SecondaryButton(
+                    text = if (outroStartMs != null) "片尾 ${formatTime(outroStartMs)}" else "标记片尾",
+                    onClick = onMarkOutro,
+                )
                 SecondaryButton(text = "选集", onClick = onOpenEpisodes)
                 SecondaryButton(text = "换源", onClick = onOpenSources)
                 SecondaryButton(

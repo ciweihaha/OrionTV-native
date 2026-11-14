@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,7 +25,7 @@ import com.oriontv.ui.theme.OrionTextStyles
 /**
  * 确认弹窗（ui-design.md §5.8）：
  * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；焦点默认落在主按钮上
- * （M1 接 FocusRequester 锚点）；登录失败红字提示。
+ * （M1 接 FocusRequester 锚点）；登录失败红字提示；弹窗淡入 150ms（§4）。
  */
 @Composable
 fun ConfirmDialog(
@@ -36,6 +37,17 @@ fun ConfirmDialog(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val confirmRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    androidx.compose.runtime.LaunchedEffect(Unit) { confirmRequester.requestFocus() }
+    androidx.compose.animation.AnimatedVisibility(
+        visible = true,
+        enter = androidx.compose.animation.fadeIn(
+            animationSpec = androidx.compose.animation.core.tween(150),
+        ),
+        exit = androidx.compose.animation.fadeOut(
+            animationSpec = androidx.compose.animation.core.tween(150),
+        ),
+    ) {
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -59,11 +71,16 @@ fun ConfirmDialog(
             Text(text = message, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
             Spacer(modifier = Modifier.height(24.dp))
             Row {
-                PrimaryButton(text = confirmText, onClick = onConfirm)
+                PrimaryButton(
+                    text = confirmText,
+                    onClick = onConfirm,
+                    modifier = Modifier.focusRequester(confirmRequester),
+                )
                 Spacer(modifier = Modifier.width(16.dp))
                 SecondaryButton(text = cancelText, onClick = onCancel)
             }
         }
+    }
     }
 }
 

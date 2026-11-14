@@ -29,7 +29,6 @@ import coil3.network.httpHeaders
 import coil3.request.ImageRequest
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.ui.theme.OrionColors
-import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
 import coil3.compose.AsyncImage
 
