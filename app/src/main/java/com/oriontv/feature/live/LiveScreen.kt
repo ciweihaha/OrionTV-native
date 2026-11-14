@@ -31,9 +31,9 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.lazy.list.TvLazyColumn
-import androidx.tv.foundation.lazy.list.TvLazyRow
-import androidx.tv.foundation.lazy.list.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.navigation.OrionRoute
@@ -174,7 +174,7 @@ fun LiveScreen(
                     .background(OrionColors.Overlay)
                     .padding(16.dp),
             ) {
-                TvLazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                     items(groups) { group ->
                         CategoryChip(
                             text = group,
@@ -184,7 +184,7 @@ fun LiveScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-                TvLazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(channels.size) { index ->
                         val (_, name, now) = channels[index]
                         ChannelRow(

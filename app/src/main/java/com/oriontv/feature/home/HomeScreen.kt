@@ -20,9 +20,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.lazy.list.TvLazyColumn
-import androidx.tv.foundation.lazy.list.TvLazyRow
-import androidx.tv.foundation.lazy.list.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.navigation.OrionRoute
@@ -74,12 +74,12 @@ fun HomeScreen(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val cardWidth = (maxWidth - 96.dp - 5 * OrionDimens.CardSpacing) / OrionDimens.HomeRowCards
-        TvLazyColumn(
+        LazyColumn(
             contentPadding = OrionDimens.ContentPadding,
             verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
         ) {
             item {
-                TvLazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                     items(HomeCategories) { category ->
                         CategoryChip(
                             text = category,
@@ -147,7 +147,7 @@ private fun HomeRow(
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(text = title, style = OrionTextStyles.SectionTitle)
         Spacer(modifier = Modifier.height(12.dp))
-        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing)) {
             items(count) { index -> card(index) }
         }
     }

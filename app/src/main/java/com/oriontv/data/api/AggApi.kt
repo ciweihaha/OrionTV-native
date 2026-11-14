@@ -71,7 +71,7 @@ class AggApi @Inject constructor(
         require(com.oriontv.core.util.VersionUtils.isValidVersion(parsed.version)) {
             "版本号格式非法：${parsed.version}"
         }
-        parsed
+        parsed.version
     }
 
     /**

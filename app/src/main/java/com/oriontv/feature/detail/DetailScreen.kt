@@ -26,7 +26,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.lazy.list.TvLazyColumn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.tv.material3.Text
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
@@ -67,7 +67,7 @@ fun DetailScreen(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val gridCellWidth = (maxWidth - 96.dp - 7 * 12.dp) / OrionDimens.EpisodeGridColumns
-        TvLazyColumn(
+        LazyColumn(
             contentPadding = OrionDimens.ContentPadding,
             verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
         ) {

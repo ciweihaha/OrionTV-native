@@ -11,9 +11,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.lazy.grid.GridCells
-import androidx.tv.foundation.lazy.grid.TvLazyVerticalGrid
-import androidx.tv.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.tv.material3.Text
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.PrimaryButton
@@ -53,7 +53,7 @@ fun FavoritesScreen(
     Column(modifier = Modifier.fillMaxSize().padding(OrionDimens.ContentPadding)) {
         Text(text = "我的收藏", style = OrionTextStyles.PageTitle)
         Spacer(modifier = Modifier.height(16.dp))
-        TvLazyVerticalGrid(
+        LazyVerticalGrid(
             columns = GridCells.Fixed(6),
             horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
             verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),

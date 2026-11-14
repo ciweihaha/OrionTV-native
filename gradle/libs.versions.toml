@@ -4,8 +4,8 @@ agp = "8.7.3"
 kotlin = "2.0.21"
 ksp = "2.0.21-1.0.28"
 composeBom = "2024.10.01"
-tvFoundation = "1.0.0"
 tvMaterial = "1.0.1"
+hiltNavigationCompose = "1.2.0"
 navigationCompose = "2.8.0"
 lifecycle = "2.8.7"
 media3 = "1.4.1"
@@ -25,9 +25,14 @@ mockk = "1.13.13"
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.15.0" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+# Compose foundation（含标准 LazyColumn/LazyRow/LazyVerticalGrid）：
+# tv-foundation 1.0.0 已删掉 Tv Lazy Layout（alpha11 弃用、alpha12 移除），
+# 官方版本要求改用标准 lazy 布局；版本由 BOM 管理（不写 version）。
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 # 导航轨图标：版本由 Compose BOM 管理（不写 version）
 androidx-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
-androidx-tv-foundation = { group = "androidx.tv", name = "tv-foundation", version.ref = "tvFoundation" }
+# tv-foundation 只剩 ExperimentalTvFoundationApi 与 text 工具，无 lazy 布局；
+# 本工程不再直接依赖它（tv-material 1.0.1 也不依赖它），故不声明。
 androidx-tv-material = { group = "androidx.tv", name = "tv-material", version.ref = "tvMaterial" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
@@ -46,6 +51,8 @@ room-compiler = { group = "androidx.room", name = "room-compiler", version.ref =
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
+# hiltViewModel() 在此 artifact（骨架第一版漏声明，导致编译失败）
+androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }

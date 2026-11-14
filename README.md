@@ -17,7 +17,8 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 
 ## 技术栈
 
-- Kotlin 2.0.21 + Jetpack Compose for TV（tv-foundation / tv-material 1.0.1，不用 Leanback）
+- Kotlin 2.0.21 + Jetpack Compose for TV（tv-material 1.0.1，不用 Leanback；
+  tv-foundation 1.0.0 已删掉 Tv Lazy Layout，改用标准 LazyColumn/LazyRow/LazyVerticalGrid）
 - Navigation for Compose（类型安全路由）
 - Media3 ExoPlayer（点播与直播共用单例）
 - OkHttp + kotlinx.serialization + Coil 3
@@ -32,6 +33,10 @@ tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）
 另外 **compileSdk/targetSdk 由 CONTRACT 的 34 改为 35**：CONTRACT 指定的依赖本身要求 35
 （tv-foundation 1.0.0 与 core-ktx 1.15.0 的 aar-metadata 都是 minCompileSdk=35，
 34 下 `:app:checkDebugAarMetadata` 必失败）；minSdk 仍是 24，电视安装不受影响，待总协调追认。
+另两处与 CONTRACT §2 不同：**tv-foundation 依赖已删除**——1.0.0 稳定版删掉了 Tv Lazy Layout
+（alpha11 弃用、alpha12 移除，见官方 release notes），本工程改用 Compose BOM 管理的标准
+`androidx.compose.foundation`（LazyColumn/LazyRow/LazyVerticalGrid）；**新增
+`androidx.hilt:hilt-navigation-compose:1.2.0`**（`hiltViewModel()` 所在 artifact，骨架第一版漏声明）。
 
 ## 怎么编
 

@@ -24,11 +24,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.tv.foundation.lazy.grid.TvLazyVerticalGrid
-import androidx.tv.foundation.lazy.grid.GridCells
-import androidx.tv.foundation.lazy.grid.items
-import androidx.tv.foundation.lazy.list.TvLazyRow
-import androidx.tv.foundation.lazy.list.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
@@ -95,7 +95,7 @@ fun SearchScreen(
         // 联想 chip（输入时出现）。
         if (suggestions.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
-            TvLazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                 items(suggestions) { suggestion ->
                     CategoryChip(text = suggestion, selected = false, onClick = { query = suggestion })
                 }
@@ -107,7 +107,7 @@ fun SearchScreen(
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = "搜索历史", style = OrionTextStyles.SectionTitle)
             Spacer(modifier = Modifier.height(12.dp))
-            TvLazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                 items(history.size) { index ->
                     CategoryChip(
                         text = "${history[index]} ×",
@@ -131,7 +131,7 @@ fun SearchScreen(
                 PrimaryButton(text = "换个关键词", onClick = { query = "" })
             }
         } else if (results.isNotEmpty()) {
-            TvLazyVerticalGrid(
+            LazyVerticalGrid(
                 columns = GridCells.Fixed(6),
                 horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
                 verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),

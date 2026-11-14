@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -36,8 +37,8 @@ class MoonTvApi @Inject constructor(
         withContext(ioDispatcher) {
             val url = "$baseUrl/api/login"
             val body = kotlinx.serialization.json.buildJsonObject {
-                username?.let { put("username", it) }
-                password?.let { put("password", it) }
+                username?.let { put("username", JsonPrimitive(it)) }
+                password?.let { put("password", JsonPrimitive(it)) }
             }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url(url).post(body).build()
             okHttpClient.newCall(request).execute().use { response ->
