@@ -26,7 +26,7 @@ import com.oriontv.core.focus.onKeyUp
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
-import io.coil3.compose.AsyncImage
+import coil3.compose.AsyncImage
 
 /**
  * 视频卡片（ui-design.md §6）：

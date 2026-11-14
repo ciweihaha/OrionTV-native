@@ -120,6 +120,7 @@ dependencies {
 
     // 图片
     implementation(libs.coil3.compose)
+    implementation(libs.coil3.compose.core.android)
 
     // 本地存储
     implementation(libs.room.runtime)

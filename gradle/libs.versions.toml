@@ -45,6 +45,8 @@ media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "medi
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 coil3-compose = { group = "io.coil-kt.coil3", name = "coil-compose-android", version.ref = "coil3" }
+# AsyncImage 在 core-android 里（包名是 coil3.compose，没有 io 前缀）
+coil3-compose-core-android = { group = "io.coil-kt.coil3", name = "coil-compose-core-android", version.ref = "coil3" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
