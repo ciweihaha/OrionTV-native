@@ -97,6 +97,7 @@ dependencies {
 
     // Compose for TV
     implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.material.icons.core)
     implementation(libs.androidx.tv.foundation)
     implementation(libs.androidx.tv.material)
     implementation(libs.androidx.navigation.compose)

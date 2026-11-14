@@ -48,14 +48,31 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 签名只在 `ORION_KEYSTORE_BASE64` 存在时启用，本地无 Secrets 也能编 debug。
 密钥与密码只放在 GitHub Actions Secrets 里，绝不进仓库。
 
+## 设计基准
+
+界面唯一基准：`ui-design.md`（总协调目录 `~/workspace/oriontv-native-rewrite/`）。
+
+- 结构：左侧 96dp 常驻导航轨（首页/直播/搜索/收藏/设置）+ 右侧内容区；
+  内容区安全边距左右 48dp、上下 32dp。
+- 首页（2026-11-14 用户决定：**不要横幅**）：顶部分类 chip 栏置顶
+  （最近播放 / 热门剧集 / 电视剧 / 电影 / 动漫 / 综艺 / 豆瓣 Top250），
+  焦点默认落在“最近播放”上，按下进入内容行；下方依次最近播放行
+  （断点续播卡片，带进度条与“剩余 xx 分钟”）→ 热门剧集行 → 各分类行（每行 6 张卡）。
+- 颜色：墨黑底 `#0C0E12`、表面 `#171A20`、浮层 `#1F232C`、熔橙品牌色/焦点 `#FF6A3D`、
+  LIVE 红 `#FF3B30`、正在播绿 `#34D399`；字号 22/18/15/14/12sp；
+  圆角卡片 12dp / 面板 16dp / 按钮与 chip 胶囊。
+- 焦点：放大 1.08 + 2dp 品牌色描边 + 阴影 8dp，焦点永不丢失；按键只处理 KeyUp。
+- 详情页左 2/5 海报 + 右 3/5 信息，选集网格每行 8 个；直播右侧 420dp 频道面板；
+  播放控制条 5 秒自隐，跳过片头胶囊默认 90 秒；弹窗 640dp 宽、16dp 圆角、60% 黑遮罩。
+
 ## 包结构
 
 ```
 com.oriontv
 ├─ MainActivity.kt / OrionTvApp.kt（Hilt 入口）
-├─ ui/theme/            OrionTheme（颜色/字号照抄 plan §3.1）
-├─ ui/components/       VideoCard、StyledButton、MediaButton、LoadingAnimation、SectionCard、ConfirmDialog、Toast
-├─ navigation/          NavHost、路由（Home/Live/Detail/Play/Search/Favorites/Settings）
+├─ ui/theme/            OrionTheme（颜色/字号按 ui-design.md §2/§3）
+├─ ui/components/       VideoCard、PrimaryButton/SecondaryButton、CategoryChip、NavRail、LoadingAnimation、SectionCard、ConfirmDialog、Toast、BrandProgressBar
+├─ navigation/          NavHost（带左侧导航轨）、路由（Home/Live/Detail/Play/Search/Favorites/Settings）
 ├─ feature/home/        首页
 ├─ feature/detail/      详情
 ├─ feature/play/        PlayerManager（ExoPlayer 单例）、播放页、控制条、抽屉

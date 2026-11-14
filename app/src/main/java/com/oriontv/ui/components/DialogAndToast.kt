@@ -1,6 +1,7 @@
 package com.oriontv.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,11 +18,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.theme.OrionColors
+import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
 
 /**
- * 确认弹窗（骨架：半透明遮罩 + 居中卡片 + 确认/取消）。
- * 焦点锚点：打开时焦点落在确认按钮上（M1 接 FocusRequester）。
+ * 确认弹窗（ui-design.md §5.8）：
+ * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；焦点默认落在主按钮上
+ * （M1 接 FocusRequester 锚点）；登录失败红字提示。
  */
 @Composable
 fun ConfirmDialog(
@@ -36,30 +39,35 @@ fun ConfirmDialog(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.85f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f)),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             modifier = Modifier
-                .width(500.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(OrionColors.Surface)
+                .width(OrionDimens.DialogWidth)
+                .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
+                .background(OrionColors.Overlay)
+                .border(
+                    width = 1.dp,
+                    color = OrionColors.Divider,
+                    shape = RoundedCornerShape(OrionDimens.PanelCornerRadius),
+                )
                 .padding(24.dp),
         ) {
-            Text(text = title, style = OrionTextStyles.Subtitle)
+            Text(text = title, style = OrionTextStyles.SectionTitle)
             Spacer(modifier = Modifier.height(12.dp))
-            Text(text = message, style = OrionTextStyles.Body)
+            Text(text = message, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
             Spacer(modifier = Modifier.height(24.dp))
             Row {
-                StyledButton(text = confirmText, onClick = onConfirm)
+                PrimaryButton(text = confirmText, onClick = onConfirm)
                 Spacer(modifier = Modifier.width(16.dp))
-                StyledButton(text = cancelText, onClick = onCancel)
+                SecondaryButton(text = cancelText, onClick = onCancel)
             }
         }
     }
 }
 
-/** Toast（3 秒消息条，plan §3.3 第 9 条定时器数字之一）。 */
+/** Toast（ui-design.md §5.8）：底部居中黑色胶囊，2 秒后消失，不遮挡焦点元素。 */
 @Composable
 fun OrionToast(
     message: String,
@@ -67,9 +75,9 @@ fun OrionToast(
 ) {
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(OrionColors.Surface)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .clip(RoundedCornerShape(OrionDimens.CapsuleRadius))
+            .background(OrionColors.Background.copy(alpha = 0.9f))
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text = message, style = OrionTextStyles.Body)

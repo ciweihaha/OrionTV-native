@@ -3,20 +3,70 @@ package com.oriontv.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * OrionTV 设计系统颜色，照抄 plan §3.1（以 v1.7.2 为准，只深色）。
+ * OrionTV 设计系统颜色。
+ *
+ * 唯一基准：ui-design.md §2（深色影院）。
+ * 取代：① OrionTV-android 的深空底/星尘金；② CONTRACT.md §3 引用的 plan §3.1 RN 配色。
  */
 object OrionColors {
-    val Background = Color(0xFF151718)
-    val Text = Color(0xFFECEDEE)
-    val Primary = Color(0xFF00BB5E)
-    val Link = Color(0xFF0A7EA4)
-    val Border = Color(0xFF333333)
-    val Icon = Color(0xFF9BA1A6)
+    /** 背景：墨黑微暖，全屏底。 */
+    val Background = Color(0xFF0C0E12)
 
-    /** 卡片/弹窗底色（RN 侧加载态 #222 底色）。 */
-    val Surface = Color(0xFF222222)
-    val SurfaceVariant = Color(0xFF1E1F20)
-    val TextSecondary = Color(0xFF9BA1A6)
-    val OnPrimary = Color(0xFFFFFFFF)
-    val Error = Color(0xFFE5484D)
+    /** 表面：卡片、面板底。 */
+    val Surface = Color(0xFF171A20)
+
+    /** 浮层：弹窗、抽屉、控制条。 */
+    val Overlay = Color(0xFF1F232C)
+
+    /** 主文字：标题、重要信息。 */
+    val Text = Color(0xFFF2F3F5)
+
+    /** 次文字：简介、元数据。 */
+    val TextSecondary = Color(0xFF9AA1AD)
+
+    /** 弱文字：辅助、时间戳。 */
+    val TextWeak = Color(0xFF6B7280)
+
+    /** 品牌强调 / 焦点：熔橙。焦点描边、主按钮、选中态。 */
+    val Brand = Color(0xFFFF6A3D)
+
+    /** 直播角标：LIVE 红点。 */
+    val LiveRed = Color(0xFFFF3B30)
+
+    /** 正在播指示：绿点（EPG 正在播）。 */
+    val PlayingGreen = Color(0xFF34D399)
+
+    /** 分隔线：8% 白。 */
+    val Divider = Color(0x14FFFFFF)
+
+    // ---- 兼容旧名（新令牌统一映射） ----
+    /** 旧 Panel → 表面。 */
+    val Panel = Surface
+
+    /** 旧 PanelBorder → 分隔线。 */
+    val PanelBorder = Divider
+
+    /** 旧 Primary / Gold → 熔橙品牌色。 */
+    val Primary = Brand
+    val Gold = Brand
+
+    /** 旧 TextSoft → 次文字；TextDim → 弱文字。 */
+    val TextSoft = TextSecondary
+    val TextDim = TextWeak
+
+    /** 旧 Icon → 弱文字。 */
+    val Icon = TextWeak
+
+    /** 旧 SurfaceVariant → 浮层。 */
+    val SurfaceVariant = Overlay
+
+    /** 旧 Link → 品牌色。 */
+    val Link = Brand
+
+    /** 旧 OnPrimary / OnGold → 深空底文字（金底/橙底上的文字用墨黑）。 */
+    val OnPrimary = Background
+    val OnGold = Background
+
+    /** 旧 Error。 */
+    val Error = Color(0xFFE57373)
 }

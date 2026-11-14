@@ -2,7 +2,7 @@ package com.oriontv.navigation
 
 import kotlinx.serialization.Serializable
 
-/** 路由：与 v1.7.2 Expo Router 的 Stack 语义对齐。 */
+/** 路由（ui-design.md §1：5 个顶级页在导航轨，详情/播放为推送页）。 */
 @Serializable
 sealed interface OrionRoute {
     @Serializable

@@ -5,6 +5,7 @@ kotlin = "2.0.21"
 ksp = "2.0.21-1.0.28"
 composeBom = "2024.10.01"
 tvFoundation = "1.0.1"
+tvMaterial = "1.0.1"
 navigationCompose = "2.8.0"
 lifecycle = "2.8.7"
 media3 = "1.4.1"
@@ -24,6 +25,8 @@ mockk = "1.13.13"
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.15.0" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+# 导航轨图标：版本由 Compose BOM 管理（不写 version）
+androidx-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-tv-foundation = { group = "androidx.tv", name = "tv-foundation", version.ref = "tvFoundation" }
 androidx-tv-material = { group = "androidx.tv", name = "tv-material", version.ref = "tvMaterial" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
