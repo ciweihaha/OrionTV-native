@@ -78,7 +78,10 @@ fun OrionNavHost(
                     HomeScreen(onNavigate = { navController.navigate(it) })
                 }
                 composable<OrionRoute.Live> {
-                    LiveScreen(onNavigate = { navController.navigate(it) })
+                    LiveScreen(
+                        onNavigate = { navController.navigate(it) },
+                        onBack = { navController.popBackStack() },
+                    )
                 }
                 composable<OrionRoute.Detail> { entry ->
                     val route = entry.toRoute<OrionRoute.Detail>()
