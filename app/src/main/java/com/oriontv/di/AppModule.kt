@@ -14,7 +14,10 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Qualifier
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -23,10 +26,21 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
 
+/** 应用级协程作用域（D-P2-7/D-P1-6）：后台刷新 server-config、RN 首启迁移等不阻塞 UI 的一次性任务；随进程存活，不取消。 */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ApplicationScope
+
 /** Hilt 单例模块：网络、序列化、数据库。 */
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
@@ -114,16 +128,21 @@ object AppModule {
 class InMemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
+    // D-P2-6：读-改-写复合操作加锁（ConcurrentHashMap 只保证单步原子，
+    // 两路并发响应会丢一批 cookie）；去重按 name+domain+path，
+    // 同名不同 path 的 cookie 不再被误杀。
+    @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val now = System.currentTimeMillis()
         // 新值优先：新 cookie 在前，distinctBy 按 name 去重时留新丢旧
         //（之前旧在前，服务端轮换 cookie 后这里一直留旧值，P1-6）。
         val kept = (cookies + store[url.host].orEmpty())
             .filter { it.expiresAt > now }
-            .distinctBy { it.name }
+            .distinctBy { Triple(it.name, it.domain, it.path) }
         store[url.host] = kept.toMutableList()
     }
 
+    @Synchronized
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         val now = System.currentTimeMillis()
         // 按 Cookie 自身的 path/domain 过滤（matches 含子域规则），不只按 host 取；
@@ -133,6 +152,7 @@ class InMemoryCookieJar : CookieJar {
     }
 
     /** 退出登录时清掉全部会话 cookie（只清标记位等于没退，P0-4）。 */
+    @Synchronized
     fun clear() {
         store.clear()
     }
