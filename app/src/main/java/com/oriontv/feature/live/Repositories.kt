@@ -76,13 +76,6 @@ class EpgRepository @Inject constructor(
 ) {
     companion object {
         const val EPG_URL = "https://ysp.ciweihaha.win/epg.xml"
-
-        /**
-         * 空 EPG 不落盘：只有 programmes 非空时才保存（P1-5；M3U 早有同款守卫）。
-         * 纯函数，可单测（MockK 已随依赖升级移出，仓库级测试不再用 mock）。
-         */
-        fun shouldSaveFreshEpg(fresh: EpgParser.EpgData?): Boolean =
-            fresh != null && fresh.programmesByChannel.isNotEmpty()
     }
 
     /**
@@ -97,7 +90,7 @@ class EpgRepository @Inject constructor(
             }
             val fresh = fetchEpg()
             // 空 EPG 不覆盖好缓存：服务端偶尔吐空表时，旧缓存比“无节目单”强（P1-5；M3U 早有同款守卫）。
-            if (fresh != null && shouldSaveFreshEpg(fresh)) {
+            if (fresh != null && fresh.programmesByChannel.isNotEmpty()) {
                 cacheStore.saveEpgCache(fresh)
                 return@withContext fresh
             }
