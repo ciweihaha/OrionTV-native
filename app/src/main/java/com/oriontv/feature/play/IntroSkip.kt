@@ -45,7 +45,6 @@ object IntroSkip {
      * 取同一量级。
      */
     const val INTRO_SKIP_MIN_REMAINING_MS = 10_000L
-}
 
     /**
      * 跳过片头胶囊是否该出现（可单测）：在片头窗口内、本集没出现过、还没跳过。

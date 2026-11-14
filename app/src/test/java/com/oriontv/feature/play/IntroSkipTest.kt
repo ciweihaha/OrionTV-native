@@ -65,6 +65,9 @@ class IntroSkipTest {
         assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 0L))
         assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false))
     }
+
+    @Test
+    fun `skip intro capsule shows only once per episode`() {
         // P2-5：90 秒片头不再每 10 秒重现（之前约出现 9 次）
         assertTrue(IntroSkip.shouldShowSkipIntroCapsule(true, false, false))
         assertFalse(IntroSkip.shouldShowSkipIntroCapsule(true, true, false))
