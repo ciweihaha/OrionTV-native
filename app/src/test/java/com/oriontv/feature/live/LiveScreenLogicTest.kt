@@ -12,11 +12,10 @@ class LiveScreenLogicTest {
 
     @Test
     fun `panel focus lands on current channel when present`() {
-        val filtered = listOf(
-            channel("CCTV-1", "http://a/1.m3u8"),
-            channel("CCTV-5", "http://a/5.m3u8"),
-        )
-        assertEquals(1, resolvePanelFocusIndex(filtered, "http://a/5.m3u8"))
+        val first = channel("CCTV-1", "http://a/1.m3u8")
+        val second = channel("CCTV-5", "http://a/5.m3u8")
+        val filtered = listOf(first, second)
+        assertEquals(1, resolvePanelFocusIndex(filtered, second))
     }
 
     @Test
@@ -26,8 +25,29 @@ class LiveScreenLogicTest {
             channel("广东卫视", "http://a/gd.m3u8"),
             channel("深圳卫视", "http://a/sz.m3u8"),
         )
-        assertEquals(0, resolvePanelFocusIndex(filtered, "http://a/1.m3u8"))
+        assertEquals(0, resolvePanelFocusIndex(filtered, channel("CCTV-1", "http://a/1.m3u8")))
         assertEquals(0, resolvePanelFocusIndex(filtered, null))
+    }
+
+    @Test
+    fun `panel focus distinguishes duplicate urls by identity`() {
+        // P2-4：同 URL 两条台，焦点落到对的那一行
+        val first = channel("卫视", "http://a/shared.m3u8")
+        val second = channel("卫视", "http://a/shared.m3u8")
+        val filtered = listOf(first, second)
+        assertEquals(0, resolvePanelFocusIndex(filtered, first))
+        assertEquals(1, resolvePanelFocusIndex(filtered, second))
+    }
+
+    @Test
+    fun `root ok retries when playback failed even after giveup`() {
+        // P2-8：GiveUp（failCount=6）时根部 OK 也走重试，与遮罩按钮一致
+        assertTrue(shouldRetryOnOk(playbackFailed = true, failCount = 6))
+        assertTrue(shouldRetryOnOk(playbackFailed = true, failCount = 0))
+        // 未耗尽但失败过：重试
+        assertTrue(shouldRetryOnOk(playbackFailed = false, failCount = 3))
+        // 没失败过：开面板
+        assertFalse(shouldRetryOnOk(playbackFailed = false, failCount = 0))
     }
 
     @Test
