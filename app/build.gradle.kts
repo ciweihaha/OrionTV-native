@@ -102,7 +102,7 @@ dependencies {
     // Compose for TV
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.foundation)
-    implementation(libs.androidx.material.icons.core)
+    implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.tv.material)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -120,7 +120,6 @@ dependencies {
 
     // 图片
     implementation(libs.coil3.compose)
-    implementation(libs.coil3.network.okhttp)
 
     // 本地存储
     implementation(libs.room.runtime)

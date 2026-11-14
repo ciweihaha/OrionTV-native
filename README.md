@@ -37,6 +37,9 @@ tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）
 （alpha11 弃用、alpha12 移除，见官方 release notes），本工程改用 Compose BOM 管理的标准
 `androidx.compose.foundation`（LazyColumn/LazyRow/LazyVerticalGrid）；**新增
 `androidx.hilt:hilt-navigation-compose:1.2.0`**（`hiltViewModel()` 所在 artifact，骨架第一版漏声明）。
+另：Coil 3 是 KMP 发布，Android 侧用 **`coil-compose-android`**（`coil-compose` 本体无 AAR，
+`AsyncImage` 解析不到）；`coil-network-okhttp` 代码里没用到，已删；
+导航轨图标 `LiveTv` 只在 **`material-icons-extended`** 里，core 没有，已改用 extended。
 
 ## 怎么编
 

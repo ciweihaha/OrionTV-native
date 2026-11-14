@@ -29,8 +29,9 @@ androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", versi
 # tv-foundation 1.0.0 已删掉 Tv Lazy Layout（alpha11 弃用、alpha12 移除），
 # 官方版本要求改用标准 lazy 布局；版本由 BOM 管理（不写 version）。
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
-# 导航轨图标：版本由 Compose BOM 管理（不写 version）
-androidx-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
+# 导航轨图标：LiveTv 只在 extended 里，core 没有；版本由 Compose BOM 管理（不写 version）。
+# extended 依赖 core，所以 Home/Search/Favorite/Settings 也能用。
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 # tv-foundation 只剩 ExperimentalTvFoundationApi 与 text 工具，无 lazy 布局；
 # 本工程不再直接依赖它（tv-material 1.0.1 也不依赖它），故不声明。
 androidx-tv-material = { group = "androidx.tv", name = "tv-material", version.ref = "tvMaterial" }
@@ -43,8 +44,7 @@ media3-common = { group = "androidx.media3", name = "media3-common", version.ref
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
-coil3-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil3" }
-coil3-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil3" }
+coil3-compose = { group = "io.coil-kt.coil3", name = "coil-compose-android", version.ref = "coil3" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
