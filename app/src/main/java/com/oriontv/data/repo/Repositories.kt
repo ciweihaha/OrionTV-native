@@ -4,6 +4,7 @@ import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.api.PlayerSettings
+import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.local.AppDatabase
 import com.oriontv.data.local.FavoriteEntity
 import com.oriontv.data.local.PlayRecordEntity
@@ -35,6 +36,42 @@ private suspend fun <T> runOrDefault(default: T, block: suspend () -> T): T {
     } catch (_: Exception) {
         default
     }
+}
+
+/**
+ * 第 6 轮 D6-P1-2：服务端收藏 toggle 的读-改-写判定（纯逻辑，可单测；
+ * FavoritesRepository.toggle 只负责接线）。
+ *
+ * 读失败必须抛错，不能默认按“不存在”走添加分支——否则用户点“取消收藏”
+ * 时 GET 恰好失败、而随后的 POST 成功，取消会静默变成已收藏，还返回 true
+ * 让 UI 显示成功。取消原样抛出；401 续期失败的 [UnauthorizedException]
+ * 原样抛出（调用方按会话过期处理）；其余异常包成 [IOException]。
+ * 写失败（add/delete 返回 false）同样抛 [IOException]（B-P2-8/B-P0-1）。
+ */
+internal suspend fun toggleServerFavorite(
+    existsCheck: suspend () -> Boolean,
+    addFavorite: suspend () -> Boolean,
+    deleteFavorite: suspend () -> Boolean,
+): Boolean {
+    val exists = try {
+        existsCheck()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: UnauthorizedException) {
+        throw e
+    } catch (e: Exception) {
+        throw IOException("读取收藏状态失败：${e.message}", e)
+    }
+    if (exists) {
+        if (!deleteFavorite()) {
+            throw IOException("取消收藏失败：服务端未确认")
+        }
+        return false
+    }
+    if (!addFavorite()) {
+        throw IOException("收藏失败：服务端未确认")
+    }
+    return true
 }
 
 /**
@@ -112,20 +149,15 @@ class FavoritesRepository @Inject constructor(
             // 双端或跨进程并发点两次仍可能互相覆盖。根治需服务端提供原子
             // toggle 接口（存在才删 / 不存在才加），客户端侧无法凭空造出。
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            val exists = runOrDefault(false) { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() }
-            if (exists) {
-                // B-P2-8/B-P0-1：服务端写失败（网络抛错或解码失败返回 false）
-                // 不再当成功：抛 IOException 由 DetailViewModel 接住提示，收藏态不变。
-                if (!moonTvApi.deleteFavorite(baseUrl, key)) {
-                    throw IOException("取消收藏失败：服务端未确认")
-                }
-                false
-            } else {
-                if (!moonTvApi.addFavorite(baseUrl, key, favorite)) {
-                    throw IOException("收藏失败：服务端未确认")
-                }
-                true
-            }
+            // D6-P1-2：读失败直接抛错（见 toggleServerFavorite），不再默认
+            // 按“不存在”走添加分支——否则取消收藏会在 GET 失败时静默变已收藏。
+            val nowFavorite = toggleServerFavorite(
+                existsCheck = { moonTvApi.getFavorites(baseUrl, key).isNotEmpty() },
+                addFavorite = { moonTvApi.addFavorite(baseUrl, key, favorite) },
+                deleteFavorite = { moonTvApi.deleteFavorite(baseUrl, key) },
+            )
+            lastKnownFavorites[key] = nowFavorite
+            nowFavorite
         } else {
             val dao = db.favoriteDao()
             if (dao.getByKey(key) != null) {
@@ -144,6 +176,8 @@ class FavoritesRepository @Inject constructor(
                         saveTime = System.currentTimeMillis(),
                     ),
                 )
+                // 第 6 轮 D6-P2-15：本地收藏写侧裁剪到 200 条（与其余三表一致）。
+                dao.trimToLatest200()
                 true
             }
         }

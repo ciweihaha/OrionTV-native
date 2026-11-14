@@ -153,9 +153,18 @@ class InMemoryCookieJar : CookieJar {
     // D-P2-6：读-改-写复合操作加锁（ConcurrentHashMap 只保证单步原子，
     // 两路并发响应会丢一批 cookie）；去重按 name+domain+path，
     // 同名不同 path 的 cookie 不再被误杀。
+    // 第 6 轮 D6-P2-6：去重放全表做——父域 cookie 经两个子域各存一份时，
+    // 旧实现只与本 host 桶内去重，loadForRequest 全表扫描会把同一 cookie
+    // 发两遍；过期条目在读写两端都清理，不再永久残留。
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val now = System.currentTimeMillis()
+        // 先清全表过期条目，再把与新 cookie 同键（name+path+domain）的旧条目
+        // 从所有桶里删掉——父域 cookie 换子域保存时，旧桶里的副本不再残留。
+        val newKeys = cookies.map { Triple(it.name, it.path, it.domain) }.toSet()
+        store.values.forEach { bucket ->
+            bucket.removeAll { it.expiresAt <= now || Triple(it.name, it.path, it.domain) in newKeys }
+        }
         // 新值优先：新 cookie 在前，distinctBy 按 name+path+domain 去重时留新丢旧
         //（之前旧在前，服务端轮换 cookie 后这里一直留旧值，P1-6）。
         // B4-P2-6：去重键加 path/domain——同名不同 path 的 cookie 是两个
@@ -169,10 +178,14 @@ class InMemoryCookieJar : CookieJar {
     @Synchronized
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         val now = System.currentTimeMillis()
+        // D6-P2-6：读时顺手清掉全表过期条目（过期 cookie 不再永久残留）。
+        store.values.forEach { bucket -> bucket.removeAll { it.expiresAt <= now } }
         // 按 Cookie 自身的 path/domain 过滤（matches 含子域规则），不只按 host 取；
         // 全表扫描：服务端以父域下发的 cookie，在子域请求时也能带上。
+        // 同一 cookie 只发一遍：全表去重（name+path+domain），新值优先。
         return store.values.flatten()
             .filter { it.expiresAt > now && it.matches(url) }
+            .distinctBy { Triple(it.name, it.path, it.domain) }
     }
 
     /** 退出登录时清掉全部会话 cookie（只清标记位等于没退，P0-4）。 */

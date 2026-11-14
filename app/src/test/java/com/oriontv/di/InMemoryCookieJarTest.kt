@@ -79,4 +79,45 @@ class InMemoryCookieJarTest {
         // /other 只带 path=/ 的那条。
         assertEquals(1, jar.loadForRequest("https://example.com/other".toHttpUrl()).size)
     }
+
+    @Test
+    fun `same parent domain cookie saved via two subdomains is sent once`() {
+        // D6-P2-6：父域 cookie 经 a/b 两个子域各存一份，请求时只发一遍。
+        val jar = InMemoryCookieJar()
+        jar.saveFromResponse("https://a.example.com/".toHttpUrl(), listOf(cookie("s", "v1")))
+        jar.saveFromResponse("https://b.example.com/".toHttpUrl(), listOf(cookie("s", "v2")))
+        val loaded = jar.loadForRequest("https://a.example.com/".toHttpUrl())
+        assertEquals(1, loaded.size)
+        assertEquals("v2", loaded.first().value)
+        assertEquals(1, jar.loadForRequest("https://b.example.com/".toHttpUrl()).size)
+    }
+
+    @Test
+    fun `cookie expiring between save and load is not sent`() {
+        // D6-P2-6：保存时未过期、读取时已过期的 cookie 不下发、不残留。
+        val jar = InMemoryCookieJar()
+        val shortLived = Cookie.Builder().name("s").value("v").domain("example.com")
+            .expiresAt(System.currentTimeMillis() + 50).build()
+        jar.saveFromResponse("https://example.com/".toHttpUrl(), listOf(shortLived))
+        assertEquals(1, jar.loadForRequest("https://example.com/".toHttpUrl()).size)
+        Thread.sleep(120)
+        assertEquals(0, jar.loadForRequest("https://example.com/".toHttpUrl()).size)
+        // 之后再存别的 cookie，过期那条不得复活。
+        jar.saveFromResponse("https://example.com/".toHttpUrl(), listOf(cookie("t", "w")))
+        val loaded = jar.loadForRequest("https://example.com/".toHttpUrl())
+        assertEquals(1, loaded.size)
+        assertEquals("w", loaded.first().value)
+    }
+
+    @Test
+    fun `expired cookies are dropped on save`() {
+        // D6-P2-6：保存时已过期的 cookie 不进表。
+        val jar = InMemoryCookieJar()
+        val expired = Cookie.Builder().name("old").value("x").domain("example.com")
+            .expiresAt(System.currentTimeMillis() - 1000).build()
+        jar.saveFromResponse("https://example.com/".toHttpUrl(), listOf(expired, cookie("s", "v")))
+        val loaded = jar.loadForRequest("https://example.com/".toHttpUrl())
+        assertEquals(1, loaded.size)
+        assertEquals("v", loaded.first().value)
+    }
 }
