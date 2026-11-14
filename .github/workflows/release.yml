@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Secret 必须放 job 级 env，step 的 if: env.X 才能读到
+    #（step 自身 env 在 if 求值时不可见；GitHub 文档推荐的 secrets 用法）。
+    env:
+      ORION_KEYSTORE_BASE64: ${{ secrets.ORION_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,11 +43,20 @@ jobs:
 
       - name: Decode release keystore
         if: env.ORION_KEYSTORE_BASE64 != ''
-        env:
-          ORION_KEYSTORE_BASE64: ${{ secrets.ORION_KEYSTORE_BASE64 }}
         run: |
           echo "$ORION_KEYSTORE_BASE64" | base64 -d > /tmp/oriontv-release.keystore
           echo "ORION_KEYSTORE_FILE=/tmp/oriontv-release.keystore" >> "$GITHUB_ENV"
+
+      # 防呆：v2.0.0 首版就是在这里静默漏签的（Build 步骤漏传
+      # ORION_KEYSTORE_BASE64，signingConfig 为空却照常出包）。
+      # 密钥文件不存在或为空时直接失败，绝不放行一个未签名 APK。
+      - name: Verify keystore decoded
+        run: |
+          if [ ! -s /tmp/oriontv-release.keystore ]; then
+            echo "::error::release keystore missing or empty — check ORION_KEYSTORE_BASE64 secret"
+            exit 1
+          fi
+          echo "keystore present: $(stat -c%s /tmp/oriontv-release.keystore) bytes"
 
       - name: Build release APK
         env:
@@ -52,6 +65,12 @@ jobs:
           ORION_KEY_ALIAS: ${{ secrets.ORION_KEY_ALIAS }}
           ORION_KEY_PASSWORD: ${{ secrets.ORION_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --stacktrace
+
+      # 验签：只有 v2/v3 签名通过才放行，避免未签名 APK 再次进 Release。
+      - name: Verify APK signature
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
 
       - name: Check APK size
         run: |
