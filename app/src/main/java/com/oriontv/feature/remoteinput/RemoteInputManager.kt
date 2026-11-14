@@ -3,6 +3,7 @@ package com.oriontv.feature.remoteinput
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -104,6 +105,9 @@ class RemoteInputManager @Inject constructor() {
         // B6-P2-1：本轮启动的 server（局部变量）——发布到共享字段前先在
         // startMutex 内与停服标志一起复核，见下面的发布点。
         var startedServer: RemoteInputServer? = null
+        // B7-P1-1：兜底变量——取消恰好落在 newServer.start() 期间时
+        // startedServer 尚未赋值，但端口可能已绑上，CE catch 里凭它停服。
+        var pendingServer: RemoteInputServer? = null
         try {
             // B4-P2-8：网络枚举 + 端口绑定是阻塞操作，切 IO 线程做，不占主线程。
             val ip = withContext(Dispatchers.IO) { RemoteInputServer.localIpAddress() }
@@ -111,6 +115,7 @@ class RemoteInputManager @Inject constructor() {
                 throw IllegalStateException("无法获取 IP 地址，请确认设备已连接到 Wi-Fi 或以太网。")
             }
             val newServer = RemoteInputServer(router)
+            pendingServer = newServer
             withContext(Dispatchers.IO) { newServer.start() }
             startedServer = newServer
             val code = router.rotatePairingCode()
@@ -138,7 +143,20 @@ class RemoteInputManager @Inject constructor() {
             }
         } catch (e: CancellationException) {
             // B-P1-9：取消原样抛出，不写 error 态、不按“失败”重起。
+            // B7-P1-1：取消分支也要停掉已启动的 server——之前只重抛，server
+            // 占着 12346 端口泄漏，后续再启动必报端口占用、直至进程重启都
+            // 不可用。pendingServer 兜底取消落在 start() 期间的窗口（此时
+            // startedServer 还没赋值，但端口可能已绑上）。
+            // 清理走 NonCancellable：本协程已取消，普通 withLock 会立刻再抛 CE。
             cancelled = true
+            val leaked = startedServer ?: pendingServer
+            runCatching { leaked?.stop() }
+            runCatching {
+                withContext(NonCancellable) {
+                    startMutex.withLock { if (server === leaked) server = null }
+                }
+            }
+            router.clearPairingCode()
             throw e
         } catch (e: Exception) {
             if (!stopRequestedDuringStart) {
@@ -153,13 +171,21 @@ class RemoteInputManager @Inject constructor() {
             }
             // B6-P2-1：只停本轮起的 server（局部变量），不碰共享字段里
             // 可能已是新一轮的 server；共享字段只在仍是本轮 server 时才清。
-            runCatching { startedServer?.stop() }
-            startMutex.withLock { if (server === startedServer) server = null }
+            // B7-P1-1：同上，pendingServer 兜底 start() 期间的窗口。
+            val failedServer = startedServer ?: pendingServer
+            runCatching { failedServer?.stop() }
+            startMutex.withLock { if (server === failedServer) server = null }
             router.clearPairingCode()
         } finally {
-            startMutex.withLock {
-                starting = false
-                stopRequestedDuringStart = false
+            // B7-P1-1：取消路径下本协程已取消，普通 withLock 会立刻再抛 CE、
+            // starting 永远不清、之后 start() 恒早退——清理走 NonCancellable。
+            runCatching {
+                withContext(NonCancellable) {
+                    startMutex.withLock {
+                        starting = false
+                        stopRequestedDuringStart = false
+                    }
+                }
             }
             // 启动期间用户又开了：按最新意图重起一次（取消不重起）。
             if (!cancelled && desiredRunning && !_state.value.isRunning && _state.value.error == null) {

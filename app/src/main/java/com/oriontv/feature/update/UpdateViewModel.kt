@@ -50,6 +50,10 @@ class UpdateViewModel @Inject constructor(
     /** 进行中的 APK 下载任务（B5-P2-6：取消入口用）。 */
     private var downloadJob: Job? = null
 
+    /** B7-P2-1：下载代次——取消后立即重下时，旧任务的 CE catch/finally 凭代次
+     * 复核，过期任务不再盖掉新下载的状态、也不再把新任务的 Job 置 null。 */
+    private var downloadGeneration = 0
+
     /** 当前版本是否低于目标版本。 */
     fun needsUpdate(currentVersion: String, latestVersion: String): Boolean =
         VersionUtils.isOlderThan(currentVersion, stripVersionPrefix(latestVersion))
@@ -61,8 +65,10 @@ class UpdateViewModel @Inject constructor(
      */
     fun checkForUpdate(silent: Boolean = false) {
         if (_uiState.value.isChecking) return
+        // B7-P2-2：isChecking 守卫必须在 launch 前同步置位——旧实现在 launch
+        // 体内才置位，两次快速调用都通过守卫、并发跑两路检查。
+        _uiState.update { it.copy(isChecking = true, error = null, toast = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isChecking = true, error = null, toast = null) }
             try {
                 if (silent) {
                     val lastCheck = settingsRepository.currentUpdateLastCheckTime()
@@ -171,6 +177,9 @@ class UpdateViewModel @Inject constructor(
         _uiState.update { it.copy(downloading = true, downloadProgress = 0, error = null) }
         // B5-P2-6：下载任务留 Job + 取消入口；取消后 downloading 清掉，
         // 否则 startDownload 开头的 downloading 守卫会一直拦、再也下不了。
+        // B7-P2-1：代次快照——CE catch/finally/失败分支只在代次仍是当前时
+        // 写状态；取消后立即重下时，旧任务的收尾不再盖掉新下载。
+        val downloadGen = ++downloadGeneration
         downloadJob = viewModelScope.launch {
             try {
                 val dir = File(context.filesDir, "update").apply { mkdirs() }
@@ -182,32 +191,40 @@ class UpdateViewModel @Inject constructor(
                     val progress = if (total > 0) ((written * 100 / total).toInt()) else 0
                     _uiState.update { it.copy(downloadProgress = progress.coerceIn(0, 100)) }
                 }
-                _uiState.update {
-                    it.copy(
-                        downloading = false,
-                        downloadProgress = 100,
-                        downloadedFilePath = dest.absolutePath,
-                        toast = nextToastEvent("下载完成，校验通过，可以安装了"),
-                    )
+                if (downloadGen == downloadGeneration) {
+                    _uiState.update {
+                        it.copy(
+                            downloading = false,
+                            downloadProgress = 100,
+                            downloadedFilePath = dest.absolutePath,
+                            toast = nextToastEvent("下载完成，校验通过，可以安装了"),
+                        )
+                    }
                 }
             } catch (e: CancellationException) {
-                _uiState.update { it.copy(downloading = false) }
+                if (downloadGen == downloadGeneration) {
+                    _uiState.update { it.copy(downloading = false) }
+                }
                 throw e
             } catch (e: UpdateDownloadException) {
-                _uiState.update {
-                    // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
-                    it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
+                if (downloadGen == downloadGeneration) {
+                    _uiState.update {
+                        // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
+                        it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
+                    }
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        downloading = false,
-                        downloadedFilePath = null,
-                        error = "下载失败：${e.message ?: "网络错误"}",
-                    )
+                if (downloadGen == downloadGeneration) {
+                    _uiState.update {
+                        it.copy(
+                            downloading = false,
+                            downloadedFilePath = null,
+                            error = "下载失败：${e.message ?: "网络错误"}",
+                        )
+                    }
                 }
             } finally {
-                downloadJob = null
+                if (downloadGen == downloadGeneration) downloadJob = null
             }
         }
     }
