@@ -18,6 +18,8 @@ interface AuthSettings {
     suspend fun currentAuthCookies(): String
     suspend fun setAuthCookies(value: String)
     suspend fun refreshServerConfig(): ServerConfig?
+    /** server-config 是否从未成功拉取过（B-P1-8，冷启动重试门控用）。 */
+    suspend fun isServerConfigUnknown(): Boolean
 }
 
 /**
@@ -57,7 +59,7 @@ class SettingsRepository @Inject constructor(
     suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
 
     /** server-config 是否从未成功拉取过（"" = 未知，不是“本地模式”）。 */
-    suspend fun isServerConfigUnknown(): Boolean = currentStorageType().isBlank()
+    override suspend fun isServerConfigUnknown(): Boolean = currentStorageType().isBlank()
 
     /**
      * 第 3 轮收尾 B-P1-8：StorageType 未知时先拉一次 server-config（失败有 30 秒
