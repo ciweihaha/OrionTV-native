@@ -3,6 +3,8 @@ package com.oriontv.feature.live
 import com.oriontv.core.util.TimeUtils
 import kotlinx.serialization.Serializable
 import java.io.StringReader
+import java.util.logging.Logger
+import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
@@ -19,6 +21,8 @@ import org.xml.sax.InputSource
  * 用 javax.xml 解析（纯 JVM），便于本地单测；不要用 android.util.Xml。
  */
 object EpgParser {
+
+    private val logger = Logger.getLogger("EpgParser")
 
     @Serializable
     data class Programme(
@@ -39,10 +43,33 @@ object EpgParser {
     fun parse(xml: String): EpgData {
         val factory = DocumentBuilderFactory.newInstance()
         factory.isNamespaceAware = false
-        // 防 XXE
-        runCatching { factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-        runCatching { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) }
-        runCatching { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        factory.isXIncludeAware = false
+        // 防 XXE：真实节目单以 `<!DOCTYPE tv SYSTEM "xmltv.dtd">` 开头，
+        // disallow-doctype-decl 会直接拒掉整份 EPG（P0-1），故不禁用 DOCTYPE；
+        // 改为禁止拉取外部 DTD/Schema（ACCESS_EXTERNAL_DTD/SCHEMA=""），
+        // 再关外部实体与外部 DTD 加载。特性逐项记日志，真机行为仍待用户验证。
+        val features = linkedMapOf<String, Boolean>()
+        features["ACCESS_EXTERNAL_DTD"] = runCatching {
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            true
+        }.getOrDefault(false)
+        features["ACCESS_EXTERNAL_SCHEMA"] = runCatching {
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
+            true
+        }.getOrDefault(false)
+        features["external-general-entities"] = runCatching {
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            true
+        }.getOrDefault(false)
+        features["external-parameter-entities"] = runCatching {
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            true
+        }.getOrDefault(false)
+        features["load-external-dtd"] = runCatching {
+            factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            true
+        }.getOrDefault(false)
+        logger.info("EPG 解析安全特性：$features（ACCESS_EXTERNAL_DTD=\"\" 拦外部 DTD 拉取、不拒 DOCTYPE）")
         val builder = factory.newDocumentBuilder()
         val doc = builder.parse(InputSource(StringReader(xml)))
 
@@ -78,39 +105,39 @@ object EpgParser {
     fun normalizeName(name: String): String =
         name.replace(Regex("[\\s\\-_]+"), "").lowercase()
 
-    /** 正在播的节目（startAt <= now < endAt），先按 tvg-id 精确，对不上按归一化名字匹配。 */
-    fun nowPlaying(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
-        val byId = tvgId?.let { data.programmesByChannel[it] }
-        val list = byId ?: data.programmesByChannel.entries
+    /**
+     * 取某台的节目列表：tvg-id 精确（大小写不敏感；M3U 写 CCTV1、EPG 写 cctv1 时
+     * 之前直接对不上）→ 归一化名字匹配。三处查找共用同一逻辑（P2-14）。
+     */
+    private fun resolveProgrammes(data: EpgData, tvgId: String?, channelName: String): List<Programme>? {
+        if (tvgId != null) {
+            data.programmesByChannel[tvgId]?.let { return it }
+            data.programmesByChannel.entries
+                .firstOrNull { it.key.equals(tvgId, ignoreCase = true) }?.value
+                ?.let { return it }
+        }
+        return data.programmesByChannel.entries
             .firstOrNull { (channelId, _) ->
                 val name = data.channelNames[channelId]
                 name != null && normalizeName(name) == normalizeName(channelName)
             }?.value
-            ?: return null
+    }
+
+    /** 正在播的节目（startAt <= now < endAt），先按 tvg-id 精确，对不上按归一化名字匹配。 */
+    fun nowPlaying(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
+        val list = resolveProgrammes(data, tvgId, channelName) ?: return null
         return list.firstOrNull { it.startAt <= nowMs && nowMs < it.endAt }
     }
 
     /** 稍后播的节目（下一档）。 */
     fun nextProgramme(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
-        val byId = tvgId?.let { data.programmesByChannel[it] }
-        val list = byId ?: data.programmesByChannel.entries
-            .firstOrNull { (channelId, _) ->
-                val name = data.channelNames[channelId]
-                name != null && normalizeName(name) == normalizeName(channelName)
-            }?.value
-            ?: return null
+        val list = resolveProgrammes(data, tvgId, channelName) ?: return null
         return list.firstOrNull { it.startAt > nowMs }
     }
 
     /** 某台全天节目单（EPG 弹窗用，按开始时间排序；先 tvg-id 精确，对不上按归一化名字匹配）。 */
     fun programmesFor(data: EpgData, tvgId: String?, channelName: String): List<Programme> {
-        val byId = tvgId?.let { data.programmesByChannel[it] }
-        if (byId != null) return byId
-        return data.programmesByChannel.entries
-            .firstOrNull { (channelId, _) ->
-                val name = data.channelNames[channelId]
-                name != null && normalizeName(name) == normalizeName(channelName)
-            }?.value.orEmpty()
+        return resolveProgrammes(data, tvgId, channelName).orEmpty()
     }
 
     /**
