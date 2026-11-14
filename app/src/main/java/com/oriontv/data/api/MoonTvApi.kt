@@ -292,16 +292,15 @@ class MoonTvApi @Inject constructor(
             title.lowercase().replace(Regex("\\s+"), "")
 
         /**
-         * 播放记录/收藏键：分段转义内部 `%`/`+` 后用 `+` 连接。
-         * 不含 `%`/`+` 的普通 source/id 与旧的 `"$source+$id"` 拼法结果完全一致，
-         * 已存的本地主键不受影响；含 `+` 的源/id 不再被按 `+` 切分错位。
-         * 注意：与 PlayViewModel 的原始拼法只在 source/id 含 `%`/`+` 时不同，
-         * 该分支的键解析（substringBefore/After "+"）按转义后键仍能正确拆回。
+         * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
+         * 拆键时按最后一个 + 切分（见 PlayViewModel.retry）。
+         * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
          */
         fun generateKey(source: String, id: String): String =
-            escapeSegment(source) + "+" + escapeSegment(id)
+            escapeKeySegment(source) + "+" + escapeKeySegment(id)
 
-        private fun escapeSegment(segment: String): String =
+        /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
+        private fun escapeKeySegment(segment: String): String =
             segment.replace("%", "%25").replace("+", "%2B")
     }
 }
