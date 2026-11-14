@@ -290,6 +290,18 @@ class MoonTvApi @Inject constructor(
         /** 标题归一化：去空白、小写（搜索子串过滤与精确标题匹配共用）。 */
         fun normalizeTitle(title: String): String =
             title.lowercase().replace(Regex("\\s+"), "")
+
+        /**
+         * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
+         * 拆键时按最后一个 + 切分（见 PlayViewModel.retry）。
+         * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
+         */
+        fun generateKey(source: String, id: String): String =
+            escapeKeySegment(source) + "+" + escapeKeySegment(id)
+
+        /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
+        private fun escapeKeySegment(segment: String): String =
+            segment.replace("%", "%25").replace("+", "%2B")
     }
 }
 
