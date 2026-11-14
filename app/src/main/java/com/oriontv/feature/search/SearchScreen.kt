@@ -26,9 +26,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Text
@@ -42,13 +43,14 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import kotlinx.coroutines.delay
 
 /**
  * 搜索页（ui-design.md §5.5）：
- * 顶部搜索框（遥控逐字输入；保留扫码远程输入入口，服务本身是阶段 4 的事，
- * 这里只留入口）+ 输入时下方联想 chips；
+ * 顶部搜索框（屏上键盘 + 扫码远程输入入口）+ 输入时下方联想 chips；
  * 结果网格；无结果提示 + “换个关键词”；搜索历史 chips（可单条删除）；
  * 搜索不清空已输内容，返回搜索页保留上次结果。
+ * 焦点（P1-4）：首进落搜索框；从详情返回时恢复上次点的结果卡片，不拉回搜索框。
  */
 @Composable
 fun SearchScreen(
@@ -58,13 +60,42 @@ fun SearchScreen(
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
     val searchRequester = remember { FocusRequester() }
+    val scanButtonRequester = remember { FocusRequester() }
+    val resultRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+    val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
+    var showKeyboard by remember { mutableStateOf(false) }
+    // 扫码弹窗关闭后焦点还给触发点（P1-5）。
+    var modalWasOpen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { searchRequester.requestFocus() }
+    // P1-4：首进落搜索框；返回时恢复上次的结果卡片。
+    LaunchedEffect(Unit) {
+        if (!viewModel.initialFocusDone) {
+            searchRequester.requestFocus()
+            viewModel.initialFocusDone = true
+        } else {
+            val saved = viewModel.savedResultIndex
+            if (saved in uiState.results.indices) {
+                gridState.scrollToItem(saved)
+                delay(120)
+                resultRequesters[saved]?.requestFocus()
+            } else {
+                searchRequester.requestFocus()
+            }
+        }
+    }
 
     // 配对成功后自动关弹窗（RN RemoteControlModal 的 onHandshake 同款）。
     LaunchedEffect(Unit) {
         viewModel.remoteInputHandshakes.collect { showRemoteInputModal = false }
+    }
+    LaunchedEffect(showRemoteInputModal) {
+        if (showRemoteInputModal) {
+            modalWasOpen = true
+        } else if (modalWasOpen) {
+            modalWasOpen = false
+            scanButtonRequester.requestFocus()
+        }
     }
 
     Column(
@@ -72,7 +103,7 @@ fun SearchScreen(
             .fillMaxSize()
             .padding(OrionDimens.ContentPadding),
     ) {
-        // 顶部搜索框 + 扫码输入入口。
+        // 顶部搜索框 + 屏上键盘 + 扫码输入入口。
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
@@ -98,8 +129,14 @@ fun SearchScreen(
             }
             Spacer(modifier = Modifier.width(16.dp))
             SecondaryButton(
+                text = if (showKeyboard) "收起键盘" else "屏上键盘",
+                onClick = { showKeyboard = !showKeyboard },
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            SecondaryButton(
                 text = "手机扫码输入",
                 onClick = { showRemoteInputModal = true },
+                modifier = Modifier.preferredFocus(scanButtonRequester),
             )
         }
         if (showRemoteInputModal) {
@@ -108,6 +145,19 @@ fun SearchScreen(
                 pairingCode = remoteState.pairingCode,
                 error = remoteState.error,
                 onDismiss = { showRemoteInputModal = false },
+                // P2-14：服务未开启时弹窗内一键开启，不用退出搜索去设置。
+                onEnableRemoteInput = { viewModel.enableRemoteInput() },
+            )
+        }
+
+        // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
+        if (showKeyboard) {
+            Spacer(modifier = Modifier.height(16.dp))
+            OnScreenKeyboard(
+                query = uiState.query,
+                onQueryChange = { viewModel.onQueryChange(it) },
+                onSearch = { viewModel.searchNow(uiState.query) },
+                onDismiss = { showKeyboard = false },
             )
         }
 
@@ -138,8 +188,9 @@ fun SearchScreen(
                             selected = false,
                             onClick = { viewModel.searchHistory(keyword) },
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        SecondaryButton(text = "×", onClick = { viewModel.deleteHistory(keyword) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
+                        SecondaryButton(text = "删除", onClick = { viewModel.deleteHistory(keyword) })
                     }
                 }
             }
@@ -183,12 +234,13 @@ fun SearchScreen(
             }
             uiState.results.isNotEmpty() -> {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Fixed(6),
                     horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
                     verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(uiState.results) { result ->
+                    itemsIndexed(uiState.results) { index, result ->
                         VideoCard(
                             title = result.title,
                             posterUrl = result.poster,
@@ -205,9 +257,21 @@ fun SearchScreen(
                                     ),
                                 )
                             },
+                            onFocused = { viewModel.savedResultIndex = index },
+                            modifier = Modifier.preferredFocus(
+                                resultRequesters.getOrPut(index) { FocusRequester() },
+                            ),
                         )
                     }
                 }
+            }
+            // P2-12：初始空白态给引导，不留空白内容区。
+            uiState.query.isBlank() && uiState.history.isEmpty() -> {
+                Text(
+                    text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字，也可以打开屏上键盘输入。",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.TextSecondary,
+                )
             }
         }
     }
