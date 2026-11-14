@@ -123,7 +123,14 @@ class LiveController(
             newChannels.indexOfFirst { it.name == name }.takeIf { it >= 0 }
         }
         currentIndex = restored ?: 0
-        lineIndex = 0
+        // A6-P2-7：上次线路也保留——restoreUrl（正在播的那条线）在新表里
+        // 的下标可能不再是 0（M3U 轮换了线路顺序），按它恢复 lineIndex；
+        // 按名回退找回的台（URL 已变）或落 0 台时回主线路。
+        lineIndex = if (restored != null && restoreUrl != null) {
+            newChannels[restored].urls.indexOf(restoreUrl).takeIf { it >= 0 } ?: 0
+        } else {
+            0
+        }
         failCount = 0
         lastSuccessAtMs = null
         triedLines.clear()
@@ -290,8 +297,10 @@ class LiveController(
     /** 某分组下的频道（收藏分组按 url 判重过滤）。 */
     fun channelsForGroup(group: String): List<M3uParser.Channel> = when (group) {
         FAV_GROUP -> {
+            // A6-P2-7：收藏匹配看频道全部线路，不只 urls[0]——M3U 轮换首线路
+            // 后 urls[0] 变了，旧实现按 urls[0] 匹配，收藏的台直接消失。
             val favUrls = favorites.map { it.url }.toSet()
-            channels.filter { it.url in favUrls }
+            channels.filter { channel -> channel.urls.any { it in favUrls } }
         }
         ALL_GROUP -> channels
         else -> channels.filter { it.group == group }
@@ -299,18 +308,26 @@ class LiveController(
 
     /** 收藏/取消收藏当前频道；返回 true=已收藏，false=已取消。新的插头部，上限 100 条。 */
     fun toggleFavorite(channel: M3uParser.Channel): Boolean {
-        return if (favorites.any { it.url == channel.url }) {
-            favorites = favorites.filter { it.url != channel.url }
+        // A6-P2-7：同上，任一线路命中即算已收藏；取消时按全部线路清掉。
+        return if (channel.urls.any { url -> favorites.any { it.url == url } }) {
+            favorites = favorites.filter { fav -> fav.url !in channel.urls }
             false
         } else {
-            favorites = (listOf(LiveFavChannel(channel.url, channel.name)) + favorites)
+            // 当前台正在播哪条线就存哪条（不是总存 urls[0]），轮换后仍能按
+            // 线路找回；非当前台按 urls[0] 存。
+            val urlToStore = if (channel === currentChannel) {
+                currentUrl ?: channel.url
+            } else {
+                channel.url
+            }
+            favorites = (listOf(LiveFavChannel(urlToStore, channel.name)) + favorites)
                 .take(MAX_FAV_CHANNELS)
             true
         }
     }
 
     fun isFavorite(channel: M3uParser.Channel): Boolean =
-        favorites.any { it.url == channel.url }
+        channel.urls.any { url -> favorites.any { it.url == url } }
 
     companion object {
         /** 断流自动处理上限：连续失败 >5 次停手（plan §5.3）。 */

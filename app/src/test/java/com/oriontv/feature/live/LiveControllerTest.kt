@@ -259,6 +259,45 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `favorite survives first line rotation`() {
+        // A6-P2-7：收藏按 urls[0] 匹配时，M3U 轮换首线路后收藏的台直接消失；
+        // 改按全部线路匹配，任一线路命中即算收藏
+        val c = LiveController(threeChannels)
+        c.toggleFavorite(threeChannels[0])
+        assertTrue(c.isFavorite(threeChannels[0]))
+        // 新表：同一台的首线路换了，原 1 号线变 2 号线
+        val rotated = listOf(
+            channel("CCTV-1", listOf("http://b/1-new.m3u8", "http://a/1.m3u8"), "央视"),
+            channel("CCTV-5", listOf("http://a/5.m3u8"), "央视"),
+            channel("广东卫视", listOf("http://a/gd.m3u8"), "卫视"),
+        )
+        c.setChannels(rotated, restoreUrl = null)
+        assertTrue(c.isFavorite(rotated[0]))
+        assertEquals(listOf("CCTV-1"), c.channelsForGroup(LiveController.FAV_GROUP).map { it.name })
+        // 取消收藏：任一线路命中即清掉
+        assertFalse(c.toggleFavorite(rotated[0]))
+        assertFalse(c.isFavorite(rotated[0]))
+        assertTrue(c.channelsForGroup(LiveController.FAV_GROUP).isEmpty())
+    }
+
+    @Test
+    fun `setChannels restores previous line index`() {
+        // A6-P2-7：上次线路也保留——正在播 2 号线时刷新，线路顺序轮换后
+        // 仍回到 2 号线，不回主线路
+        val c = LiveController(threeChannels, currentIndex = 0, lineIndex = 1)
+        assertEquals("http://a/1b.m3u8", c.currentUrl)
+        val rotated = listOf(
+            channel("CCTV-1", listOf("http://b/1-new.m3u8", "http://a/1b.m3u8"), "央视"),
+            channel("CCTV-5", listOf("http://a/5.m3u8"), "央视"),
+            channel("广东卫视", listOf("http://a/gd.m3u8"), "卫视"),
+        )
+        c.setChannels(rotated, restoreUrl = "http://a/1b.m3u8", restoreName = "CCTV-1")
+        assertEquals(0, c.currentIndex)
+        assertEquals(1, c.lineIndex)
+        assertEquals("http://a/1b.m3u8", c.currentUrl)
+    }
+
+    @Test
     fun `restore last channel by url only once via setChannels`() {
         val c = LiveController()
         c.setChannels(threeChannels, restoreUrl = "http://a/gd.m3u8")

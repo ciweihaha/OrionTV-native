@@ -56,8 +56,12 @@ object M3uParser {
                     }
                     if (next.contains("://")) {
                         url = next
+                        break
                     }
-                    break
+                    // A6-P2-6：非 #、非 URL 行（相对路径/脏行）跳过继续找，不丢
+                    // 整条频道——旧实现遇这种行直接 break，url 保持 null，
+                    // 该台被吞掉（下一行若是真地址也被错过）。
+                    j++
                 }
                 if (url != null) {
                     parsed.add(

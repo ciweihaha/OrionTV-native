@@ -81,6 +81,23 @@ class M3uParserTest {
     }
 
     @Test
+    fun `non hash non url line between extinf and url does not drop the channel`() {
+        // A6-P2-6：#EXTINF 与地址间的非 #、非 URL 行（相对路径/脏行）曾让
+        // 整条频道被丢掉；现在跳过该行继续找地址
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="cctv1" group-title="央视",CCTV1
+            live/cctv1
+            http://example.com/cctv1.m3u8
+            #EXTINF:-1 tvg-id="cctv5",CCTV5
+            http://example.com/cctv5.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV5"), channels.map { it.name })
+        assertEquals("http://example.com/cctv1.m3u8", channels[0].url)
+    }
+
+    @Test
     fun `hash lines between extinf and url do not drop the channel`() {
         // P2-3：#EXTVLCOPT / #EXTGRP 夹在 #EXTINF 与流地址之间时频道曾被丢掉
         val content = """

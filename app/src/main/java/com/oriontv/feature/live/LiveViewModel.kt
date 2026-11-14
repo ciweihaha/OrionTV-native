@@ -58,6 +58,9 @@ class LiveViewModel @Inject constructor(
     private var stablePlayJob: Job? = null
     private var tickerJob: Job? = null
     private var epgRefreshJob: Job? = null
+    /** A6-P2-5：“刷新直播源”在途任务——连点时第二次直接返回，不再并发拉网、
+     * 两次 setChannels 交错写表。 */
+    private var refreshJob: Job? = null
     /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -176,7 +179,9 @@ class LiveViewModel @Inject constructor(
 
     /** 手动刷新直播源（A4-P2-3）：7 天缓存内无刷新入口时强制拉网。 */
     fun refreshChannels() {
-        viewModelScope.launch {
+        // A6-P2-5：在途守卫——上一次刷新还没跑完时直接返回，不并发拉网。
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
             if (m3uUrl.isBlank()) return@launch
             val wasFailed = _uiState.value.playbackFailed
@@ -186,7 +191,9 @@ class LiveViewModel @Inject constructor(
                 return@launch
             }
             val current = controller.currentChannel
-            controller.setChannels(fresh, restoreUrl = current?.url, restoreName = current?.name)
+            // A6-P2-7：传正在播的那条线（controller.currentUrl），不是
+            // current?.url（恒为 urls[0]）——正在播 2 号线时刷新后应回 2 号线。
+            controller.setChannels(fresh, restoreUrl = controller.currentUrl, restoreName = current?.name)
             _uiState.update {
                 it.copy(
                     isLoading = false,
