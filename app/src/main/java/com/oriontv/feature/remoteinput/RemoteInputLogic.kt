@@ -22,6 +22,12 @@ object RemoteInputLogic {
     /** 配对码有效期 5 分钟（P1-10：过期作废，由管理器定期轮换）。 */
     const val PAIRING_CODE_TTL_MS = 5 * 60 * 1000L
 
+    /** P2-8（第 5 轮）：轮换后上一轮配对码的宽限期 60 秒（正在配对的那一刻不被轮换打断）。 */
+    const val PAIRING_CODE_GRACE_MS = 60_000L
+
+    /** P2-8（第 5 轮）：配对码倒计时刷新间隔 5 秒。 */
+    const val PAIRING_CODE_COUNTDOWN_TICK_MS = 5_000L
+
     /** 配对成功后发的会话 token 有效期 24 小时（P1-10：码只用于换 token）。 */
     const val SESSION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000L
 
@@ -56,6 +62,17 @@ object RemoteInputLogic {
         val bytes = ByteArray(16)
         random.nextBytes(bytes)
         return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /** 配对码剩余时间文案（纯函数，可单测）：“还剩约 5 分”/“还剩约 4 分 30 秒”/“还剩约 45 秒”。 */
+    fun formatPairingRemaining(seconds: Int?): String? {
+        if (seconds == null) return null
+        val s = seconds.coerceAtLeast(0)
+        return when {
+            s >= 60 && s % 60 == 0 -> "还剩约 ${s / 60} 分"
+            s >= 60 -> "还剩约 ${s / 60} 分 ${s % 60} 秒"
+            else -> "还剩约 $s 秒"
+        }
     }
 
     /** 恒定时间字符串比较：固定遍历全长，不提前返回（RN 同款）。 */
@@ -217,6 +234,16 @@ class RemoteInputRouter(
     var pairingCodeIssuedAtMs: Long = 0L
         private set
 
+    /** 上一轮配对码（P2-8：轮换后 60 秒宽限期内仍可用）；"" = 无上一轮。 */
+    @Volatile
+    var previousPairingCode: String = ""
+        private set
+
+    /** 上一轮配对码签发时间（毫秒）；0 = 无上一轮。 */
+    @Volatile
+    var previousPairingCodeIssuedAtMs: Long = 0L
+        private set
+
     /**
      * 已发会话 token → 过期时间（毫秒）。
      * 第 3 轮收尾 B-P2-1：与 PairingGate 同款问题，NanoHTTPD 多线程并发
@@ -226,6 +253,8 @@ class RemoteInputRouter(
 
     /** 服务启动成功后轮换配对码（启动失败不废旧码，RN 同款）。 */
     fun rotatePairingCode(): String {
+        previousPairingCode = pairingCode
+        previousPairingCodeIssuedAtMs = pairingCodeIssuedAtMs
         pairingCode = RemoteInputLogic.generatePairingCode()
         pairingCodeIssuedAtMs = nowMs()
         pairingGate.clear()
@@ -235,6 +264,8 @@ class RemoteInputRouter(
     fun clearPairingCode() {
         pairingCode = ""
         pairingCodeIssuedAtMs = 0L
+        previousPairingCode = ""
+        previousPairingCodeIssuedAtMs = 0L
         pairingGate.clear()
         sessionTokens.clear()
     }
@@ -244,6 +275,24 @@ class RemoteInputRouter(
         pairingCode.isNotEmpty() &&
             pairingCodeIssuedAtMs > 0 &&
             now - pairingCodeIssuedAtMs <= RemoteInputLogic.PAIRING_CODE_TTL_MS
+
+    /**
+     * P2-8（第 5 轮）：配对码匹配——当前码在 5 分钟有效期内，或上一轮的码
+     * 在轮换后 60 秒宽限期内。用户在第 4 分 59 秒输入旧码、提交时刚好轮换，
+     * 以前即判过期；宽限期让“正在配对的那一刻”不被轮换打断。
+     * 纯逻辑，可单测。
+     */
+    fun matchesPairingCode(code: String, now: Long = nowMs()): Boolean {
+        if (code.isEmpty()) return false
+        if (RemoteInputLogic.timingSafeEqual(code, pairingCode) &&
+            pairingCodeIssuedAtMs > 0 &&
+            now - pairingCodeIssuedAtMs <= RemoteInputLogic.PAIRING_CODE_TTL_MS
+        ) return true
+        return RemoteInputLogic.timingSafeEqual(code, previousPairingCode) &&
+            previousPairingCodeIssuedAtMs > 0 &&
+            now - previousPairingCodeIssuedAtMs <=
+            RemoteInputLogic.PAIRING_CODE_TTL_MS + RemoteInputLogic.PAIRING_CODE_GRACE_MS
+    }
 
     /** 校验会话 token（过期即清掉并返回 false）。 */
     fun isSessionTokenValid(token: String, now: Long = nowMs()): Boolean {
@@ -315,13 +364,20 @@ class RemoteInputRouter(
         }
     }
 
-    /** 握手只认有效期内的配对码（过期码即使数字正确也拒绝）。 */
+    /** 握手只认有效期内的配对码（过期码即使数字正确也拒绝；P2-8 含 60 秒轮换宽限期）。 */
     private fun isPairingValid(headers: Map<String, String>, clientIp: String): Boolean {
-        if (!isPairingCodeUsable()) return false
         val code = headers.entries.firstOrNull {
             it.key.equals("x-pairing-code", ignoreCase = true)
         }?.value.orEmpty()
-        return pairingGate.check(clientIp, code, pairingCode)
+        if (!matchesPairingCode(code)) return false
+        // 失败计数与锁定仍走 PairingGate：期望码取实际匹配的那一个（当前码
+        // 或宽限期内的上一轮码），否则宽限期内的旧码会被 gate 的比较挡掉。
+        val expected = if (RemoteInputLogic.timingSafeEqual(code, pairingCode)) {
+            pairingCode
+        } else {
+            previousPairingCode
+        }
+        return pairingGate.check(clientIp, code, expected)
     }
 
     /** /message 认会话 token，兼容仍在有效期内的配对码（老客户端/首次发送）。 */

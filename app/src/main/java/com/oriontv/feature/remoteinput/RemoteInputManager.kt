@@ -30,6 +30,8 @@ data class RemoteInputState(
     /** 上一条收到的远程文本（内容相同也靠时间戳感知变化）。 */
     val lastMessage: String? = null,
     val lastMessageAt: Long? = null,
+    /** 当前配对码剩余有效秒数（P2-8：轮换任务每 5 秒刷新一次，供界面倒计时；null = 未签发）。 */
+    val pairingCodeRemainingSeconds: Int? = null,
 )
 
 /**
@@ -106,6 +108,8 @@ class RemoteInputManager @Inject constructor() {
                     serverUrl = "http://$ip:${RemoteInputService.PORT}",
                     pairingCode = code,
                     error = null,
+                    pairingCodeRemainingSeconds =
+                        (RemoteInputLogic.PAIRING_CODE_TTL_MS / 1000).toInt(),
                 )
             }
         } catch (e: CancellationException) {
@@ -164,19 +168,43 @@ class RemoteInputManager @Inject constructor() {
         server = null
         router.clearPairingCode()
         _state.update {
-            it.copy(isRunning = false, serverUrl = null, pairingCode = null, error = null)
+            it.copy(
+                isRunning = false,
+                serverUrl = null,
+                pairingCode = null,
+                error = null,
+                pairingCodeRemainingSeconds = null,
+            )
         }
     }
 
-    /** P1-10：配对码每 5 分钟轮换一次，state 里的显示同步更新；停服即停。 */
+    /** P1-10/P2-8：配对码每 5 分钟轮换一次，state 里的显示同步更新；停服即停。
+     * 每 5 秒刷新一次剩余秒数（供界面倒计时）；轮换后上一轮的码仍有 60 秒
+     * 宽限期（见 RemoteInputRouter.matchesPairingCode）。 */
     private fun startRotationJob() {
         rotationJob?.cancel()
         rotationJob = scope.launch {
             while (desiredRunning) {
-                delay(RemoteInputLogic.PAIRING_CODE_TTL_MS)
+                delay(RemoteInputLogic.PAIRING_CODE_COUNTDOWN_TICK_MS)
                 if (!desiredRunning || !_state.value.isRunning) break
-                val code = router.rotatePairingCode()
-                _state.update { it.copy(pairingCode = code) }
+                val issuedAt = router.pairingCodeIssuedAtMs
+                if (issuedAt <= 0) continue
+                val now = System.currentTimeMillis()
+                if (now - issuedAt >= RemoteInputLogic.PAIRING_CODE_TTL_MS) {
+                    val code = router.rotatePairingCode()
+                    _state.update {
+                        it.copy(
+                            pairingCode = code,
+                            pairingCodeRemainingSeconds =
+                                (RemoteInputLogic.PAIRING_CODE_TTL_MS / 1000).toInt(),
+                        )
+                    }
+                } else {
+                    val remaining =
+                        ((RemoteInputLogic.PAIRING_CODE_TTL_MS - (now - issuedAt)) / 1000)
+                            .toInt().coerceAtLeast(0)
+                    _state.update { it.copy(pairingCodeRemainingSeconds = remaining) }
+                }
             }
         }
     }

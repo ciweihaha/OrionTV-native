@@ -237,6 +237,49 @@ class RemoteInputLogicTest {
     }
 
     @Test
+    fun `previous pairing code works during grace after rotation`() {
+        var now = 1_000_000L
+        val router = RemoteInputRouter(nowMs = { now })
+        router.rotatePairingCode()
+        val oldCode = router.pairingCode
+        // 轮换发生在旧码 5 分钟到期时。
+        now += RemoteInputLogic.PAIRING_CODE_TTL_MS
+        router.rotatePairingCode()
+        val newCode = router.pairingCode
+        // 轮换后 30 秒：旧码仍在 60 秒宽限期内，新码也可用。
+        now += 30_000L
+        assertTrue(router.matchesPairingCode(oldCode))
+        val oldOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to oldCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, oldOk.statusCode)
+        val newOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to newCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, newOk.statusCode)
+        // 宽限期过后：旧码拒绝，新码仍可用。
+        now += 31_000L
+        assertFalse(router.matchesPairingCode(oldCode))
+        val oldExpired = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to oldCode), "{}", "1.2.3.4",
+        )
+        assertEquals(403, oldExpired.statusCode)
+        val newStillOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to newCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, newStillOk.statusCode)
+    }
+
+    @Test
+    fun `format pairing remaining`() {
+        assertEquals("还剩约 5 分", RemoteInputLogic.formatPairingRemaining(300))
+        assertEquals("还剩约 4 分 30 秒", RemoteInputLogic.formatPairingRemaining(270))
+        assertEquals("还剩约 45 秒", RemoteInputLogic.formatPairingRemaining(45))
+        assertEquals("还剩约 0 秒", RemoteInputLogic.formatPairingRemaining(0))
+        assertNull(RemoteInputLogic.formatPairingRemaining(null))
+    }
+
+    @Test
     fun `session token is 32 hex chars and varies`() {
         val tokens = (1..10).map { RemoteInputLogic.generateSessionToken() }.toSet()
         assertEquals(10, tokens.size)

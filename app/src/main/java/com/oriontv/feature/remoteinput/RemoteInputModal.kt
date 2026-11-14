@@ -57,6 +57,8 @@ fun RemoteInputModal(
     onDismiss: () -> Unit,
     /** 服务未启动时的一键开启回调（P2-14）；null = 不显示该按钮。 */
     onEnableRemoteInput: (() -> Unit)? = null,
+    /** 当前配对码剩余有效秒数（P2-8 倒计时；null = 未签发，显示“5 分钟内有效”）。 */
+    pairingCodeRemainingSeconds: Int? = null,
 ) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     val closeRequester = remember { FocusRequester() }
@@ -129,7 +131,13 @@ fun RemoteInputModal(
                     if (!pairingCode.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "配对码：$pairingCode（5 分钟内有效）",
+                            // P2-8：倒计时（轮换任务每 5 秒刷新）；没拿到剩余秒数时
+                            // 回落到旧文案“5 分钟内有效”。
+                            text = "配对码：$pairingCode（${
+                                RemoteInputLogic.formatPairingRemaining(
+                                    pairingCodeRemainingSeconds,
+                                ) ?: "5 分钟内有效"
+                            }）",
                             style = OrionTextStyles.SectionTitle,
                             color = OrionColors.Brand,
                         )

@@ -167,6 +167,7 @@ fun SearchScreen(
             RemoteInputModal(
                 serverUrl = remoteState.serverUrl,
                 pairingCode = remoteState.pairingCode,
+                pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
                 error = remoteState.error,
                 onDismiss = { showRemoteInputModal = false },
                 // P2-14：服务未开启时弹窗内一键开启，不用退出搜索去设置。

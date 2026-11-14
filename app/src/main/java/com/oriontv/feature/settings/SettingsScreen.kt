@@ -40,6 +40,7 @@ import androidx.tv.material3.Text
 import com.oriontv.BuildConfig
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.feature.remoteinput.QrCodeGenerator
+import com.oriontv.feature.remoteinput.RemoteInputLogic
 import com.oriontv.feature.remoteinput.RemoteInputModal
 import com.oriontv.feature.update.UpdateViewModel
 import com.oriontv.ui.components.OrionToast
@@ -204,6 +205,7 @@ fun SettingsScreen(
                         isRunning = remoteState.isRunning,
                         serverUrl = remoteState.serverUrl,
                         pairingCode = remoteState.pairingCode,
+                        pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
                         error = remoteState.error,
                         onToggle = { viewModel.setRemoteInputEnabled(it) },
                         onShowQr = { showQrModal = true },
@@ -268,6 +270,7 @@ fun SettingsScreen(
         RemoteInputModal(
             serverUrl = remoteState.serverUrl,
             pairingCode = remoteState.pairingCode,
+            pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
             error = remoteState.error,
             onDismiss = { showQrModal = false },
             // P2-14：服务未启动时弹窗内一键开启。
@@ -526,6 +529,7 @@ private fun RemoteInputSettings(
     isRunning: Boolean,
     serverUrl: String?,
     pairingCode: String?,
+    pairingCodeRemainingSeconds: Int?,
     error: String?,
     onToggle: (Boolean) -> Unit,
     onShowQr: () -> Unit,
@@ -565,7 +569,13 @@ private fun RemoteInputSettings(
                     )
                     if (!pairingCode.isNullOrBlank()) {
                         Text(
-                            text = "配对码：$pairingCode（5 分钟内有效）",
+                            // P2-8：倒计时（轮换任务每 5 秒刷新）；没拿到剩余秒数时
+                            // 回落到旧文案“5 分钟内有效”。
+                            text = "配对码：$pairingCode（${
+                                RemoteInputLogic.formatPairingRemaining(
+                                    pairingCodeRemainingSeconds,
+                                ) ?: "5 分钟内有效"
+                            }）",
                             style = OrionTextStyles.SectionTitle,
                             color = OrionColors.Brand,
                         )
