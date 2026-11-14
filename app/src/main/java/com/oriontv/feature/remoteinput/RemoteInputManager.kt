@@ -58,7 +58,10 @@ class RemoteInputManager @Inject constructor() {
                 _state.update {
                     it.copy(lastMessage = message, lastMessageAt = System.currentTimeMillis())
                 }
-                // P2-13：缓冲为 0，无订阅者时直接丢弃，不滞留旧消息下次进搜索页误触发。
+                // B9-P2-5：缓冲改为 1，tryEmit 失败（连续多条且缓冲已满）时不补发——
+                // state.lastMessage 永远是最新一条，订阅者以 state 为准（见
+                // resolveRemoteMessageToSearch），丢的只是中间态，不是最新意图。
+                // 旧 P2-13 的“0 缓冲直接丢弃防误触发”由消费端 5 分钟新鲜度过滤接替。
                 _messages.tryEmit(message)
             }
         },
@@ -73,7 +76,11 @@ class RemoteInputManager @Inject constructor() {
     val state: StateFlow<RemoteInputState> = _state.asStateFlow()
 
     /** 远程文本流（搜索页订阅：收到即填入搜索框并搜索）。 */
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 0)
+    // B9-P2-5：缓冲改为 1——0 缓冲 + tryEmit 时，订阅者正在处理上一条的极小
+    // 窗口内连续第二条会被丢弃；1 条缓冲接住它。无订阅者时滞留的旧消息由消费端
+    // 按 lastMessageAt 做 5 分钟新鲜度过滤（resolveRemoteMessageToSearch），
+    // 不再靠“0 缓冲直接丢弃”防误触发（旧 P2-13 注释已过时）。
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /** 配对成功事件流（扫码弹窗订阅：配对成功后自动关闭）。 */

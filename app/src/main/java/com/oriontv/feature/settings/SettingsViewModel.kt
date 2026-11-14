@@ -183,16 +183,34 @@ class SettingsViewModel @Inject constructor(
                 // 数据访问自动重拉，成功前按本地模式兜底并提示用户。
                 var configFailed = false
                 if (apiChanged) {
-                    settingsRepository.clearStorageType()
+                    // B9-P2-2：成功后的附属写失败不进主流程失败分支——地址已落盘，
+                    // StorageType 清失败只记日志，下次访问自动重拉。
+                    try {
+                        settingsRepository.clearStorageType()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        AppLog.w("SettingsViewModel", "保存源地址：清 StorageType 失败，继续保存：${e.message}")
+                    }
                 }
                 if (state.apiUrl.trim().isNotBlank()) {
                     // B6-P2-10：30 秒失败缓存内的 null 不是“本次拉取失败”——
                     // 缓存期内不发请求、不报配置失败，下次数据访问越过缓存再试。
                     val failureCached =
                         settingsRepository.isConfigFailureCachedFor(state.apiUrl.trim())
-                    if (!failureCached &&
-                        settingsRepository.refreshServerConfig() == null && apiChanged
-                    ) {
+                    // B9-P2-2：同款——refreshServerConfig 入口的 DataStore 读
+                    // 失败会抛错（D7-P2-9 只加固了它内部后半段），抛错按拉取失败
+                    // 计（configFailed=true，走“已保存、按本地模式运行”），
+                    // 不进外层 catch 的“保存失败”。
+                    val serverConfig = try {
+                        settingsRepository.refreshServerConfig()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        AppLog.w("SettingsViewModel", "保存源地址：拉取 server-config 失败，按本地模式：${e.message}")
+                        null
+                    }
+                    if (!failureCached && serverConfig == null && apiChanged) {
                         configFailed = true
                     }
                 }

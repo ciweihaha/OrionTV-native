@@ -6,6 +6,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.BuildConfig
+import com.oriontv.core.util.AppLog
 import com.oriontv.core.util.VersionUtils
 import com.oriontv.data.api.AggApi
 import com.oriontv.data.api.AggInvalidResponseException
@@ -52,6 +53,9 @@ class UpdateViewModel @Inject constructor(
 
     /** B7-P2-1：下载代次——取消后立即重下时，旧任务的 CE catch/finally 凭代次
      * 复核，过期任务不再盖掉新下载的状态、也不再把新任务的 Job 置 null。 */
+    // B9-P2-4：进度回调在 IO 线程读它，plain var 无可见性保证，加 @Volatile
+    //（与 Detail/SearchViewModel 的同款字段一致，这里漏了）。
+    @Volatile
     private var downloadGeneration = 0
 
     /** 当前版本是否低于目标版本。 */
@@ -78,8 +82,12 @@ class UpdateViewModel @Inject constructor(
                     }
                 }
                 val latest = stripVersionPrefix(aggApi.version())
-                settingsRepository.setUpdateLastCheckTime(System.currentTimeMillis())
-                val skipVersion = settingsRepository.currentUpdateSkipVersion()
+                // B9-P2-2：成功后的附属读写失败不进主流程失败分支——版本已拿到，
+                // 检查时间写失败只记日志；跳过版本读失败按“未跳过”走。
+                runCatching { settingsRepository.setUpdateLastCheckTime(System.currentTimeMillis()) }
+                    .onFailure { AppLog.w("UpdateViewModel", "检查时间保存失败：${it.message}") }
+                val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
+                    .getOrDefault("")
                 val current = _uiState.value.currentVersion
                 when {
                     !needsUpdate(current, latest) -> {
@@ -230,7 +238,10 @@ class UpdateViewModel @Inject constructor(
                     //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
                     // 代次过期（已被更新的下载取代）时不弹旧任务的卡。
                     if (!_uiState.value.showUpdateCard) {
-                        val skipVersion = settingsRepository.currentUpdateSkipVersion()
+                        // B9-P2-2：同上——下载已完成、校验已通过，跳过版本读失败
+                        // 只按“未跳过”走，不把已下好的包报成“下载失败”。
+                        val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
+                            .getOrDefault("")
                         if (skipVersion != latest) {
                             _uiState.update { it.copy(showUpdateCard = true) }
                         }

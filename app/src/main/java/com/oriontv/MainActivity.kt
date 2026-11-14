@@ -62,9 +62,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lifecycleScope.launch {
-            settingsRepository.backgroundPlayback.collect { enabled ->
-                backgroundPlaybackCached = enabled
-                playerManager.backgroundPlaybackEnabled = enabled
+            // B9-P2-1：DataStore 流读失败不让协程未捕获崩溃；失败即停止订阅、
+            // 沿用默认值 false（后台播放开关默认关）。
+            try {
+                settingsRepository.backgroundPlayback.collect { enabled ->
+                    backgroundPlaybackCached = enabled
+                    playerManager.backgroundPlaybackEnabled = enabled
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "后台播放开关订阅失败，用默认值：${e.message}")
             }
         }
         setContent {
@@ -116,7 +122,10 @@ class MainActivity : ComponentActivity() {
         remoteInputStopJob?.cancel()
         remoteInputStopJob = null
         lifecycleScope.launch {
-            if (settingsRepository.remoteInputEnabled.first()) {
+            // B9-P2-1：DataStore 读失败不让协程未捕获崩溃；失败即跳过本次恢复。
+            val enabled = runCatching { settingsRepository.remoteInputEnabled.first() }
+                .getOrDefault(false)
+            if (enabled) {
                 remoteInputManager.start()
             }
         }

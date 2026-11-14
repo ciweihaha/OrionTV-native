@@ -45,4 +45,20 @@ class SearchLogicTest {
         assertFalse(isFreshRemoteMessage(null, nowMs = 1_000L))
         assertFalse(isFreshRemoteMessage(2_000L, nowMs = 1_000L))
     }
+
+    @Test
+    fun `remote message search uses latest fresh state message`() {
+        // B9-P2-5：流里取出的那条可能已不是最新（连续两条时先到的还在缓冲里），
+        // 以 state 的最新一条为准；5 分钟外的旧文本不搜。
+        assertEquals(
+            "最新词",
+            resolveRemoteMessageToSearch("最新词", 1_000L, nowMs = 1_000L + 60_000L),
+        )
+        assertEquals(
+            null,
+            resolveRemoteMessageToSearch("旧词", 1_000L, nowMs = 1_000L + REMOTE_MESSAGE_FRESH_MS + 1),
+        )
+        assertEquals(null, resolveRemoteMessageToSearch(null, 1_000L, nowMs = 1_000L + 60_000L))
+        assertEquals(null, resolveRemoteMessageToSearch("词", null, nowMs = 1_000L + 60_000L))
+    }
 }

@@ -106,8 +106,14 @@ class SearchViewModel @Inject constructor(
             searchNow(lastRemote.lastMessage)
         }
         viewModelScope.launch {
-            remoteInputManager.messages.collect { message ->
-                searchNow(message)
+            remoteInputManager.messages.collect {
+                // B9-P2-5：流只作唤醒信号，文本以 state 的最新一条为准——连续两条
+                // 时先到的可能还在缓冲里，后到的已进 state；5 分钟外的旧文本直接
+                // 丢弃，不让无订阅者时滞留的旧消息在进搜索页后误触发。
+                val state = remoteInputManager.state.value
+                val fresh = resolveRemoteMessageToSearch(state.lastMessage, state.lastMessageAt)
+                    ?: return@collect
+                searchNow(fresh)
             }
         }
     }
@@ -182,15 +188,59 @@ class SearchViewModel @Inject constructor(
         )
     }
 
+    /**
+     * 写历史/读最新历史（B9-P2-3：网络成功与缓存命中共用）——之前只有网络分支走，
+     * 缓存命中直接 return，历史不写也不刷新。
+     * 无痕模式不写搜索历史（阶段 4）。
+     * B6-P2-11：服务端写失败的返回值不再丢弃——写失败时调用方给一次 Toast，
+     * 不假装已写进历史（展示用的 history 仍从服务端重读，不会“幽灵出现”）。
+     * B7-P2-4：写历史/读最新历史各包独立 try/catch——抛错只影响 toast/历史，
+     * 不丢已搜到的结果（旧实现任一抛错都会进外层 catch，结果被错误态覆盖）。
+     * @return historySaved 与最新历史。
+     */
+    private suspend fun recordSearchHistory(query: String): Pair<Boolean, List<String>> {
+        var historySaved = true
+        var freshHistory = _uiState.value.history
+        try {
+            if (!settingsRepository.incognitoMode.first()) {
+                historySaved = searchHistoryRepository.add(query)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            historySaved = false
+        }
+        try {
+            freshHistory = searchHistoryRepository.getLatest20()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 读失败留旧 history，不丢结果。
+        }
+        return historySaved to freshHistory
+    }
+
     private suspend fun executeSearch(query: String, gen: Int = generation) {
         // B-P1-6：进入搜索即记下本次词；失败分支也已赋值，重试按钮不再是死按钮。
         _uiState.value = _uiState.value.copy(searchedQuery = query)
         cache.get(query)?.let { cached ->
+            // B9-P2-3：缓存命中也写历史/读最新历史——之前直接 return，搜过的词
+            // 不进历史、历史列表也不刷新；与网络分支走同一段逻辑。
+            val (historySaved, freshHistory) = recordSearchHistory(query)
+            // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
+            // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
+            if (gen != generation) return
             _uiState.value = _uiState.value.copy(
                 results = cached,
                 isLoading = false,
                 error = if (cached.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
+                history = freshHistory,
+                toast = if (!historySaved) {
+                    nextToastEvent("搜索历史保存失败，本次搜索不受影响")
+                } else {
+                    null
+                },
             )
             saveSearchState()
             return
@@ -215,30 +265,8 @@ class SearchViewModel @Inject constructor(
             if (gen != generation) return
             // P2-11：空结果不缓存（服务端刚上新内容时用户不再持续看到空结果）。
             if (shouldCacheSearchResults(results)) cache.put(query, results)
-            // 无痕模式不写搜索历史（阶段 4）。
-            // B6-P2-11：服务端写失败的返回值不再丢弃——写失败时给一次 Toast，
-            // 不假装已写进历史（展示用的 history 仍从服务端重读，不会“幽灵出现”）。
-            // B7-P2-4：写历史/读最新历史各包独立 try/catch——抛错只影响
-            // toast/历史，不丢已搜到的结果（旧实现任一抛错都会进外层 catch，
-            // 结果被错误态覆盖）。
-            var historySaved = true
-            var freshHistory = _uiState.value.history
-            try {
-                if (!settingsRepository.incognitoMode.first()) {
-                    historySaved = searchHistoryRepository.add(query)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                historySaved = false
-            }
-            try {
-                freshHistory = searchHistoryRepository.getLatest20()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // 读失败留旧 history，不丢结果。
-            }
+            // B9-P2-3：写历史/读最新历史走共用 helper（缓存命中分支同款）。
+            val (historySaved, freshHistory) = recordSearchHistory(query)
             // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
             // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
             if (gen != generation) return
@@ -432,6 +460,17 @@ sealed interface SearchError {
         }
     }
 }
+
+/**
+ * 远程输入应搜哪条文本（纯逻辑，可单测，B9-P2-5）：以 state 的最新一条为准，
+ * 不用流里取出的那条——连续两条时先到的可能还在缓冲里，后到的已进 state；
+ * 5 分钟外的旧文本返回 null（无订阅者时滞留的旧消息不误触发）。
+ */
+fun resolveRemoteMessageToSearch(
+    lastMessage: String?,
+    lastMessageAt: Long?,
+    nowMs: Long = System.currentTimeMillis(),
+): String? = lastMessage?.takeIf { isFreshRemoteMessage(lastMessageAt, nowMs) }
 
 /**
  * 第 3 轮收尾 B-P2-22：远程文本是否新鲜（[windowMs] 内才认，防旧消息误触发）。
