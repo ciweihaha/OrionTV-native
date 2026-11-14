@@ -312,7 +312,7 @@ class PlayViewModel @Inject constructor(
                 outroStartMs = settings?.outroStartTime?.takeIf { it > 0 },
                 showNextEpisode = false,
                 drawer = null,
-                // A6-P1-1：新集开播清播完态，倒计时条件回到“正在播”。
+                // A8-P1-1：新集开播清播完态，倒计时冻结，直到本集播完才走。
                 isEnded = false,
                 // P2-3：集次版本号，每次开播（换集/换源/重试/自动换源）都 +1，
                 // 播放页据此清掉旧落点预览——只看 durationMs 不够，新集时长与旧集
@@ -402,8 +402,8 @@ class PlayViewModel @Inject constructor(
         // A6-P1-2：看完一集删旧断点——saveRecordNow 只做到“临近片尾不新存”，
         // 之前轮询存下的旧断点（片尾前 10 秒外）还在，重开会从片尾前续播；
         // 播完即删，重开从 0 播（resolveRecordStartMs 的看完钳制是第二道防线）。
-        // A6-P1-1：记 isEnded，下一集倒计时按“正在播或已播完”走（播完态
-        // isPlaying=false，旧条件会让倒计时永久冻结）。
+        // A8-P1-1：记 isEnded，下一集倒计时只在播完态走（A6-P1-1 的
+        // “正在播或已播完”会让预告卡边播边倒计时、吞掉最后约 7 秒）。
         _uiState.update { it.copy(isEnded = true) }
         viewModelScope.launch {
             runCatching { playRecordsRepository.delete(currentKey) }
@@ -907,8 +907,8 @@ data class PlayUiState(
     val bufferedMs: Long = 0L,
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
-    /** A6-P1-1：是否已播完（STATE_ENDED）——下一集倒计时在播完态也要走，
-     * 不能只看 isPlaying（播完时 isPlaying=false，倒计时永久冻结）。
+    /** A8-P1-1：是否已播完（STATE_ENDED）——下一集倒计时只在播完态走，
+     * 正在播时预告卡虽已出现（剩 10 秒），倒计时冻结在 3 秒。
      * 第 6 轮 P1-1（本分支）：轮询按播放器实态刷新它、OK 重播时清掉。 */
     val isEnded: Boolean = false,
     val playbackRate: Float = 1f,

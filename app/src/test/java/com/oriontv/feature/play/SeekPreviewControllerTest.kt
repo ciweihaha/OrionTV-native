@@ -96,4 +96,18 @@ class SeekPreviewControllerTest {
         assertEquals(0L, controller.nudge(5_000, -1))
         assertEquals(45_000L, controller.nudge(35_000, 1))
     }
+
+    @Test
+    fun `nudge returns null when pending already pinned at current position`() {
+        // A8-P2-4：待定落点已顶在播头处（落点 59 秒、播头也走到 59 秒）时再按右，
+        // 旧实现返回一个原地落点、气泡 2 秒后 seek 回原地；现在返回 null 并清掉
+        // 已失效的待定落点；落点与播头不同时仍是有效预览（见上一个单测的按左回 0 秒）
+        val controller = SeekPreviewController(durationMs = 60_000)
+        assertEquals(59_000L, controller.nudge(55_000, 1))
+        assertTrue(controller.hasPending)
+        assertNull(controller.nudge(59_000, 1))
+        assertFalse(controller.hasPending)
+        // 清掉后可重新起步
+        assertEquals(59_000L, controller.nudge(55_000, 1))
+    }
 }

@@ -44,7 +44,15 @@ class SeekPreviewController(private val durationMs: Long) {
         val target = (base + direction * STEP_MS).coerceIn(0L, maxTargetMs)
         // P2-12：无待定落点、一步后仍在原地时不产生预览（播头按左得 00:00、
         // 片尾前按右也顶在原地）：否则气泡显示一个无意义的落点，2 秒后还 seek 回原地。
-        if (pending == null && target == currentMs) return null
+        // A8-P2-4：防呆只覆盖了 pending==null 的情形——待定落点已顶在播头处
+        // （pending == target == currentMs，例如落点 59 秒、播头也走到 59 秒时再按右），
+        // 旧实现会返回一个原地落点、气泡 2 秒后 seek 回原地；此时也返回 null 并清掉
+        // 已失效的待定落点。pending 与 target 不同时仍返回 target（例如落点 10 秒、
+        // 播头在 0 秒时按左回 0 秒是有效预览，见单测）。
+        if (target == currentMs && (pending == null || pending == target)) {
+            cancel()
+            return null
+        }
         pendingTargetMs = target
         return target
     }

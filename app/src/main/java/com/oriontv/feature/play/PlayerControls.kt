@@ -64,8 +64,9 @@ fun PlayerControls(
     posterUrl: String = "",
     showSkipIntro: Boolean,
     showNextEpisode: Boolean,
-    /** A6-P1-1：是否已播完——播完态 isPlaying=false，倒计时条件是
-     * “正在播或已播完”，否则预告卡 3 秒倒计时永久冻结。 */
+    /** A8-P1-1：是否已播完——倒计时只在播完态走（见 shouldTickNextEpisodeCountdown）：
+     * 预告卡在剩 10 秒时就出现，旧条件“正在播或已播完”让倒计时边播边走，
+     * 约 3 秒后自动切集、本集最后约 7 秒被吞掉；只在 STATE_ENDED 后才走 3 秒。 */
     isEnded: Boolean = false,
     /** 抽屉是否打开（P2-1）：抽屉打开时下一集倒计时暂停，不在用户挑集时强制切集。 */
     drawerOpen: Boolean = false,
@@ -91,15 +92,13 @@ fun PlayerControls(
     modifier: Modifier = Modifier,
 ) {
     var countdown by remember(showNextEpisode) { mutableIntStateOf(3) }
-    // P2-1（第 6 轮 P1-1 修订）：倒计时在暂停或抽屉打开时冻结——每秒只在
-    // “正在播（或已自然播完）且抽屉关闭”时减 1；暂停期间 / 用户在抽屉里挑集时
-    // 不强制切集。旧谓词只看 isPlaying：自然播完时 isPlaying 恒 false，
-    // 倒计时永久冻结、预告卡“3 秒后自动播放”落空。
+    // A8-P1-1（第 8 轮，取代 A6-P1-1 的“正在播或已播完”）：倒计时只在播完态走——
+    // 预告卡在剩 10 秒时就出现，旧谓词让倒计时边播边走，约 3 秒后自动切集，
+    // 本集最后约 7 秒被吞掉；现在播完前倒计时冻结在 3 秒，STATE_ENDED 后才走 3 秒切集。
+    // 暂停期间 / 抽屉打开时同样冻结，不在用户挑集/暂停时强制切集。
     // LaunchedEffect 的 key 含 isPlaying、isEnded 与 drawerOpen：
     // 状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
     // 保留当前值，不会重置回 3；预告关闭（showNextEpisode 变 false）时直接返回。
-    // A6-P1-1：播完态（STATE_ENDED，isPlaying=false）倒计时也要走，否则预告卡
-    // 永远停在“3 秒后自动播放”——条件是“正在播或已播完”。
     LaunchedEffect(showNextEpisode, isPlaying, isEnded, drawerOpen) {
         if (showNextEpisode) {
             while (countdown > 0) {
@@ -306,24 +305,17 @@ private fun SeekableProgressBar(
 }
 
 /**
- * 下一集倒计时是否应走一秒（可单测，P2-1）：正在播且抽屉关闭时才减；
- * 暂停期间（用户可能正在看预告文案）或抽屉打开（正在挑集）时冻结，
- * 到点不强制切集。
- * A6-P1-1：调用方传 isPlaying || isEnded——播完态（STATE_ENDED）下
- * isPlaying=false，但倒计时也要走，否则预告卡永久冻结。
- */
-internal fun shouldTickNextEpisodeCountdown(isPlaying: Boolean, drawerOpen: Boolean): Boolean =
-    shouldTickNextEpisodeCountdown(isPlaying = isPlaying, isEnded = false, drawerOpen = drawerOpen)
-
-/**
- * 下一集倒计时是否应走一秒（三参版，可单测，A6-P1-1）：正在播或已播完、
- * 且抽屉关闭时才减；暂停（未播完）或抽屉打开时冻结。
+ * 下一集倒计时是否应走一秒（三参版，可单测，A8-P1-1）：只在已播完、
+ * 且抽屉关闭时才减；正在播（预告卡已在剩 10 秒时出现）、暂停（未播完）
+ * 或抽屉打开时冻结。旧条件“正在播或已播完”会让倒计时边播边走、
+ * 约 3 秒后自动切集，吞掉本集最后约 7 秒。
+ * A6-P1-1 的两参版已删：无播完态信息时谓词恒为 false，留着是陷阱。
  */
 internal fun shouldTickNextEpisodeCountdown(
     isPlaying: Boolean,
     isEnded: Boolean,
     drawerOpen: Boolean,
-): Boolean = (isPlaying || isEnded) && !drawerOpen
+): Boolean = isEnded && !drawerOpen
 
 /**
  * 快进预览气泡文案（可单测，P2-1）：方向 + 目标时间。
