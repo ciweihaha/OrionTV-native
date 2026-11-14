@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -122,6 +123,49 @@ internal fun shouldInterceptSeekKeys(
 ): Boolean = controlsShown && !drawerOpen && !focusOnControls
 
 /**
+ * 抽屉焦点 containment 是否应在预览阶段消费该 KeyDown（可单测，C8-P1-2，
+ * 与直播面板 C7-P1-1 同类、播放抽屉漏了）：抽屉打开时，左/下键在抽屉边缘
+ * 会把焦点送到被遮罩盖住的控制条按钮上；只在边缘时消费，抽屉内移动放行——
+ * 照直播面板那样 blanket 消费左键是错的：选集/倍速是多列网格，左/下是
+ * 网格内移动，拦掉会断掉挑集。右/上键不拦：抽屉在右缘，上方无可聚焦项。
+ * @param leftEdge 焦点在抽屉当前项是否处于最左列（纵列表恒为真）
+ * @param bottomEdge 焦点在抽屉当前项是否处于最末行
+ */
+internal fun shouldContainPlayDrawerFocusKey(
+    drawerOpen: Boolean,
+    key: Key,
+    leftEdge: Boolean,
+    bottomEdge: Boolean,
+): Boolean = drawerOpen && ((key == Key.DirectionLeft && leftEdge) ||
+    (key == Key.DirectionDown && bottomEdge))
+
+/**
+ * 抽屉网格项的焦点是否在边缘（可单测，C8-P1-2）：选集 4 列、倍速 3 列。
+ * @param indexInPage 项在当前页内的下标（0 起）
+ * @param columns 列数
+ * @param count 当前页总项数
+ */
+internal fun drawerGridFocusEdges(
+    indexInPage: Int,
+    columns: Int,
+    count: Int,
+): Pair<Boolean, Boolean> {
+    if (count <= 0) return true to false
+    val index = indexInPage.coerceIn(0, count - 1)
+    val lastRowStart = ((count - 1) / columns) * columns
+    return (index % columns == 0) to (index >= lastRowStart)
+}
+
+/**
+ * 抽屉纵列表项的焦点是否在边缘（可单测，C8-P1-2）：换源是纵列表，
+ * 左键永远无列表内移动（恒为左缘），下键只在末项是底缘。
+ */
+internal fun drawerListFocusEdges(index: Int, count: Int): Pair<Boolean, Boolean> {
+    if (count <= 0) return true to false
+    return true to (index.coerceIn(0, count - 1) >= count - 1)
+}
+
+/**
  * 播放页（ui-design.md §5.3）：
  * 全屏视频（Media3 PlayerView）；OK/方向键唤出控制条，5 秒无操作自动隐藏；
  * 左右键移动落点预览（T6/T7：10 秒一步，OK 提交，2 秒无操作自动提交），
@@ -170,6 +214,13 @@ fun PlayScreen(
     // 播放错误页“重试”按钮的焦点：错误出现时默认落到它（P2-3，与直播失败页一致）。
     val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
+    // C8-P2-3：错误在抽屉打开时出现，先关抽屉、等抽屉关了再落焦点——
+    // 直接落焦会把焦点抢到遮罩下的“重试”按钮上；抽屉关闭 effect 见下。
+    var errorPendingAfterDrawerClose by remember { mutableStateOf(false) }
+    // C8-P1-2：抽屉内当前焦点项是否在左缘/底缘（各抽屉内容上报，见下）——
+    // 根部预览拦截只在边缘时消费左/下键，抽屉内移动放行。
+    var drawerLeftEdgeFocused by remember { mutableStateOf(false) }
+    var drawerBottomEdgeFocused by remember { mutableStateOf(false) }
 
     // A6-P2-9（加固）：key 含集号与起点——同一回栈项复用换集时 effect 重跑，
     // init() 的同键分支按新集号开播，不丢参数。
@@ -242,11 +293,17 @@ fun PlayScreen(
     LaunchedEffect(uiState.error) {
         if (uiState.error != null) {
             hadError = true
-            if (!errorRetryRequester.requestFocusWithRetry()) {
+            // C8-P2-3：错误在抽屉打开时出现不直接落焦——“重试”按钮在遮罩下，
+            // 焦点会被抢过去；先关抽屉，抽屉关闭 effect 再把焦点落到“重试”。
+            if (uiState.drawer != null) {
+                errorPendingAfterDrawerClose = true
+                viewModel.openDrawer(null)
+            } else if (!errorRetryRequester.requestFocusWithRetry()) {
                 rootRequester.requestFocus()
             }
         } else if (hadError) {
             hadError = false
+            errorPendingAfterDrawerClose = false
             if (!controlsFirstButtonRequester.requestFocus()) rootRequester.requestFocus()
         }
     }
@@ -269,8 +326,18 @@ fun PlayScreen(
             previewTargetMs = -1L
             previewDirection = 0
             previewThumbnail = null
+            // C8-P1-2：边缘态复位，抽屉内容挂载获焦后重新上报；旧抽屉的
+            // 边缘值不能带到新抽屉（例如换源纵列表左缘恒真、选集网格不一定）。
+            drawerLeftEdgeFocused = false
+            drawerBottomEdgeFocused = false
         } else if (wasOpen) {
-            if (!controlsFirstButtonRequester.requestFocusWithRetry()) {
+            // C8-P2-3：抽屉是因错误出现而关的，焦点落到错误页“重试”，不落控制条。
+            if (errorPendingAfterDrawerClose && uiState.error != null) {
+                errorPendingAfterDrawerClose = false
+                if (!errorRetryRequester.requestFocusWithRetry()) {
+                    rootRequester.requestFocus()
+                }
+            } else if (!controlsFirstButtonRequester.requestFocusWithRetry()) {
                 rootRequester.requestFocus()
             }
         }
@@ -367,6 +434,19 @@ fun PlayScreen(
             .focusRequester(rootRequester)
             .onFocusChanged { rootFocused = it.isFocused }
             .onPreviewKeyEvent { event ->
+                // C8-P1-2：抽屉打开时焦点 containment——左/下键在抽屉边缘会把
+                // 焦点送到被遮罩盖住的控制条按钮上；只在边缘时消费，抽屉内
+                // 移动放行（见 shouldContainPlayDrawerFocusKey）。
+                if (event.type == KeyEventType.KeyDown &&
+                    shouldContainPlayDrawerFocusKey(
+                        uiState.drawer != null,
+                        event.key,
+                        drawerLeftEdgeFocused,
+                        drawerBottomEdgeFocused,
+                    )
+                ) {
+                    return@onPreviewKeyEvent true
+                }
                 // P1-2：控制条可见、抽屉关闭、焦点在根部时左/右恒为快进预览——
                 // 在预览（隧道）阶段拦截，焦点移动收不到左/右 KeyDown。
                 // P1-C/P2-10：重复 KeyDown 也拦截并步进（长按连续快进，每次 10 秒、
@@ -668,6 +748,10 @@ fun PlayScreen(
                     totalEpisodes = uiState.current?.episodes?.size ?: 0,
                     currentEpisode = uiState.episodeIndex,
                     onSelect = { viewModel.selectEpisode(it) },
+                    onFocusEdgeChange = { left, bottom ->
+                        drawerLeftEdgeFocused = left
+                        drawerBottomEdgeFocused = bottom
+                    },
                 )
             }
             PlayDrawer.SOURCES -> PlayDrawerPanel(title = "换源") {
@@ -676,12 +760,20 @@ fun PlayScreen(
                     currentSource = uiState.current?.source.orEmpty(),
                     failedSources = uiState.failedSources,
                     onSelect = { viewModel.selectSource(it) },
+                    onFocusEdgeChange = { left, bottom ->
+                        drawerLeftEdgeFocused = left
+                        drawerBottomEdgeFocused = bottom
+                    },
                 )
             }
             PlayDrawer.SPEED -> PlayDrawerPanel(title = "倍速") {
                 SpeedDrawerContent(
                     currentRate = uiState.playbackRate,
                     onSelect = { viewModel.setPlaybackSpeed(it) },
+                    onFocusEdgeChange = { left, bottom ->
+                        drawerLeftEdgeFocused = left
+                        drawerBottomEdgeFocused = bottom
+                    },
                 )
             }
             null -> Unit
@@ -724,6 +816,8 @@ private fun EpisodeDrawerContent(
     totalEpisodes: Int,
     currentEpisode: Int,
     onSelect: (Int) -> Unit,
+    /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
+    onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
 ) {
     val currentRequester = remember { FocusRequester() }
     val groups = DetailSearchLogic.episodeGroups(totalEpisodes)
@@ -749,10 +843,15 @@ private fun EpisodeDrawerContent(
             ) {
                 items(groups.size) { g ->
                     val (start, end) = groups[g]
+                    // C8-P1-2：分组行左缘是首个 chip；下键回到选集网格，不算底缘。
+                    val (groupLeftEdge, _) = drawerListFocusEdges(g, groups.size)
                     CategoryChip(
                         text = "$start-$end",
                         selected = selectedGroup == g,
                         onClick = { selectedGroup = g },
+                        modifier = Modifier.onFocusChanged {
+                            if (it.isFocused) onFocusEdgeChange(groupLeftEdge, false)
+                        },
                     )
                 }
             }
@@ -768,14 +867,23 @@ private fun EpisodeDrawerContent(
         ) {
             items((groupStart..groupEnd).toList()) { ep ->
                 val epIndex = ep - 1
+                // C8-P1-2：网格边缘上报——左缘（首列）按左、下缘（末行）按下会把
+                // 焦点送到遮罩下的控制条按钮，根部预览拦截只在边缘时消费。
+                val (gridLeftEdge, gridBottomEdge) = drawerGridFocusEdges(
+                    indexInPage = ep - groupStart,
+                    columns = 4,
+                    count = groupEnd - groupStart + 1,
+                )
                 CategoryChip(
                     text = "第 $ep 集",
                     selected = currentEpisode == epIndex,
                     onClick = { onSelect(epIndex) },
-                    modifier = if (currentEpisode == epIndex) {
+                    modifier = (if (currentEpisode == epIndex) {
                         Modifier.preferredFocus(currentRequester)
                     } else {
                         Modifier
+                    }).onFocusChanged {
+                        if (it.isFocused) onFocusEdgeChange(gridLeftEdge, gridBottomEdge)
                     },
                 )
             }
@@ -789,21 +897,27 @@ private fun SourceDrawerContent(
     currentSource: String,
     failedSources: Set<String>,
     onSelect: (String) -> Unit,
+    /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
+    onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
 ) {
     val currentRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { currentRequester.requestFocus() }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        sources.forEach { (src, srcName) ->
+        sources.forEachIndexed { index, (src, srcName) ->
             val failed = src in failedSources
+            // C8-P1-2：纵列表左键永远无列表内移动（恒为左缘），下键只在末项是底缘。
+            val (listLeftEdge, listBottomEdge) = drawerListFocusEdges(index, sources.size)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CategoryChip(
                     text = srcName + if (failed) "（失效）" else "",
                     selected = currentSource == src,
                     onClick = { onSelect(src) },
-                    modifier = if (currentSource == src) {
+                    modifier = (if (currentSource == src) {
                         Modifier.preferredFocus(currentRequester)
                     } else {
                         Modifier
+                    }).onFocusChanged {
+                        if (it.isFocused) onFocusEdgeChange(listLeftEdge, listBottomEdge)
                     },
                 )
             }
@@ -820,6 +934,8 @@ private val SPEED_OPTIONS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
 private fun SpeedDrawerContent(
     currentRate: Float,
     onSelect: (Float) -> Unit,
+    /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
+    onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
 ) {
     val currentRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { currentRequester.requestFocus() }
@@ -829,15 +945,23 @@ private fun SpeedDrawerContent(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        items(SPEED_OPTIONS) { rate ->
+        itemsIndexed(SPEED_OPTIONS) { index, rate ->
+            // C8-P1-2：3 列网格边缘上报（与选集网格同款）。
+            val (speedLeftEdge, speedBottomEdge) = drawerGridFocusEdges(
+                indexInPage = index,
+                columns = 3,
+                count = SPEED_OPTIONS.size,
+            )
             CategoryChip(
                 text = "${rate}×",
                 selected = currentRate == rate,
                 onClick = { onSelect(rate) },
-                modifier = if (currentRate == rate) {
+                modifier = (if (currentRate == rate) {
                     Modifier.preferredFocus(currentRequester)
                 } else {
                     Modifier
+                }).onFocusChanged {
+                    if (it.isFocused) onFocusEdgeChange(speedLeftEdge, speedBottomEdge)
                 },
             )
         }

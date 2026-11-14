@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.oriontv.core.util.AppLog
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.api.SearchResult
@@ -151,7 +152,11 @@ class PlayViewModel @Inject constructor(
         routePositionMs = positionMs
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
         viewModelScope.launch {
-            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+            // A8-P2-3：DataStore 读失败会让协程未捕获崩溃；失败即保持默认值
+            //（MainActivity 另有持续跟新的缓存值兜底，见 A4-P2-5）。
+            runCatching { settingsRepository.currentBackgroundPlayback() }
+                .onSuccess { playerManager.backgroundPlaybackEnabled = it }
+                .onFailure { AppLog.w("PlayViewModel", "后台播放开关读入失败，用默认值：${it.message}") }
         }
         _uiState.update {
             it.copy(
@@ -199,12 +204,21 @@ class PlayViewModel @Inject constructor(
 
     /** 开播时读一次开关（autoSkipIntro / 片头时长 / 下一集预告），轮询只读缓存。 */
     private suspend fun loadCachedSettings() {
-        cachedAutoSkipIntro = settingsRepository.autoSkipIntro.first()
-        cachedIntroSkipSeconds = settingsRepository.introSkipSeconds.first()
-        cachedNextEpisodeOverlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
-        // A4-P2-5：后台播放开关也在这里同步重读（设置页返回/切回前台时刷新），
-        // 不只靠进页时那一次异步读入。
-        playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+        // A8-P2-3：四处 DataStore 读任一失败都会让调用方协程未捕获崩溃
+        //（init 的 launch、refreshCachedSettings、startEpisode）；失败即
+        // 保留旧缓存值、不崩溃——开关类设置缺省即默认行为。
+        try {
+            cachedAutoSkipIntro = settingsRepository.autoSkipIntro.first()
+            cachedIntroSkipSeconds = settingsRepository.introSkipSeconds.first()
+            cachedNextEpisodeOverlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
+            // A4-P2-5：后台播放开关也在这里同步重读（设置页返回/切回前台时刷新），
+            // 不只靠进页时那一次异步读入。
+            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.w("PlayViewModel", "开播设置缓存刷新失败，沿用旧值：${e.message}")
+        }
     }
 
     /** A5-P1-5：开播的唯一入口——取消旧开播再起新的（旧开播在挂起点被取消；
@@ -216,7 +230,16 @@ class PlayViewModel @Inject constructor(
     ) {
         startEpisodeJob?.cancel()
         startEpisodeJob = viewModelScope.launch {
-            startEpisode(result, episodeIndex, startPositionMs)
+            try {
+                startEpisode(result, episodeIndex, startPositionMs)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A8-P2-3：开播挂起读数（断点/倍速/设置）失败会让协程未捕获崩溃；
+                // 落错误态、用户可重试，不崩溃。
+                AppLog.w("PlayViewModel", "开播失败：${e.message}")
+                _uiState.update { it.copy(isLoading = false, error = "开播失败，请重试") }
+            }
         }
     }
 
@@ -590,19 +613,28 @@ class PlayViewModel @Inject constructor(
         val position = playerManager.currentPositionMs
         if (position <= 0) return
         viewModelScope.launch {
-            if (markedIntroEndMs != null) {
-                markedIntroEndMs = null
-                playerSettingsRepository.update(currentKey) { it.copy(introEndTime = null) }
-                val fallback = cachedIntroSkipSeconds * 1000L
-                _uiState.update {
-                    it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = nextToastEvent("已清除片头标记"))
+            // A8-P2-3：DataStore 写失败会让协程未捕获崩溃；失败即提示、不崩溃，
+            // 内存里的 markedIntroEndMs 保持旧值（不谎报已标记）。
+            try {
+                if (markedIntroEndMs != null) {
+                    playerSettingsRepository.update(currentKey) { it.copy(introEndTime = null) }
+                    markedIntroEndMs = null
+                    val fallback = cachedIntroSkipSeconds * 1000L
+                    _uiState.update {
+                        it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = nextToastEvent("已清除片头标记"))
+                    }
+                } else {
+                    playerSettingsRepository.update(currentKey) { it.copy(introEndTime = position) }
+                    markedIntroEndMs = position
+                    _uiState.update {
+                        it.copy(introEndMs = position, markedIntroEndMs = position, toast = nextToastEvent("片头已标记为 ${formatTime(position)}"))
+                    }
                 }
-            } else {
-                markedIntroEndMs = position
-                playerSettingsRepository.update(currentKey) { it.copy(introEndTime = position) }
-                _uiState.update {
-                    it.copy(introEndMs = position, markedIntroEndMs = position, toast = nextToastEvent("片头已标记为 ${formatTime(position)}"))
-                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "片头标记保存失败：${e.message}")
+                _uiState.update { it.copy(toast = nextToastEvent("片头标记保存失败，请重试")) }
             }
         }
     }
@@ -619,14 +651,22 @@ class PlayViewModel @Inject constructor(
         val duration = playerManager.durationMs
         if (position <= 0 || duration <= 0) return
         viewModelScope.launch {
-            if (_uiState.value.outroStartMs != null) {
-                playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = null) }
-                _uiState.update { it.copy(outroStartMs = null, toast = nextToastEvent("已清除片尾标记")) }
-            } else {
-                playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = position) }
-                _uiState.update {
-                    it.copy(outroStartMs = position, toast = nextToastEvent("片尾已标记为 ${formatTime(position)}"))
+            // A8-P2-3：同 markIntroEnd，DataStore 写失败提示、不崩溃。
+            try {
+                if (_uiState.value.outroStartMs != null) {
+                    playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = null) }
+                    _uiState.update { it.copy(outroStartMs = null, toast = nextToastEvent("已清除片尾标记")) }
+                } else {
+                    playerSettingsRepository.update(currentKey) { it.copy(outroStartTime = position) }
+                    _uiState.update {
+                        it.copy(outroStartMs = position, toast = nextToastEvent("片尾已标记为 ${formatTime(position)}"))
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "片尾标记保存失败：${e.message}")
+                _uiState.update { it.copy(toast = nextToastEvent("片尾标记保存失败，请重试")) }
             }
         }
     }
@@ -684,8 +724,16 @@ class PlayViewModel @Inject constructor(
         _uiState.update { it.copy(playbackRate = rate, drawer = null) }
         // 倍速记忆关掉时只改当次播放，不持久化（阶段 4）。
         viewModelScope.launch {
-            if (settingsRepository.currentSpeedMemory()) {
-                playerSettingsRepository.update(currentKey) { it.copy(playbackRate = rate) }
+            // A8-P2-3：DataStore 读写失败会让协程未捕获崩溃；倍速本身已生效，
+            // 记忆失败只记日志、不打扰用户。
+            try {
+                if (settingsRepository.currentSpeedMemory()) {
+                    playerSettingsRepository.update(currentKey) { it.copy(playbackRate = rate) }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "倍速记忆保存失败：${e.message}")
             }
         }
     }
@@ -738,21 +786,31 @@ class PlayViewModel @Inject constructor(
             it.copy(error = null, autoSwitchAttempts = 0, failedSources = emptySet(), isLoading = true)
         }
         viewModelScope.launch {
-            if (current != null) {
-                launchStartEpisode(current, state.episodeIndex, state.positionMs.takeIf { it > 0 })
-            } else {
-                initialised = false
-                // B5-P2-1：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
-                // 与 FavoritesScreen/HomeModels 一致；之前手动拆不反转义，
-                // 段内含 %2B/%25 的键再进 recordKey 会二次转义、播错集。
-                val (source, id) = MoonTvApi.splitKey(currentKey)
-                init(
-                    source,
-                    id,
-                    state.title,
-                    state.episodeIndex,
-                    state.positionMs,
-                )
+            // A8-P2-3：init() 的挂起读数失败会让协程未捕获崩溃；落错误态、
+            // 用户可再重试，不崩溃。launchStartEpisode 自身已包 try/catch，
+            // 这里只守 init() 那条分支。
+            try {
+                if (current != null) {
+                    launchStartEpisode(current, state.episodeIndex, state.positionMs.takeIf { it > 0 })
+                } else {
+                    initialised = false
+                    // B5-P2-1：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
+                    // 与 FavoritesScreen/HomeModels 一致；之前手动拆不反转义，
+                    // 段内含 %2B/%25 的键再进 recordKey 会二次转义、播错集。
+                    val (source, id) = MoonTvApi.splitKey(currentKey)
+                    init(
+                        source,
+                        id,
+                        state.title,
+                        state.episodeIndex,
+                        state.positionMs,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "重试开播失败：${e.message}")
+                _uiState.update { it.copy(isLoading = false, error = "重试失败，请检查网络后重试") }
             }
         }
     }
@@ -768,21 +826,29 @@ class PlayViewModel @Inject constructor(
         if (isNearEnd(position, duration)) return
         lastSavedPositionMs = position
         scope.launch {
-            if (settingsRepository.incognitoMode.first()) return@launch
-            playRecordsRepository.save(
-                currentKey,
-                PlayRecord(
-                    title = current.title,
-                    source_name = current.source_name,
-                    cover = current.poster,
-                    index = state.episodeIndex,
-                    total_episodes = current.episodes.size,
-                    play_time = position / 1000,
-                    total_time = duration / 1000,
-                    save_time = System.currentTimeMillis(),
-                    year = current.year,
-                ),
-            )
+            // A8-P2-3：无痕判断与断点保存（服务端/本地写）失败会让协程未捕获
+            // 崩溃；断点保存是尽力而为，失败只记日志、下次保存再试，不崩溃。
+            try {
+                if (settingsRepository.incognitoMode.first()) return@launch
+                playRecordsRepository.save(
+                    currentKey,
+                    PlayRecord(
+                        title = current.title,
+                        source_name = current.source_name,
+                        cover = current.poster,
+                        index = state.episodeIndex,
+                        total_episodes = current.episodes.size,
+                        play_time = position / 1000,
+                        total_time = duration / 1000,
+                        save_time = System.currentTimeMillis(),
+                        year = current.year,
+                    ),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "断点保存失败：${e.message}")
+            }
         }
     }
 
