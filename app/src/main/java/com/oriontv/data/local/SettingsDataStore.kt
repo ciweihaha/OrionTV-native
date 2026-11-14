@@ -40,6 +40,10 @@ class SettingsDataStore @Inject constructor(
         val BACKGROUND_PLAYBACK = booleanPreferencesKey("backgroundPlayback")
         val UPDATE_LAST_CHECK_TIME = longPreferencesKey(StorageKeys.UPDATE_LAST_CHECK_TIME)
         val UPDATE_SKIP_VERSION = stringPreferencesKey(StorageKeys.UPDATE_SKIP_VERSION)
+        /** 仅登录标记位，"1" 或 ""，不是 token（plan §5.4）。 */
+        val AUTH_COOKIES = stringPreferencesKey(StorageKeys.AUTH_COOKIES)
+        /** server-config 的 StorageType 缓存："localstorage" | "redis"。 */
+        val STORAGE_TYPE = stringPreferencesKey("storageType")
     }
 
     val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL].orEmpty() }
@@ -52,6 +56,16 @@ class SettingsDataStore @Inject constructor(
     val backgroundPlayback: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.BACKGROUND_PLAYBACK] ?: false }
     val updateLastCheckTime: Flow<Long> = context.settingsDataStore.data.map { it[Keys.UPDATE_LAST_CHECK_TIME] ?: 0L }
     val updateSkipVersion: Flow<String> = context.settingsDataStore.data.map { it[Keys.UPDATE_SKIP_VERSION].orEmpty() }
+    val authCookies: Flow<String> = context.settingsDataStore.data.map { it[Keys.AUTH_COOKIES].orEmpty() }
+    val storageType: Flow<String> = context.settingsDataStore.data.map { it[Keys.STORAGE_TYPE].orEmpty() }
+
+    suspend fun setAuthCookies(value: String) {
+        context.settingsDataStore.edit { it[Keys.AUTH_COOKIES] = value }
+    }
+
+    suspend fun setStorageType(value: String) {
+        context.settingsDataStore.edit { it[Keys.STORAGE_TYPE] = value }
+    }
 
     suspend fun setApiBaseUrl(value: String) {
         context.settingsDataStore.edit { it[Keys.API_BASE_URL] = value }

@@ -46,6 +46,19 @@ data class SearchHistoryEntity(
     val saveTime: Long,
 )
 
+/**
+ * 播放器个性化设置（plan §5.4 mytv_player_settings 的单条值，本地存储）：
+ * 键格式 `${source}+${id}`；只存自定义过的条目；上限 200 条，超限按插入顺序淘汰最旧。
+ */
+@Entity(tableName = "player_settings")
+data class PlayerSettingEntity(
+    @PrimaryKey val key: String,
+    val introEndTimeMs: Long? = null,
+    val outroStartTimeMs: Long? = null,
+    val playbackRate: Float? = null,
+    val saveTime: Long,
+)
+
 @Dao
 interface FavoriteDao {
     @Query("SELECT * FROM favorites ORDER BY saveTime DESC")
@@ -91,6 +104,25 @@ interface SearchHistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: SearchHistoryEntity)
 
+    @Query("DELETE FROM search_history WHERE keyword = :keyword")
+    suspend fun deleteByKeyword(keyword: String)
+
     @Query("DELETE FROM search_history")
     suspend fun clearAll()
+}
+
+@Dao
+interface PlayerSettingDao {
+    @Query("SELECT * FROM player_settings WHERE `key` = :key LIMIT 1")
+    suspend fun getByKey(key: String): PlayerSettingEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: PlayerSettingEntity)
+
+    @Query("DELETE FROM player_settings WHERE `key` = :key")
+    suspend fun deleteByKey(key: String)
+
+    /** 播放器设置上限 200 条，超限按插入顺序淘汰最旧。 */
+    @Query("DELETE FROM player_settings WHERE `key` NOT IN (SELECT `key` FROM player_settings ORDER BY saveTime DESC LIMIT 200)")
+    suspend fun trimToLatest200()
 }

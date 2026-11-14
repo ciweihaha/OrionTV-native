@@ -18,6 +18,7 @@ hilt = "2.52"
 coroutines = "1.9.0"
 nanohttpd = "2.3.1"
 zxing = "3.5.3"
+securityCrypto = "1.1.0-alpha06"
 junit = "4.13.2"
 mockk = "1.13.13"
 
@@ -58,6 +59,8 @@ androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navig
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+# 登录凭据安全存储（EncryptedSharedPreferences / Keystore），绝不明文落盘
+security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 

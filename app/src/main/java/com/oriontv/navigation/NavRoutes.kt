@@ -12,7 +12,7 @@ sealed interface OrionRoute {
     data object Live : OrionRoute
 
     @Serializable
-    data class Detail(val source: String, val id: String) : OrionRoute
+    data class Detail(val source: String, val id: String, val title: String = "") : OrionRoute
 
     @Serializable
     data class Play(

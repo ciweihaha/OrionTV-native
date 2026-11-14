@@ -21,7 +21,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.tv.material3.Text
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -74,7 +77,7 @@ fun VideoCard(
                     .background(OrionColors.Surface),
             ) {
                 AsyncImage(
-                    model = posterUrl,
+                    model = posterImageRequest(posterUrl),
                     contentDescription = title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.matchParentSize(),
@@ -129,4 +132,23 @@ fun VideoCard(
             )
         }
     }
+}
+
+/**
+ * 海报请求：豆瓣图床（*.doubanio.com）有防盗链，必须带
+ * `Referer: https://movie.douban.com/`，否则 418（plan §5.6）。
+ * 其它图床原样直连，不加请求头。
+ */
+@Composable
+fun posterImageRequest(url: String): ImageRequest {
+    val context = LocalContext.current
+    return ImageRequest.Builder(context)
+        .data(url)
+        .apply {
+            val host = runCatching { java.net.URL(url).host.lowercase() }.getOrDefault("")
+            if (host.endsWith(".doubanio.com")) {
+                addHeader("Referer", "https://movie.douban.com/")
+            }
+        }
+        .build()
 }

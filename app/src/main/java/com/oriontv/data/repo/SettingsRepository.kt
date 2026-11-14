@@ -1,5 +1,7 @@
 package com.oriontv.data.repo
 
+import com.oriontv.data.api.MoonTvApi
+import com.oriontv.data.api.ServerConfig
 import com.oriontv.data.local.SettingsDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -7,12 +9,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 设置仓库：双存储模式分支（plan §4.3）由 M1 补齐——按 server-config 的
- * StorageType 决定收藏/记录走本地还是服务端；播放器个性化设置永远只存本地。
+ * 设置仓库：双存储模式分支（plan §4.3）——按 server-config 的 StorageType
+ * 决定收藏/记录/搜索历史走本地还是服务端；播放器个性化设置永远只存本地。
+ * server-config 拉取带 30 秒失败缓存（RN authStore 的教训：服务器不可达时
+ * 别每次都串行重试 3 次）与地址变化丢弃（旧请求结果不覆盖新地址）。
  */
 @Singleton
 class SettingsRepository @Inject constructor(
     private val settingsDataStore: SettingsDataStore,
+    private val moonTvApi: MoonTvApi,
 ) {
     val apiBaseUrl: Flow<String> = settingsDataStore.apiBaseUrl
     val m3uUrl: Flow<String> = settingsDataStore.m3uUrl
@@ -22,10 +27,51 @@ class SettingsRepository @Inject constructor(
     val nextEpisodeOverlayEnabled: Flow<Boolean> = settingsDataStore.nextEpisodeOverlayEnabled
     val incognitoMode: Flow<Boolean> = settingsDataStore.incognitoMode
     val backgroundPlayback: Flow<Boolean> = settingsDataStore.backgroundPlayback
+    val authCookies: Flow<String> = settingsDataStore.authCookies
+    /** server-config 的 StorageType 缓存："" 未拉取、"localstorage" | "redis"。 */
+    val storageType: Flow<String> = settingsDataStore.storageType
 
     suspend fun currentApiBaseUrl(): String = apiBaseUrl.first()
     suspend fun currentM3uUrl(): String = m3uUrl.first()
+    suspend fun currentStorageType(): String = storageType.first()
+    suspend fun currentAuthCookies(): String = authCookies.first()
 
+    /** 是否配了服务器地址（首页空态门控用）。 */
+    suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
+
+    /** 是否走服务端存储（redis 且配了地址）；否则走本地 Room。 */
+    suspend fun useServerStorage(): Boolean =
+        currentStorageType() == "redis" && currentApiBaseUrl().isNotBlank()
+
+    private var lastConfigFailureAtMs: Long = 0L
+    private var lastConfigFailureUrl: String = ""
+
+    /**
+     * 拉取 server-config 并缓存 StorageType。失败时 30 秒内不再重试；
+     * 拉取期间地址变了则丢弃旧结果。
+     */
+    suspend fun refreshServerConfig(): ServerConfig? {
+        val baseUrl = currentApiBaseUrl()
+        if (baseUrl.isBlank()) return null
+        if (baseUrl == lastConfigFailureUrl &&
+            System.currentTimeMillis() - lastConfigFailureAtMs < 30_000L
+        ) {
+            return null
+        }
+        return try {
+            val config = moonTvApi.getServerConfig(baseUrl)
+            if (currentApiBaseUrl() != baseUrl) return null // 地址已变，丢弃旧结果
+            lastConfigFailureAtMs = 0L
+            config.StorageType?.let { settingsDataStore.setStorageType(it) }
+            config
+        } catch (_: Exception) {
+            lastConfigFailureAtMs = System.currentTimeMillis()
+            lastConfigFailureUrl = baseUrl
+            null
+        }
+    }
+
+    suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
     suspend fun setRemoteInputEnabled(value: Boolean) = settingsDataStore.setRemoteInputEnabled(value)

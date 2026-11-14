@@ -140,6 +140,9 @@ dependencies {
     implementation(libs.nanohttpd)
     implementation(libs.zxing.core)
 
+    // 登录凭据安全存储（EncryptedSharedPreferences）
+    implementation(libs.security.crypto)
+
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.android)
