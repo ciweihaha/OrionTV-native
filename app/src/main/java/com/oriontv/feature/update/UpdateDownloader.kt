@@ -13,6 +13,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * APK 下载器（plan §5.1/§5.5，RN updateService.ts 对照）：
@@ -52,6 +53,8 @@ class UpdateDownloader @Inject constructor(
                 val len = response.header("Content-Length")?.toLongOrNull() ?: return@withContext null
                 len
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -75,7 +78,9 @@ class UpdateDownloader @Inject constructor(
             )
         }
         var lastError: Exception? = null
-        repeat(MAX_RETRIES) { attempt ->
+        // MAX_RETRIES 是“重试次数（不含首次）”，共 1 + 3 = 4 次尝试（之前 repeat(MAX_RETRIES)
+        // 只有 3 次尝试、实际只重试 2 次，文案却写“已重试 3 次”，P2-1）。
+        repeat(MAX_RETRIES + 1) { attempt ->
             try {
                 destFile.parentFile?.mkdirs()
                 val request = Request.Builder().url(url).get().build()
@@ -110,10 +115,14 @@ class UpdateDownloader @Inject constructor(
                 // 超限不重试（再下也一样大）。
                 destFile.delete()
                 throw e
+            } catch (e: CancellationException) {
+                // 取消不重试；删掉未下完的残文件。
+                destFile.delete()
+                throw e
             } catch (e: Exception) {
                 lastError = e
                 destFile.delete()
-                if (attempt < MAX_RETRIES - 1) {
+                if (attempt < MAX_RETRIES) {
                     delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
                 }
             }
@@ -125,30 +134,38 @@ class UpdateDownloader @Inject constructor(
         )
     }
 
-    /** 拉取 `<url>.sha256` 的期望值（4KB 上限，超限/失败返回 null）。 */
+    /**
+     * 拉取 `<url>.sha256` 的期望值（4KB 上限，超限/失败返回 null）。
+     * 网络/超时类失败重试 2 次（共 3 次尝试，P1-9）；4xx/超限等确定性失败不重试。
+     */
     suspend fun fetchExpectedSha256(sha256Url: String): String? = withContext(ioDispatcher) {
-        try {
-            val request = Request.Builder().url(sha256Url).get().build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                val body = response.body ?: return@withContext null
-                // 流式限量读：超 4KB 直接判无效，不整包进内存。
-                val bytes = body.byteStream().use { input ->
-                    val buf = ByteArray((MAX_SHA256_FILE_BYTES + 1).toInt())
-                    var read = 0
-                    while (read < buf.size) {
-                        val n = input.read(buf, read, buf.size - read)
-                        if (n < 0) break
-                        read += n
+        repeat(3) { attempt ->
+            try {
+                val request = Request.Builder().url(sha256Url).get().build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val body = response.body ?: return@withContext null
+                    // 流式限量读：超 4KB 直接判无效，不整包进内存。
+                    val bytes = body.byteStream().use { input ->
+                        val buf = ByteArray((MAX_SHA256_FILE_BYTES + 1).toInt())
+                        var read = 0
+                        while (read < buf.size) {
+                            val n = input.read(buf, read, buf.size - read)
+                            if (n < 0) break
+                            read += n
+                        }
+                        buf.copyOf(read)
                     }
-                    buf.copyOf(read)
+                    if (bytes.size > MAX_SHA256_FILE_BYTES) return@withContext null
+                    return@withContext UpdateService.parseSha256File(String(bytes, Charsets.UTF_8))
                 }
-                if (bytes.size > MAX_SHA256_FILE_BYTES) return@withContext null
-                UpdateService.parseSha256File(String(bytes, Charsets.UTF_8))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                if (attempt < 2) delay(1_000L)
             }
-        } catch (_: Exception) {
-            null
         }
+        null
     }
 
     /** 流式算文件 SHA-256（不整包进内存），与期望值比对；不一致返回 false。 */
@@ -170,19 +187,24 @@ class UpdateDownloader @Inject constructor(
         }
     }
 
-    /** 下载 + 校验一步到位：校验失败删文件并抛 [UpdateDownloadException]（不重试）。 */
+    /**
+     * 下载 + 校验一步到位：先取哈希（带重试），再下载，最后校验。
+     * 哈希拿不到就不下载；哈希失败不删已下载文件（P1-9——之前先下载后取哈希，
+     * 取哈希失败还会把刚下好的文件删掉）。校验失败删文件并抛 [UpdateDownloadException]（不重试）。
+     * 校验通过后才清理旧包：新文件计入保留数（P2-15——之前先清后下会多留一个旧包）。
+     */
     suspend fun downloadAndVerify(
         version: String,
         destFile: File,
         onProgress: ((written: Long, total: Long) -> Unit)? = null,
     ): File {
-        val url = UpdateService.downloadUrl(version)
-        downloadApk(url, destFile, onProgress)
         val expected = fetchExpectedSha256(UpdateService.sha256Url(version))
             ?: throw UpdateDownloadException(
                 UpdateError.VerifyFailed,
                 "校验失败：拿不到官方 SHA256，拒绝安装",
-            ).also { destFile.delete() }
+            )
+        val url = UpdateService.downloadUrl(version)
+        downloadApk(url, destFile, onProgress)
         if (!verifySha256(destFile, expected)) {
             destFile.delete()
             throw UpdateDownloadException(
@@ -190,6 +212,7 @@ class UpdateDownloader @Inject constructor(
                 "校验失败：下载文件 SHA256 与官方不一致，拒绝安装",
             )
         }
+        destFile.parentFile?.let { cleanOldApkFiles(it) }
         return destFile
     }
 
