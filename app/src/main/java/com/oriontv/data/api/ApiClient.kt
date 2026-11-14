@@ -111,9 +111,8 @@ object ApiClient {
 class BodyTooLargeException(message: String) : IOException(message)
 
 /**
- * 流式限量读响应体（D-P2-9）：声明 Content-Length 先行拒绝；再流式读，
- * 累计超限立即停（最多缓冲 limit 字节），不整包进内存（服务端谎报小体积时
- * `body.string()` 会把未封顶的体读进内存）。
+ * 流式限量读响应体（D-P2-9）：声明 Content-Length 先行拒绝；再流式读最多 limit+1 字节，
+ * 超限立即停，不整包进内存（服务端谎报小体积时 `body.string()` 会把未封顶的体读进内存）。
  * 体读取超时（SocketTimeoutException）原样抛出，由调用方记熔断/做重试判定。
  */
 internal fun readBodyBytesLimited(response: okhttp3.Response, limitBytes: Long): ByteArray {
@@ -147,13 +146,7 @@ internal suspend fun okhttp3.Call.executeCancellable(): okhttp3.Response =
     suspendCancellableCoroutine { cont ->
         cont.invokeOnCancellation { runCatching { cancel() } }
         try {
-            val response = execute()
-            if (cont.isActive) {
-                cont.resume(response)
-            } else {
-                // 取消与成功返回竞态：resume 会被忽略，顺手关掉 Response，不漏连接。
-                response.close()
-            }
+            cont.resume(execute())
         } catch (e: Exception) {
             if (cont.isCancelled) {
                 cont.resumeWithException(
