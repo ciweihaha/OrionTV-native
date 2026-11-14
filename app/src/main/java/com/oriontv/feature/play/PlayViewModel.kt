@@ -15,6 +15,7 @@ import com.oriontv.data.repo.PlayRecordsRepository
 import com.oriontv.data.repo.PlayerSettingsRepository
 import com.oriontv.data.repo.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -364,7 +365,8 @@ class PlayViewModel @Inject constructor(
     }
 
     fun seekTo(positionMs: Long) {
-        playerManager.seekTo(positionMs.coerceAtLeast(0))
+        val clamped = clampSeekTarget(positionMs, playerManager.durationMs)
+        playerManager.seekTo(clamped)
         _uiState.update { it.copy(positionMs = playerManager.currentPositionMs) }
     }
 
@@ -485,7 +487,7 @@ class PlayViewModel @Inject constructor(
     /** 落点预览缩略图：MediaMetadataRetriever 尽力抓帧，m3u8 抓不到时返回 null（用海报兜底）。 */
     suspend fun grabPreviewFrame(url: String, timeMs: Long): Bitmap? =
         withContext(Dispatchers.IO) {
-            runCatching {
+            try {
                 val retriever = MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(url, mapOf())
@@ -496,7 +498,12 @@ class PlayViewModel @Inject constructor(
                 } finally {
                     retriever.release()
                 }
-            }.getOrNull()
+            } catch (e: CancellationException) {
+                // 取消异常必须重抛：runCatching 吞掉它会让已取消的协程继续跑。
+                throw e
+            } catch (_: Exception) {
+                null
+            }
         }
 
     fun retry() {
@@ -596,6 +603,15 @@ class PlayViewModel @Inject constructor(
         /** 是否临近片尾（可单测）：距片尾不到阈值即视为看完，不存断点。 */
         internal fun isNearEnd(positionMs: Long, durationMs: Long): Boolean =
             durationMs > 0 && positionMs >= durationMs - END_THRESHOLD_MS
+
+        /**
+         * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；
+         * 时长未知（直播/未出时长）时只保底 >= 0。
+         */
+        internal fun clampSeekTarget(positionMs: Long, durationMs: Long): Long {
+            if (durationMs <= 0) return positionMs.coerceAtLeast(0)
+            return positionMs.coerceIn(0L, (durationMs - SeekPreviewController.SEEK_END_MARGIN_MS).coerceAtLeast(0L))
+        }
     }
 }
 

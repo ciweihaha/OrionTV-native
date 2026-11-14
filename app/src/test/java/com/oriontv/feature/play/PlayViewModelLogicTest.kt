@@ -35,4 +35,14 @@ class PlayViewModelLogicTest {
         assertFalse(PlayViewModel.isNearEnd(600_000L, 1_800_000L))
         assertFalse(PlayViewModel.isNearEnd(0L, 0L))
     }
+
+    @Test
+    fun `seek target clamps to one second before duration`() {
+        // P2-7：seekTo 内同样钳制到片尾前 1 秒
+        assertEquals(59_000L, PlayViewModel.clampSeekTarget(60_000L, 60_000L))
+        assertEquals(59_000L, PlayViewModel.clampSeekTarget(120_000L, 60_000L))
+        assertEquals(30_000L, PlayViewModel.clampSeekTarget(30_000L, 60_000L))
+        assertEquals(0L, PlayViewModel.clampSeekTarget(-5_000L, 60_000L))
+        assertEquals(30_000L, PlayViewModel.clampSeekTarget(30_000L, 0L))
+    }
 }

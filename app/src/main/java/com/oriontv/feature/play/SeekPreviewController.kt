@@ -14,6 +14,9 @@ class SeekPreviewController(private val durationMs: Long) {
 
     val hasPending: Boolean get() = pendingTargetMs != null
 
+    /** 快进落点上限：片尾前 1 秒，seek 到正好片尾会立即 STATE_ENDED。 */
+    private val maxTargetMs: Long get() = (durationMs - SEEK_END_MARGIN_MS).coerceAtLeast(0L)
+
     /** 落点移动一步 10 秒，返回新落点。 */
     fun nudge(currentMs: Long, direction: Int): Long {
         val pending = pendingTargetMs
@@ -21,13 +24,13 @@ class SeekPreviewController(private val durationMs: Long) {
         // 钳制值（例如先按左顶到 0，播头又走到 55 秒），从当前播头重新起步；
         // 否则在待定落点上继续累加（连续快进 10 秒一步）。
         val base = if (pending != null &&
-            (pending == 0L || pending == durationMs) && pending != currentMs
+            (pending == 0L || pending == maxTargetMs) && pending != currentMs
         ) {
             currentMs
         } else {
             pending ?: currentMs
         }
-        val target = (base + direction * STEP_MS).coerceIn(0L, durationMs)
+        val target = (base + direction * STEP_MS).coerceIn(0L, maxTargetMs)
         pendingTargetMs = target
         return target
     }
@@ -46,5 +49,8 @@ class SeekPreviewController(private val durationMs: Long) {
     companion object {
         const val STEP_MS = 10_000L
         const val AUTO_COMMIT_MS = 2_000L
+
+        /** 落点离片尾的安全余量：钳制到片尾前 1 秒，免得 seek 到片尾立即 STATE_ENDED。 */
+        const val SEEK_END_MARGIN_MS = 1_000L
     }
 }
