@@ -64,6 +64,20 @@ class SeekPreviewControllerTest {
     }
 
     @Test
+    fun `nudge returns null when already at start or end with no pending target`() {
+        // P2-12：播头按左（落点仍是 0）、片尾前按右（落点仍在原地）不产生预览，
+        // 不会冒一个无意义的 00:00 气泡、2 秒后又 seek 回原地
+        val controller = SeekPreviewController(durationMs = 60_000)
+        assertNull(controller.nudge(0, -1))
+        assertFalse(controller.hasPending)
+        assertNull(controller.nudge(59_000, 1))
+        assertFalse(controller.hasPending)
+        // 正常位置仍可步进；有待定落点时在原地钳制也不算无意义（落点已存在）
+        assertEquals(10_000L, controller.nudge(0, 1))
+        assertEquals(0L, controller.nudge(0, -1))
+    }
+
+    @Test
     fun `reverse past start cancels preview instead of jumping`() {
         // P2-2：落点已在 0 再反向按即取消（按类注释实现），不是跳变到“播头-10s”
         val controller = SeekPreviewController(durationMs = 60_000)

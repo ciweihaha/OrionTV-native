@@ -50,6 +50,19 @@ class SkipIntroCapsuleTest {
     }
 
     @Test
+    fun `capsule hides immediately once seek passes intro window`() {
+        // P2-4：胶囊可见时快进越过片头（inWindow 变 false），立即隐藏，
+        // 不等 10 秒超时；只消耗过一次，隐藏后本集不再出现
+        var now = 1_000_000L
+        val capsule = SkipIntroCapsule(nowMs = { now })
+        assertTrue(capsule.update(inWindow = true, alreadySkipped = false))
+        now += 500
+        assertFalse(capsule.update(inWindow = false, alreadySkipped = false))
+        assertFalse(capsule.visible)
+        assertFalse(capsule.update(inWindow = true, alreadySkipped = false))
+    }
+
+    @Test
     fun `capsule never appears outside intro window`() {
         val capsule = SkipIntroCapsule(nowMs = { 0L })
         assertFalse(capsule.update(inWindow = false, alreadySkipped = false))
