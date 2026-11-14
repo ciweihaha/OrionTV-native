@@ -9,7 +9,7 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 |---|---|
 | 包名 | `com.oriontv` |
 | 版本 | 2.0.0（versionCode 10703） |
-| minSdk / targetSdk / compileSdk | 24 / 34 / 34 |
+| minSdk / targetSdk / compileSdk | 24 / 35 / 35 |
 | 目标设备 | Android TV 横屏（arm64-v8a） |
 | APK 体积目标 | < 25MB |
 
@@ -29,6 +29,9 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 两处与 CONTRACT §2 不同（原版本在 Maven 上不存在，换为邻近可用版本）：
 tv-foundation 1.0.1 → **1.0.0**（androidx.tv:tv-foundation 最高只到 1.0.0，
 tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）。
+另外 **compileSdk/targetSdk 由 CONTRACT 的 34 改为 35**：CONTRACT 指定的依赖本身要求 35
+（tv-foundation 1.0.0 与 core-ktx 1.15.0 的 aar-metadata 都是 minCompileSdk=35，
+34 下 `:app:checkDebugAarMetadata` 必失败）；minSdk 仍是 24，电视安装不受影响，待总协调追认。
 
 ## 怎么编
 
@@ -37,7 +40,7 @@ tv-material 才有 1.0.1）、NanoHTTPD 2.3.2 → **2.3.1**（最新正式版）
 ./gradlew assembleRelease                   # 发布包（需签名 Secrets，见下）
 ```
 
-需要 JDK 17 与 Android SDK（compileSdk 34）。
+需要 JDK 17 与 Android SDK（compileSdk 35）。
 
 ## Release 流程
 

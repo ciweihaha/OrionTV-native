@@ -10,12 +10,16 @@ plugins {
 
 android {
     namespace = "com.oriontv"
-    compileSdk = 34
+    // compileSdk/targetSdk 35：CONTRACT 写的是 34，但 CONTRACT 指定的依赖本身要求 35
+    //（androidx.tv:tv-foundation:1.0.0 与 androidx.core:core-ktx:1.15.0 的
+    // aar-metadata.properties 都是 minCompileSdk=35；34 下 :app:checkDebugAarMetadata
+    // 必失败）。minSdk 仍是 24，电视安装不受影响。待总协调追认。
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.oriontv"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 10703
         versionName = "2.0.0"
 

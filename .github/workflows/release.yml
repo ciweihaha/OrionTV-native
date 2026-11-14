@@ -21,13 +21,14 @@ jobs:
 
       # ubuntu-latest 自带 Android SDK（ANDROID_HOME 已设置），不再用
       # android-actions/setup-android（该 Action 在 2026-11-14 的 run 43571581939
-      # 里 11 秒即失败）；只确保 platform 34 与 build-tools 34.0.0 已装。
+      # 里 11 秒即失败）；只确保 platform 35 与 build-tools 35.0.0 已装
+      #（compileSdk 35，见 app/build.gradle.kts 注释）。
       - name: Ensure Android SDK components
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ -x "$SDKMANAGER" ]; then
-            yes | "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
+            yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
           else
             echo "sdkmanager not found at $SDKMANAGER; relying on preinstalled SDK"
             ls "$ANDROID_HOME/platforms" || true

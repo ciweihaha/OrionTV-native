@@ -20,13 +20,14 @@ jobs:
 
       # ubuntu-latest 自带 Android SDK（ANDROID_HOME 已设置），不再用
       # android-actions/setup-android（该 Action 在 2026-11-14 的 run 43571581939
-      # 里 11 秒即失败）；只确保 platform 34 与 build-tools 34.0.0 已装。
+      # 里 11 秒即失败）；只确保 platform 35 与 build-tools 35.0.0 已装
+      #（compileSdk 35，见 app/build.gradle.kts 注释）。
       - name: Ensure Android SDK components
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ -x "$SDKMANAGER" ]; then
-            yes | "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
+            yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
           else
             echo "sdkmanager not found at $SDKMANAGER; relying on preinstalled SDK"
             ls "$ANDROID_HOME/platforms" || true
@@ -39,10 +40,12 @@ jobs:
         run: |
           ./gradlew assembleDebug testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
           if [ "${BUILD_FAILED:-0}" = "1" ]; then
-            # 日志文件只能在 Actions 界面下载；把关键错误行打成 check-run 注解，
+            # 日志文件只能在 Actions 界面下载；把 FAILURE 段打成 check-run 注解，
             # 这样不用进界面也能从 API 读到失败原因（见注解）。
-            # Gradle 的错误详情以 "> " 开头，异常原因以 "Caused by:" 开头。
-            { grep -E "^e: |FAILURE: Build failed|What went wrong|Execution failed for task|^> |^Caused by:|There were failing tests" gradle-build.log | head -10 || true; } | sed 's/%/%25/g' | while IFS= read -r line; do
+            awk '/FAILURE: Build failed/{found=1} found{print} found && ++n>=12{exit}' gradle-build.log | sed 's/%/%25/g' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            { grep -E "^e: " gradle-build.log | head -5 || true; } | sed 's/%/%25/g' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
             exit 1
