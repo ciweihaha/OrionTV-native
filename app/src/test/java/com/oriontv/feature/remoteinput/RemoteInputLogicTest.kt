@@ -314,11 +314,13 @@ class RemoteInputLogicTest {
         val router = RemoteInputRouter(nowMs = { 1_000L })
         val tokens = java.util.Collections.synchronizedList(mutableListOf<String>())
         val threads = (1..20).map {
-            Thread { tokens.add(router.issueSessionToken()) }
+            // P2-14：发 token 时绑定签发 IP，校验时须用同一 IP（无 IP 的
+            // 1 参调用在 P2-14 后已不存在，见 isSessionTokenValid 签名）。
+            Thread { tokens.add(router.issueSessionToken(clientIp = "1.2.3.4")) }
         }
         threads.forEach { it.start() }
         threads.forEach { it.join(5_000) }
         assertEquals(20, tokens.toSet().size)
-        assertTrue(tokens.all { router.isSessionTokenValid(it) })
+        assertTrue(tokens.all { router.isSessionTokenValid(it, "1.2.3.4") })
     }
 }
