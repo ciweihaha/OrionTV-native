@@ -78,8 +78,8 @@ class UpdateDownloader @Inject constructor(
             )
         }
         var lastError: Exception? = null
-        // MAX_RETRIES 是“重试次数（不含首次）”，共 1 + 3 = 4 次尝试（之前 repeat(MAX_RETRIES)
-        // 只有 3 次尝试、实际只重试 2 次，文案却写“已重试 3 次”，P2-1）。
+        // MAX_RETRIES 是重试次数（不含首次），与 ApiClient 一致：1 次初试 + 3 次重试。
+        // 原来 repeat(MAX_RETRIES) 只发 3 次（初试 + 2 次重试），与文档“失败重试 3 次”不符。
         repeat(MAX_RETRIES + 1) { attempt ->
             try {
                 destFile.parentFile?.mkdirs()
