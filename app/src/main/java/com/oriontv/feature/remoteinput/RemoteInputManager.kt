@@ -2,8 +2,10 @@ package com.oriontv.feature.remoteinput
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -44,7 +46,8 @@ class RemoteInputManager @Inject constructor() {
                 _state.update {
                     it.copy(lastMessage = message, lastMessageAt = System.currentTimeMillis())
                 }
-                _messages.emit(message)
+                // P2-13：缓冲为 0，无订阅者时直接丢弃，不滞留旧消息下次进搜索页误触发。
+                _messages.tryEmit(message)
             }
         },
         onHandshake = {
@@ -56,7 +59,7 @@ class RemoteInputManager @Inject constructor() {
     val state: StateFlow<RemoteInputState> = _state.asStateFlow()
 
     /** 远程文本流（搜索页订阅：收到即填入搜索框并搜索）。 */
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 0)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /** 配对成功事件流（扫码弹窗订阅：配对成功后自动关闭）。 */
@@ -67,6 +70,8 @@ class RemoteInputManager @Inject constructor() {
     private var starting = false
     private var stopRequestedDuringStart = false
     private var desiredRunning = false
+    /** 配对码定期轮换任务（P1-10：每 5 分钟换一次码并刷新 state 里的显示）。 */
+    private var rotationJob: Job? = null
 
     /** 启动服务；已在跑时直接返回；并发启动共用同一次。 */
     suspend fun start() {
@@ -89,6 +94,7 @@ class RemoteInputManager @Inject constructor() {
                 stopLocked()
                 return
             }
+            startRotationJob()
             _state.update {
                 it.copy(
                     isRunning = true,
@@ -139,6 +145,8 @@ class RemoteInputManager @Inject constructor() {
 
     /** 同步停服（供 stop() 内部与启动后立刻停的路径用，调用方须已持锁或在单线程路径）。 */
     private fun stopLocked() {
+        rotationJob?.cancel()
+        rotationJob = null
         runCatching { server?.stop() }
         server = null
         router.clearPairingCode()
@@ -147,8 +155,23 @@ class RemoteInputManager @Inject constructor() {
         }
     }
 
+    /** P1-10：配对码每 5 分钟轮换一次，state 里的显示同步更新；停服即停。 */
+    private fun startRotationJob() {
+        rotationJob?.cancel()
+        rotationJob = scope.launch {
+            while (desiredRunning) {
+                delay(RemoteInputLogic.PAIRING_CODE_TTL_MS)
+                if (!desiredRunning || !_state.value.isRunning) break
+                val code = router.rotatePairingCode()
+                _state.update { it.copy(pairingCode = code) }
+            }
+        }
+    }
+
     /** 供 Application 退出时释放（正常流程不需要调）。 */
     fun release() {
+        rotationJob?.cancel()
+        rotationJob = null
         scope.cancel()
     }
 }
