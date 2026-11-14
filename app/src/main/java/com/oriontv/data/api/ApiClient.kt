@@ -3,15 +3,6 @@ package com.oriontv.data.api
 import java.util.concurrent.TimeUnit
 
 /**
- * 不重试的错误：4xx、熔断开启、响应体超限等确定性失败。
- * 注意：它刻意不继承 [IOException]——AggApi/MoonTvApi 的重试循环用
- * `catch (e: IOException)` 接住可重试错误，若它继承 IOException，
- * 4xx 会在同一个 try 里被接住重跑（第 4 轮 P0-2 的根因）。
- */
-class NonRetryableException(message: String, cause: Throwable? = null) :
-    Exception(message, cause)
-
-/**
  * 熔断器（plan §5.5：agg 分类体超时连续 3 次后 60 秒内不再发）。
  * 纯逻辑类，可单测；时间由调用方注入，便于测试。
  * 线程安全：AggApi 的 videoList/version 在 IO 线程并发调用，计数用 @Synchronized 保护。
