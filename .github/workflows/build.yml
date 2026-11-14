@@ -70,3 +70,5 @@ jobs:
           name: oriontv-debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 7
+
+# 2026-11-14 注：仓库误删后由用户在 GitHub 恢复；此次提交用于重新注册工作流。
