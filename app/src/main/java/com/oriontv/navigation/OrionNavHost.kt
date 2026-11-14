@@ -165,6 +165,14 @@ fun OrionNavHost(
         authViewModel.hideLogin()
     }
 
+    // C7-P2-4：详情/播放页导航去重——各页 onNavigate 共用它：快速双按 OK 或
+    // 重复深链时，栈顶已是同一路由（同参）不再堆叠；不同参仍是新页（换集/
+    // 换片正常进栈）。顶级页切换已有 launchSingleTop + popUpTo，这里只补
+    // 各页 onNavigate 的裸 navigate。
+    val navigateSingleTop: (OrionRoute) -> Unit = { route ->
+        navController.navigate(route) { launchSingleTop = true }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -194,13 +202,13 @@ fun OrionNavHost(
             ) {
                 composable<OrionRoute.Home> {
                     HomeScreen(
-                        onNavigate = { navController.navigate(it) },
+                        onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                     )
                 }
                 composable<OrionRoute.Live> {
                     LiveScreen(
-                        onNavigate = { navController.navigate(it) },
+                        onNavigate = navigateSingleTop,
                         onBack = { navController.popBackStack() },
                         focusRestoreTick = focusRestoreTick,
                     )
@@ -218,7 +226,7 @@ fun OrionNavHost(
                         source = route.source,
                         id = route.id,
                         title = route.title,
-                        onNavigate = { navController.navigate(it) },
+                        onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                     )
                 }
@@ -243,13 +251,13 @@ fun OrionNavHost(
                 }
                 composable<OrionRoute.Search> {
                     SearchScreen(
-                        onNavigate = { navController.navigate(it) },
+                        onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                     )
                 }
                 composable<OrionRoute.Favorites> {
                     FavoritesScreen(
-                        onNavigate = { navController.navigate(it) },
+                        onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                     )
                 }

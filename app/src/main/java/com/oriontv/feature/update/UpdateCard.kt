@@ -45,6 +45,20 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 取消只停本次下载，卡片保持打开，可点“立即更新”重新下载；“稍后”是关卡、
  * 下载继续在后台跑，两者语义不同，不可互相替代。
  */
+/**
+ * 更新卡片焦点陷阱上下边的落点（可单测，C7-P2-1）：禁用的主按钮不能当落点——
+ * 下载中指“取消下载”（当前唯一可操作的主操作），超限指“跳过此版”，否则指主按钮。
+ * 旧实现四条边（主按钮上下、跳过上下、稍后上下）全指主按钮，禁用态下全变死键。
+ */
+internal enum class UpdateCardTrapTarget { Primary, Cancel, Skip }
+
+internal fun updateCardTrapTarget(downloading: Boolean, apkTooLarge: Boolean): UpdateCardTrapTarget =
+    when {
+        downloading -> UpdateCardTrapTarget.Cancel
+        apkTooLarge -> UpdateCardTrapTarget.Skip
+        else -> UpdateCardTrapTarget.Primary
+    }
+
 @Composable
 fun UpdateCard(
     currentVersion: String,
@@ -67,6 +81,13 @@ fun UpdateCard(
 
     // P2-22：超 200MB 的包卡片层直接禁用更新按钮（不让用户点进去才报 TooLarge）。
     val apkTooLarge = apkSizeBytes != null && apkSizeBytes > UpdateDownloader.MAX_APK_BYTES
+
+    // C7-P2-1：陷阱上下边的落点随卡片状态走——禁用态的主按钮不当落点。
+    val trapRequester = when (updateCardTrapTarget(downloading, apkTooLarge)) {
+        UpdateCardTrapTarget.Primary -> primaryRequester
+        UpdateCardTrapTarget.Cancel -> cancelRequester
+        UpdateCardTrapTarget.Skip -> skipRequester
+    }
 
     // P1-2（第 5 轮）：焦点随卡片状态走，不只打开瞬间抢一次。
     // 下载完成变“立即安装”时落回主按钮；超限包打开时主按钮禁用，直接落
@@ -147,8 +168,8 @@ fun UpdateCard(
                                 .focusProperties {
                                     left = dismissRequester
                                     right = skipRequester
-                                    up = primaryRequester
-                                    down = primaryRequester
+                                    up = trapRequester
+                                    down = trapRequester
                                 },
                         )
                         downloading -> PrimaryButton(
@@ -160,8 +181,8 @@ fun UpdateCard(
                                 .focusProperties {
                                     left = dismissRequester
                                     right = skipRequester
-                                    up = primaryRequester
-                                    down = primaryRequester
+                                    up = trapRequester
+                                    down = trapRequester
                                 },
                         )
                         apkTooLarge -> PrimaryButton(
@@ -173,8 +194,8 @@ fun UpdateCard(
                                 .focusProperties {
                                     left = dismissRequester
                                     right = skipRequester
-                                    up = primaryRequester
-                                    down = primaryRequester
+                                    up = trapRequester
+                                    down = trapRequester
                                 },
                         )
                         else -> PrimaryButton(
@@ -185,8 +206,8 @@ fun UpdateCard(
                                 .focusProperties {
                                     left = dismissRequester
                                     right = skipRequester
-                                    up = primaryRequester
-                                    down = primaryRequester
+                                    up = trapRequester
+                                    down = trapRequester
                                 },
                         )
                     }
@@ -197,10 +218,16 @@ fun UpdateCard(
                         modifier = Modifier
                             .focusRequester(skipRequester)
                             .focusProperties {
-                                left = primaryRequester
+                                // C7-P2-1：主按钮禁用时左键不指它——下载中指“取消下载”，
+                                // 超限指“稍后”（左右循环仍闭环在可用按钮上）。
+                                left = when {
+                                    downloading -> cancelRequester
+                                    apkTooLarge -> dismissRequester
+                                    else -> primaryRequester
+                                }
                                 right = dismissRequester
-                                up = primaryRequester
-                                down = primaryRequester
+                                up = trapRequester
+                                down = trapRequester
                             },
                     )
                     Spacer(modifier = Modifier.width(16.dp))
@@ -211,9 +238,15 @@ fun UpdateCard(
                             .focusRequester(dismissRequester)
                             .focusProperties {
                                 left = skipRequester
-                                right = if (downloading) cancelRequester else primaryRequester
-                                up = primaryRequester
-                                down = primaryRequester
+                                // C7-P2-1：右键不指禁用的主按钮——下载中指“取消下载”，
+                                // 超限指“跳过此版”。
+                                right = when {
+                                    downloading -> cancelRequester
+                                    apkTooLarge -> skipRequester
+                                    else -> primaryRequester
+                                }
+                                up = trapRequester
+                                down = trapRequester
                             },
                     )
                     // B6-P1-3：下载中才出现“取消下载”——停本次下载，卡片保持打开，
@@ -227,9 +260,10 @@ fun UpdateCard(
                                 .focusRequester(cancelRequester)
                                 .focusProperties {
                                     left = dismissRequester
-                                    right = primaryRequester
-                                    up = primaryRequester
-                                    down = primaryRequester
+                                    // C7-P2-1：右键不指禁用的主按钮，改指“跳过此版”。
+                                    right = skipRequester
+                                    up = trapRequester
+                                    down = trapRequester
                                 },
                         )
                     }

@@ -81,12 +81,6 @@ fun SearchScreen(
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
 
-    // C4-P1-3：屏上键盘处理返回键（先关键盘；扫码弹窗开着时由弹窗自己的
-    // BackHandler 先关弹窗——它后注册、优先级更高）。
-    BackHandler(enabled = showKeyboard && !showRemoteInputModal) {
-        showKeyboard = false
-    }
-
     // C5-P1-1：屏上键盘由开变关时焦点回搜索框——之前键盘关闭后焦点留在已
     // 卸载的键盘按键上，遥控器数秒内按什么都没反应。
     var keyboardWasOpen by remember { mutableStateOf(false) }

@@ -85,7 +85,19 @@ class MainActivity : ComponentActivity() {
         // 热启动深链（adb/语音助手在应用已在前台/后台时发 oriontv://…）：
         // 无此回调时 singleTask 会直接丢弃新 Intent，详情/播放深链永远到不了。
         // C5-P2-6：匹配失败时记日志——之前 handleDeepLink 返回 false 也静默丢弃。
-        val handled = navController?.handleDeepLink(intent) == true
+        // C7-P2-4：重复深链不堆叠——navigate(Uri) + launchSingleTop，栈顶已是
+        // 同一路由（同参）时不再压栈；之前 handleDeepLink 每次都压，重复深链
+        // 会堆出多个相同详情/播放页。无匹配时抛错，按未处理记日志。
+        val controller = navController
+        val uri = intent.data
+        val handled = if (controller != null && uri != null) {
+            runCatching {
+                controller.navigate(uri, androidx.navigation.navOptions { launchSingleTop = true })
+                true
+            }.getOrDefault(false)
+        } else {
+            controller?.handleDeepLink(intent) == true
+        }
         if (!handled) {
             android.util.Log.w("MainActivity", "深链未匹配任何路由，已丢弃：$intent")
         }

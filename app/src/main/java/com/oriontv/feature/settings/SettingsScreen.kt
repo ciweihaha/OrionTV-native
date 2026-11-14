@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -396,8 +397,14 @@ private fun SettingsInputRow(
     // P2-1（第 5 轮）：输入框内部用 TextFieldValue，才能知道光标位置。
     // 左键行为：光标不在行首时只移光标（消费掉松键，不冒泡到父级回菜单）；
     // 光标已在行首时放行，冒泡到父级回左菜单。光标移动发生在 KeyDown，
-    // 这里只拦 KeyUp，不影响光标移动本身。真机待验证。
+    // 这里只拦 KeyUp；是否消费按 KeyDown 时快照的移动前位置判断
+    //（C7-P2-3：KeyUp 时读到的已是移动后的位置，第 1 位按左键会误判）。
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+    // C7-P2-3：按左键前光标位置的快照——光标移动发生在 KeyDown，KeyUp 时
+    // 读到的已是移动后的位置（第 1 位按左键会读到 0、误放行回菜单）；
+    // 在预览阶段 KeyDown 里快照（不消费，不影响光标移动本身），KeyUp 时
+    // 按快照判断是否消费。直接在 KeyDown 里消费是错的：会拦住光标移动。
+    var cursorBeforeLeftMove by remember { mutableStateOf(-1) }
     LaunchedEffect(value) {
         if (value != textFieldValue.text) {
             textFieldValue = TextFieldValue(value, TextRange(value.length))
@@ -429,10 +436,19 @@ private fun SettingsInputRow(
                     .fillMaxWidth()
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .onFocusChanged { focused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        // C7-P2-3：隧道阶段先于输入框自己的光标移动，读到的是
+                        // 移动前位置；只快照、不消费。
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
+                            cursorBeforeLeftMove = textFieldValue.selection.start
+                        }
+                        false
+                    }
                     .onKeyEvent { event ->
                         if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionLeft) {
-                            // 光标不在行首：消费松键，只移光标，不回菜单。
-                            textFieldValue.selection.start > 0
+                            // C7-P2-3：按移动前光标位置判断——不在行首时消费松键，
+                            // 只移光标，不回菜单；已在行首时放行，冒泡到父级回左菜单。
+                            shouldConsumeSettingsLeftKeyUp(cursorBeforeLeftMove)
                         } else {
                             false
                         }
@@ -447,6 +463,12 @@ private fun SettingsInputRow(
         }
     }
 }
+
+/** 设置输入框左键松键是否消费（可单测，C7-P2-3）：按移动前光标位置判断——
+ * 不在行首（>0）时消费，只移光标、不回左菜单；已在行首时放行回菜单。
+ * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。 */
+internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int): Boolean =
+    cursorBeforeMove > 0
 
 /** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画 + 片头时长。 */
 @Composable
