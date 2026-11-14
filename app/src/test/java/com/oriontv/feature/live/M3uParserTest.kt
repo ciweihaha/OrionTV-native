@@ -62,6 +62,19 @@ class M3uParserTest {
     }
 
     @Test
+    fun `channel without url does not swallow the next channel`() {
+        // 上一个台缺流地址、紧跟下一个 #EXTINF：之前 i=j 会把下一个台整行跳过
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="a",ChannelA
+            #EXTINF:-1 tvg-id="b",ChannelB
+            http://example.com/b.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("ChannelB"), channels.map { it.name })
+    }
+
+    @Test
     fun `non-extinf lines are ignored`() {
         assertTrue(M3uParser.parse("#EXTM3U\n").isEmpty())
         assertTrue(M3uParser.parse("").isEmpty())
