@@ -12,6 +12,17 @@ import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
+ * AuthRepository 用到的设置口（D-P1-4）：地址、登录标记位、server-config 刷新。
+ * 单测可用内存假实现，不用真 DataStore。
+ */
+interface AuthSettings {
+    suspend fun currentApiBaseUrl(): String
+    suspend fun currentAuthCookies(): String
+    suspend fun setAuthCookies(value: String)
+    suspend fun refreshServerConfig(): ServerConfig?
+}
+
+/**
  * 设置仓库：双存储模式分支（plan §4.3）——按 server-config 的 StorageType
  * 决定收藏/记录/搜索历史走本地还是服务端；播放器个性化设置永远只存本地。
  * server-config 拉取带 30 秒失败缓存（RN authStore 的教训：服务器不可达时
@@ -21,7 +32,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class SettingsRepository @Inject constructor(
     private val settingsDataStore: SettingsDataStore,
     private val moonTvApi: MoonTvApi,
-) {
+) : AuthSettings {
     val apiBaseUrl: Flow<String> = settingsDataStore.apiBaseUrl
     val m3uUrl: Flow<String> = settingsDataStore.m3uUrl
     val remoteInputEnabled: Flow<Boolean> = settingsDataStore.remoteInputEnabled
@@ -35,14 +46,14 @@ class SettingsRepository @Inject constructor(
     /** server-config 的 StorageType 缓存："" 未拉取、"localstorage" | "redis"。 */
     val storageType: Flow<String> = settingsDataStore.storageType
 
-    suspend fun currentApiBaseUrl(): String = apiBaseUrl.first()
+    override suspend fun currentApiBaseUrl(): String = apiBaseUrl.first()
     suspend fun currentM3uUrl(): String = m3uUrl.first()
     suspend fun currentLiveLastChannelJson(): String = settingsDataStore.liveLastChannel.first()
     suspend fun currentLiveFavChannelsJson(): String = settingsDataStore.liveFavChannels.first()
     suspend fun setLiveLastChannelJson(value: String) = settingsDataStore.setLiveLastChannel(value)
     suspend fun setLiveFavChannelsJson(value: String) = settingsDataStore.setLiveFavChannels(value)
     suspend fun currentStorageType(): String = storageType.first()
-    suspend fun currentAuthCookies(): String = authCookies.first()
+    override suspend fun currentAuthCookies(): String = authCookies.first()
 
     /** 是否配了服务器地址（首页空态门控用）。 */
     suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
@@ -79,7 +90,7 @@ class SettingsRepository @Inject constructor(
      * 拉取 server-config 并缓存 StorageType。失败时 30 秒内不再重试；
      * 拉取期间地址变了则丢弃旧结果。
      */
-    suspend fun refreshServerConfig(): ServerConfig? = refreshMutex.withLock {
+    override suspend fun refreshServerConfig(): ServerConfig? = refreshMutex.withLock {
         val baseUrl = currentApiBaseUrl()
         if (baseUrl.isBlank()) return null
         if (baseUrl == lastConfigFailureUrl &&
@@ -102,7 +113,7 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
+    override suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
 

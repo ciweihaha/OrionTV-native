@@ -43,6 +43,22 @@ object AppModule {
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
+     * D-P1-4：AuthRepository 只依赖三个小接口（AuthApi / AuthSettings /
+     * CredentialStore），这里绑到具体实现；单测用内存假实现替换。
+     */
+    @Provides
+    @Singleton
+    fun provideAuthApi(api: MoonTvApi): com.oriontv.data.api.AuthApi = api
+
+    @Provides
+    @Singleton
+    fun provideAuthSettings(repo: com.oriontv.data.repo.SettingsRepository): com.oriontv.data.repo.AuthSettings = repo
+
+    @Provides
+    @Singleton
+    fun provideCredentialStore(store: com.oriontv.data.local.CredentialsStore): com.oriontv.data.local.CredentialStore = store
+
+    /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
      * 冷启动后会话失效时由 AuthRepository 用已保存凭据静默重登恢复。
      * 返回具体类型 [InMemoryCookieJar]（而非接口），以便 AuthRepository 退出登录时调 clear()。
