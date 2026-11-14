@@ -187,7 +187,14 @@ class LiveController(
             }
             // 全部线路都试过，往下跳台
         }
+        val beforeIndex = currentIndex
         nextChannel(isAuto = true)
+        if (currentIndex == beforeIndex) {
+            // 单频道列表自动跳台回到同一台：也要清空已试线路并回主线路，
+            // 否则之后每次失败直接跳台，不再重试主线路。
+            lineIndex = 0
+            triedLines.clear()
+        }
         return LiveErrorAction.NextChannel("信号异常，自动切换下一频道…")
     }
 

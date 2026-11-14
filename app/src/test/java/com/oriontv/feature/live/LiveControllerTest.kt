@@ -96,6 +96,25 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `single channel auto hop resets tried lines and returns to main line`() {
+        // P2-2：单频道列表自动跳台回到同一台时，也要清空已试线路并回主线路；
+        // 否则之后每次失败直接跳台，不再重试主线路。
+        val single = listOf(channel("CCTV-1", listOf("http://a/1.m3u8", "http://a/1b.m3u8")))
+        val c = LiveController(single)
+        val first = c.onPlaybackError(panelOpen = false)
+        assertTrue(first is LiveErrorAction.TryLine)
+        assertEquals(1, c.lineIndex)
+        val second = c.onPlaybackError(panelOpen = false)
+        assertTrue(second is LiveErrorAction.NextChannel)
+        assertEquals(0, c.currentIndex)
+        assertEquals(0, c.lineIndex) // 回主线路
+        // 下一次失败应重新试备用线路，而不是直接跳台
+        val third = c.onPlaybackError(panelOpen = false)
+        assertTrue(third is LiveErrorAction.TryLine)
+        assertEquals(1, (third as LiveErrorAction.TryLine).lineIndex)
+    }
+
+    @Test
     fun `playback error while panel open only notifies`() {
         val c = LiveController(threeChannels)
         val action = c.onPlaybackError(panelOpen = true)

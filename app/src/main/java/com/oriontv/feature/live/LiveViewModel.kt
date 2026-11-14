@@ -68,7 +68,7 @@ class LiveViewModel @Inject constructor(
                 readyTimeoutJob?.cancel()
                 controller.onPlaybackSuccess()
                 _uiState.update {
-                    it.copy(isPlaying = true, isBuffering = false, playbackFailed = false, failCount = 0)
+                    it.copy(isPlaying = true, isBuffering = false, playbackFailed = false, failCount = 0, signalError = false)
                 }
             } else {
                 _uiState.update { it.copy(isPlaying = false) }
@@ -194,6 +194,7 @@ class LiveViewModel @Inject constructor(
                 isPlaying = false,
                 isBuffering = true,
                 playbackFailed = false,
+                signalError = false,
             )
         }
         showInfoBar()
@@ -227,6 +228,8 @@ class LiveViewModel @Inject constructor(
                 playCurrent()
             }
             is LiveErrorAction.GiveUp -> {
+                // 终端分支：就绪超时已无意义，取消它，免得 15 秒后多算一次失败并重复 Toast。
+                readyTimeoutJob?.cancel()
                 _uiState.update {
                     it.copy(
                         failCount = controller.failCount,
@@ -237,7 +240,10 @@ class LiveViewModel @Inject constructor(
                 showToast(action.message)
             }
             is LiveErrorAction.NotifyOnly -> {
-                _uiState.update { it.copy(failCount = controller.failCount) }
+                // 面板打开时只提示不跳台：同样取消就绪超时；并在面板内留常驻“信号异常”提示，
+                // 不只靠 3 秒 Toast（播好后由 onIsPlayingChanged 清掉）。
+                readyTimeoutJob?.cancel()
+                _uiState.update { it.copy(failCount = controller.failCount, signalError = true) }
                 showToast(action.message)
             }
         }
@@ -527,5 +533,7 @@ data class LiveUiState(
     val isBuffering: Boolean = false,
     /** 断流且自动处理耗尽：显示失败页（重试/手动换台）。 */
     val playbackFailed: Boolean = false,
+    /** 面板打开时断流：面板内常驻“信号异常”提示（播好即清，不只靠 3 秒 Toast）。 */
+    val signalError: Boolean = false,
     val exitConfirmOpen: Boolean = false,
 )

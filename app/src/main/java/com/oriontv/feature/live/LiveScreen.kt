@@ -541,6 +541,15 @@ private fun ChannelPanel(
             )
         }
         Spacer(modifier = Modifier.height(12.dp))
+        // 面板打开时断流：常驻“信号异常”提示（3 秒 Toast 消失后仍可见，播好即清）。
+        if (uiState.signalError) {
+            Text(
+                text = "信号异常，请重新选择频道",
+                style = OrionTextStyles.Body,
+                color = OrionColors.Error,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
         // 分组 chip（★ 收藏在最前）。
         LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
             items(groups) { group ->
