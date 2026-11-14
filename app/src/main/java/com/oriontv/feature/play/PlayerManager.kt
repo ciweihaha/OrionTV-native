@@ -2,11 +2,14 @@ package com.oriontv.feature.play
 
 import android.content.Context
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLException
 
 /**
  * ExoPlayer 单例（plan §4.5）：点播与直播共用，换 MediaItem 即换台/换集；
@@ -48,8 +51,9 @@ class PlayerManager @Inject constructor(
         data class Other(val message: String? = null) : PlayerError
     }
 
-    fun playUrl(url: String) {
+    fun playUrl(url: String, startPositionMs: Long = 0L) {
         player.setMediaItem(MediaItem.fromUri(url))
+        if (startPositionMs > 0) player.seekTo(startPositionMs)
         player.prepare()
         player.play()
     }
@@ -66,6 +70,23 @@ class PlayerManager @Inject constructor(
         player.seekTo(positionMs)
     }
 
+    /** 倍速（按影片记忆，由 PlayViewModel 在开播时恢复）。 */
+    fun setPlaybackSpeed(rate: Float) {
+        player.playbackParameters = PlaybackParameters(rate)
+    }
+
+    /** 停播（不 release 单例，直播页还共用它）。 */
+    fun stop() {
+        player.stop()
+        player.clearMediaItems()
+    }
+
+    val currentPositionMs: Long get() = player.currentPosition.coerceAtLeast(0L)
+    val durationMs: Long get() = player.duration.coerceAtLeast(0L)
+    val bufferedPositionMs: Long get() = player.bufferedPosition.coerceAtLeast(0L)
+    val isPlaying: Boolean get() = player.isPlaying
+    val isBuffering: Boolean get() = player.playbackState == Player.STATE_BUFFERING
+
     fun release() {
         player.release()
     }
@@ -76,5 +97,26 @@ class PlayerManager @Inject constructor(
 
     fun removeListener(listener: Player.Listener) {
         player.removeListener(listener)
+    }
+
+    companion object {
+        /** 结构化错误分类（替代 RN 的错误字符串匹配）：SSL / 网络 / 其他。 */
+        fun classifyError(error: PlaybackException): PlayerError {
+            var cause: Throwable? = error.cause
+            while (cause != null) {
+                if (cause is SSLException) return PlayerError.Ssl
+                if (cause is java.io.IOException) return PlayerError.Network
+                cause = cause.cause
+            }
+            return when (error.errorCode) {
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+                PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED -> PlayerError.Network
+                PlaybackException.ERROR_CODE_IO_SSL,
+                PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED -> PlayerError.Ssl
+                else -> PlayerError.Other(error.message)
+            }
+        }
     }
 }

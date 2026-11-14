@@ -1,0 +1,40 @@
+package com.oriontv.feature.play
+
+/**
+ * 快进/快退落点预览状态机（T6/T7，参考 OrionTV-android 的 SeekPreviewController 思路，
+ * 用自己的实现）：控制条可见时，左右键只移动一个 *待定* 落点（每次 10 秒），
+ * 预览气泡显示方向与落点时间；此时并不 seek。按 OK 提交跳跃；按返回（或反向
+ * 按过起点）取消；2 秒无操作自动提交，播放器永不显得卡住。
+ * 纯逻辑类，无 Android 依赖，可单测。
+ */
+class SeekPreviewController(private val durationMs: Long) {
+
+    var pendingTargetMs: Long? = null
+        private set
+
+    val hasPending: Boolean get() = pendingTargetMs != null
+
+    /** 落点移动一步 10 秒，返回新落点。 */
+    fun nudge(currentMs: Long, direction: Int): Long {
+        val base = pendingTargetMs ?: currentMs
+        val target = (base + direction * STEP_MS).coerceIn(0L, durationMs)
+        pendingTargetMs = target
+        return target
+    }
+
+    /** 提交待定落点（无待定时返回 null）。 */
+    fun commit(): Long? {
+        val target = pendingTargetMs
+        pendingTargetMs = null
+        return target
+    }
+
+    fun cancel() {
+        pendingTargetMs = null
+    }
+
+    companion object {
+        const val STEP_MS = 10_000L
+        const val AUTO_COMMIT_MS = 2_000L
+    }
+}
