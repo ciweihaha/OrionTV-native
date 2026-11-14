@@ -4,6 +4,9 @@ import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -31,6 +34,15 @@ class M3uRepository @Inject constructor(
             .build()
     }
 
+    /**
+     * 第 6 轮 D6-P2-13：最近一次加载是否拉网失败（与 FavoritesRepository.loadFailed
+     * 同款）：拉网失败/解析出 0 台时置 true（即使回落了旧缓存），成功时置 false；
+     * 调用方（“刷新直播源”入口）据此提示“刷新失败，仍用旧数据”，不再把回落的
+     * 旧缓存误当成“已刷新”。
+     */
+    private val _loadFailed = MutableStateFlow(false)
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
     /** 缓存优先加载：缓存新鲜直接返回；过期拉网，成功落盘，失败回落旧缓存。 */
     suspend fun loadChannels(
         m3uUrl: String,
@@ -42,16 +54,34 @@ class M3uRepository @Inject constructor(
             if (m3uUrl.isBlank()) return@withContext emptyList()
             val cached = cacheStore.readM3uCache(m3uUrl)
             if (!forceRefresh && cached != null && nowMs - cached.ts <= LiveController.M3U_CACHE_TTL_MS) {
+                _loadFailed.value = false
                 return@withContext cached.channels
             }
             val fresh = fetchChannels(m3uUrl)
+            val decision = decideLoad(cached?.channels, fresh)
+            _loadFailed.value = decision.loadFailed
             if (fresh.isNotEmpty()) {
                 cacheStore.saveM3uCache(m3uUrl, fresh)
-                return@withContext fresh
             }
             // 拉网失败：回落旧缓存（不断流），没有才返回空列表
-            cached?.channels.orEmpty()
+            decision.channels
         }
+
+    companion object {
+        /**
+         * 第 6 轮 D6-P2-13：加载结果判定（纯函数，可单测）——fresh 非空即用 fresh、
+         * 失败标记 false；fresh 为空（拉网失败或解析出 0 台）则回落旧缓存并标记失败。
+         */
+        fun decideLoad(
+            cachedChannels: List<M3uParser.Channel>?,
+            freshChannels: List<M3uParser.Channel>,
+        ): M3uLoadDecision =
+            if (freshChannels.isNotEmpty()) {
+                M3uLoadDecision(freshChannels, loadFailed = false)
+            } else {
+                M3uLoadDecision(cachedChannels.orEmpty(), loadFailed = true)
+            }
+    }
 
     /** 纯拉网（15 秒超时、5MB 上限，失败返回空列表，不抛错；协程取消原样抛出）。 */
     suspend fun fetchChannels(m3uUrl: String): List<M3uParser.Channel> = withContext(ioDispatcher) {
@@ -72,6 +102,12 @@ class M3uRepository @Inject constructor(
         }
     }
 }
+
+/** 第 6 轮 D6-P2-13：[M3uRepository.decideLoad] 的判定结果。 */
+data class M3uLoadDecision(
+    val channels: List<M3uParser.Channel>,
+    val loadFailed: Boolean,
+)
 
 /**
  * EPG 仓库（plan §5.3）：

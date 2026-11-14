@@ -75,6 +75,10 @@ interface FavoriteDao {
 
     @Query("DELETE FROM favorites WHERE `key` = :key")
     suspend fun deleteByKey(key: String)
+
+    /** 第 6 轮 D6-P2-15：收藏上限 200 条，超限按 saveTime 淘汰最旧（与其余三表一致）。 */
+    @Query("DELETE FROM favorites WHERE `key` NOT IN (SELECT `key` FROM favorites ORDER BY saveTime DESC LIMIT 200)")
+    suspend fun trimToLatest200()
 }
 
 @Dao

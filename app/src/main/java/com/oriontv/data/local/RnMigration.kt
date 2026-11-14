@@ -12,6 +12,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -21,6 +22,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -191,7 +193,7 @@ class RnStorageReader @Inject constructor(
     }
 }
 
-/** RN 首启迁移执行器：只跑一次；导入时只填原生侧的空集合，不覆盖已有数据。 */
+/** RN 首启迁移执行器：只跑一次；导入时只补原生侧缺失的条目，不覆盖已有数据。 */
 @Singleton
 class RnMigration @Inject constructor(
     private val reader: RnStorageReader,
@@ -213,10 +215,28 @@ class RnMigration @Inject constructor(
 
     /** 应用启动时调一次（OrionTvApp.onCreate），后台跑，不阻塞首屏。 */
     fun start() {
-        applicationScope.launch { runIfNeeded() }
+        // D6-P2-11：协程体异常兜底——runIfNeeded 内已全程 try/catch，这里再加
+        // CoroutineExceptionHandler 作第二道防线；未捕获异常不再经默认处理器崩应用。
+        val handler = CoroutineExceptionHandler { _, e ->
+            AppLog.w("RnMigration", "RN 首启迁移协程异常（已兜底，不崩应用）：${e.message}")
+        }
+        applicationScope.launch(handler) { runIfNeeded() }
     }
 
     suspend fun runIfNeeded() {
+        // D6-P2-11：全程包 try/catch——旧实现只包 importAll，`rnMigrationDone.first()`
+        // 或最后的 setRnMigrationDone 在启动瞬间 IO 失败时会从 launch 子协程里
+        // 未捕获抛出、经默认处理器崩应用；现在一律记日志、不打标记，下次启动重试。
+        try {
+            runIfNeededInternal()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.w("RnMigration", "RN 迁移启动失败，下次启动重试：${e.message}")
+        }
+    }
+
+    private suspend fun runIfNeededInternal() {
         if (settingsDataStore.rnMigrationDone.first()) return
         val outcome = reader.readKeys(WANTED_KEYS)
         if (outcome.values.isEmpty()) {
@@ -231,8 +251,11 @@ class RnMigration @Inject constructor(
         }
         try {
             importAll(outcome.values)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            // 导入中途失败：不打标记，下次启动重试；已导入的集合因“只填空”不再重复写。
+            // 导入中途失败：不打标记，下次启动重试；已导入的条目因“只补缺失”
+            // 不再重复写，未导入的下次补上（D6-P2-11）。
             AppLog.w("RnMigration", "RN 迁移失败，下次启动重试：${e.message}")
             return
         }
@@ -251,12 +274,14 @@ class RnMigration @Inject constructor(
     }
 
     private suspend fun importFavorites(raw: String) {
-        if (db.favoriteDao().getAll().isNotEmpty()) return
+        // D6-P2-11：不再以“原生集合非空”整集合跳过——导入中途失败时已导入一半，
+        // 下次启动会因非空直接跳过、剩余条目永久不再补；改为逐键补缺失的条目。
         val parsed = RnMigrationParser.parseFavorites(raw)
+        val existing = db.favoriteDao().getAll().map { it.key }.toSet()
         val now = System.currentTimeMillis()
         var count = 0
-        for ((key, fav) in parsed) {
-            if (key.isBlank()) continue
+        for (key in keysToImport(parsed.keys, existing)) {
+            val fav = parsed.getValue(key)
             db.favoriteDao().insert(
                 FavoriteEntity(
                     key = key,
@@ -271,6 +296,8 @@ class RnMigration @Inject constructor(
             )
             count++
         }
+        // 第 6 轮 D6-P2-15：迁移导入后也裁剪到 200 条（与本地写侧一致）。
+        db.favoriteDao().trimToLatest200()
         AppLog.i("RnMigration", "导入收藏 $count 条")
     }
 
@@ -300,12 +327,13 @@ class RnMigration @Inject constructor(
     }
 
     private suspend fun importPlayRecords(raw: String) {
-        if (db.playRecordDao().getAll().isNotEmpty()) return
+        // D6-P2-11：同 importFavorites，逐键补缺失——中途失败后重试能补上剩余条目。
         val parsed = RnMigrationParser.parsePlayRecords(raw)
+        val existing = db.playRecordDao().getAll().map { it.key }.toSet()
         val now = System.currentTimeMillis()
         var count = 0
-        for ((key, record) in parsed) {
-            if (key.isBlank()) continue
+        for (key in keysToImport(parsed.keys, existing)) {
+            val record = parsed.getValue(key)
             db.playRecordDao().insert(
                 PlayRecordEntity(
                     key = key,
@@ -343,16 +371,21 @@ class RnMigration @Inject constructor(
     }
 
     private suspend fun importSearchHistory(raw: String) {
-        if (db.searchHistoryDao().getLatest20().isNotEmpty()) return
+        // D6-P2-11：同 importFavorites，逐词补缺失——中途失败后重试能补上剩余词；
+        // 仍按原顺序写回（saveTime 由原下标定，读侧顺序不变）。
         val parsed = RnMigrationParser.parseSearchHistory(raw).take(20)
+        val existing = db.searchHistoryDao().getLatest20().map { it.keyword }.toSet()
         val now = System.currentTimeMillis()
+        var count = 0
         parsed.forEachIndexed { index, keyword ->
+            if (keyword in existing) return@forEachIndexed
             // RN 存的是最新在前的数组；按 saveTime 倒序写回，读侧顺序不变。
             db.searchHistoryDao().insert(
                 SearchHistoryEntity(keyword = keyword, saveTime = now - index * 1000L),
             )
+            count++
         }
-        AppLog.i("RnMigration", "导入搜索历史 ${parsed.size} 条")
+        AppLog.i("RnMigration", "导入搜索历史 $count 条")
     }
 
     private suspend fun importSettings(raw: String) {
@@ -387,3 +420,11 @@ class RnMigration @Inject constructor(
         }
     }
 }
+
+/**
+ * 第 6 轮 D6-P2-11：待导入的键 = 解析出的键去掉原生侧已有的键、去掉空键
+ * （纯函数，可单测）。导入按“逐键补缺失”而非“集合非空即跳过”，
+ * 中途失败后下次启动重试才能补上剩余条目。
+ */
+internal fun keysToImport(parsedKeys: Collection<String>, existingKeys: Set<String>): List<String> =
+    parsedKeys.filter { it.isNotBlank() && it !in existingKeys }
