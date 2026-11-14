@@ -8,7 +8,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -183,6 +187,79 @@ class AggApiTest {
         assertTrue(AggApi.isBodyTimeout(SocketTimeoutException("timeout")))
         assertFalse(AggApi.isBodyTimeout(UnknownHostException("ysp.ciweihaha.win")))
         assertFalse(AggApi.isBodyTimeout(IOException("connection reset")))
+    }
+
+    /** 200 响应头已到、体读取才超时的响应体：read() 抛 SocketTimeoutException。 */
+    private fun bodyTimeoutResponse(request: Request): Response {
+        val body = object : ResponseBody() {
+            override fun contentLength() = 100L
+            override fun contentType() = "application/json".toMediaTypeOrNull()
+            override fun source(): BufferedSource =
+                object : ForwardingSource(Buffer()) {
+                    override fun read(sink: Buffer, byteCount: Long): Long =
+                        throw SocketTimeoutException("body timeout")
+                }
+        }
+        return Response.Builder()
+            .request(request).protocol(Protocol.HTTP_1_1).code(200).message("test")
+            .body(body).build()
+    }
+
+    @Test
+    fun `pure body timeouts trip the breaker after three requests`() {
+        // D-P1-1：每次都是“200 响应头 + 体读取超时”，之前 recordSuccess 先清零，
+        // 计数恒在 0→1 振荡、永远到不了阈值 3；现在成功只在体读完后记，3 次即开。
+        val (client, calls) = countingClient { request, _ -> bodyTimeoutResponse(request) }
+        val agg = api(client)
+        repeat(3) {
+            assertThrows(SocketTimeoutException::class.java) {
+                runBlocking { agg.videoList(1, 1) }
+            }
+        }
+        assertEquals(3, calls.get())
+        assertTrue(agg.videoListCircuitBreaker.isOpen())
+        // 熔断开启后不再发请求。
+        assertThrows(IOException::class.java) {
+            runBlocking { agg.videoList(1, 1) }
+        }
+        assertEquals(3, calls.get())
+    }
+
+    @Test
+    fun `declared oversize closes the response`() {
+        // D-P1-2：声明超限先抛那条路之前漏关 Response，5 次可占满每 host 连接池。
+        var closed = false
+        val (client, _) = countingClient { request, _ ->
+            val body = object : ResponseBody() {
+                override fun contentLength() = 2L
+                override fun contentType() = "application/json".toMediaTypeOrNull()
+                override fun source(): BufferedSource =
+                    object : ForwardingSource(Buffer()) {
+                        override fun close() {
+                            closed = true
+                            super.close()
+                        }
+                    }
+            }
+            Response.Builder()
+                .request(request).protocol(Protocol.HTTP_1_1).code(200).message("test")
+                .header("Content-Length", "3000000")
+                .body(body).build()
+        }
+        assertThrows(AggInvalidResponseException::class.java) {
+            runBlocking { api(client).videoList(1, 1) }
+        }
+        assertTrue(closed)
+    }
+
+    @Test
+    fun `version strips v prefix before validation`() {
+        // D-P2-4：服务端带 v 返回时根治点在 AggApi，不再抛“版本号格式非法”。
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, """{"version": "v2.0.0"}""")
+        }
+        val version = runBlocking { api(client).version() }
+        assertEquals("2.0.0", version)
     }
 
 }
