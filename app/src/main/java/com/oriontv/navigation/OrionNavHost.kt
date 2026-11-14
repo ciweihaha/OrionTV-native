@@ -14,6 +14,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navDeepLink
 import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
 import com.oriontv.feature.auth.LoginModal
@@ -46,6 +47,11 @@ fun OrionNavHost(
     val currentRoute: OrionRoute? = backStackEntry?.let {
         runCatching { it.toRoute<OrionRoute>() }.getOrNull()
     }
+    // P2-3：详情/播放不匹配任何顶级项时，导航轨按来源高亮“首页”（最常见的入口）。
+    val railRoute: OrionRoute? = when (currentRoute) {
+        is OrionRoute.Detail, is OrionRoute.Play -> OrionRoute.Home
+        else -> currentRoute
+    }
     val showRail = currentRoute !is OrionRoute.Play
     val showLoginModal by authViewModel.showLoginModal.collectAsState()
     val loginError by authViewModel.loginError.collectAsState()
@@ -64,7 +70,7 @@ fun OrionNavHost(
         Row(modifier = Modifier.fillMaxSize()) {
             if (showRail) {
                 NavRail(
-                    currentRoute = currentRoute,
+                    currentRoute = railRoute,
                     onNavigate = { route ->
                         navController.navigate(route) {
                             popUpTo(OrionRoute.Home) { saveState = true }
@@ -89,7 +95,14 @@ fun OrionNavHost(
                         onBack = { navController.popBackStack() },
                     )
                 }
-                composable<OrionRoute.Detail> { entry ->
+                // P2-4：深层链接（adb/语音助手/外部调用可直达详情/播放）。
+                composable<OrionRoute.Detail>(
+                    deepLinks = listOf(
+                        navDeepLink {
+                            uriPattern = "oriontv://detail?source={source}&id={id}&title={title}"
+                        },
+                    ),
+                ) { entry ->
                     val route = entry.toRoute<OrionRoute.Detail>()
                     DetailScreen(
                         source = route.source,
@@ -99,7 +112,14 @@ fun OrionNavHost(
                         onBack = { navController.popBackStack() },
                     )
                 }
-                composable<OrionRoute.Play> { entry ->
+                composable<OrionRoute.Play>(
+                    deepLinks = listOf(
+                        navDeepLink {
+                            uriPattern = "oriontv://play?source={source}&id={id}&title={title}" +
+                                "&episodeIndex={episodeIndex}&positionMs={positionMs}"
+                        },
+                    ),
+                ) { entry ->
                     val route = entry.toRoute<OrionRoute.Play>()
                     PlayScreen(
                         source = route.source,
@@ -117,7 +137,12 @@ fun OrionNavHost(
                     FavoritesScreen(onNavigate = { navController.navigate(it) })
                 }
                 composable<OrionRoute.Settings> {
-                    SettingsScreen(onBack = { navController.popBackStack() })
+                    // P1-6：设置页用 NavHost 持有的同一个 Activity 级 UpdateViewModel
+                    // 实例（冷启动检查与手动检查共用一份状态，不再弹两张重叠卡片）。
+                    SettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        updateViewModel = updateViewModel,
+                    )
                 }
             }
         }
@@ -130,8 +155,9 @@ fun OrionNavHost(
                 error = loginError,
             )
         }
-        // 全局更新卡片：冷启动静默检查发现新版时弹（与设置页手动检查共用同一份状态机，
-        // 但这里是 Activity 级 ViewModel 实例，设置页是导航栈级实例，各自独立）。
+        // 全局更新卡片：冷启动静默检查发现新版时弹，与设置页手动检查共用
+        // NavHost 持有的同一个 Activity 级 UpdateViewModel 实例（P1-6）。
+        // 关闭后焦点由各页自行恢复：冷启动卡片无触发点，设置页卡片由设置页恢复。
         if (updateState.showUpdateCard && updateState.latestVersion != null) {
             UpdateCard(
                 currentVersion = updateState.currentVersion,
