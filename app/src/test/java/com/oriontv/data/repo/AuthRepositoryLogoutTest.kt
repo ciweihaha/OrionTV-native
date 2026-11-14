@@ -11,6 +11,7 @@ import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -98,13 +99,16 @@ class AuthRepositoryLogoutTest {
     @Test
     fun `logout still clears all three when remote logout throws`() {
         // 只清标记位等于没退：远程登出失败时三清也必须执行（finally）。
+        // 注意：logout() 只保证清理执行，不吞远程异常——调用方仍会看到这次抛错。
         val api = FakeAuthApi(logoutError = IOException("server down"))
         val settings = FakeAuthSettings()
         val store = FakeCredentialStore()
         val jar = InMemoryCookieJar()
         seedCookie(jar)
         val repo = repository(api, settings, store, jar)
-        runBlocking { repo.logout() }
+        assertThrows(IOException::class.java) {
+            runBlocking { repo.logout() }
+        }
         assertEquals(1, api.logoutCalls)
         assertEquals(1, store.clearCalls)
         assertEquals(null, store.saved)
