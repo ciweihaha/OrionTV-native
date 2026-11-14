@@ -55,6 +55,9 @@ class SearchViewModel @Inject constructor(
 
     private val cache = SearchCache()
     private var searchJob: Job? = null
+    // B7-P2-7：代次在主线程写、搜索协程读；与 DetailViewModel 同款，@Volatile
+    // 保跨线程可见性（本类读写目前都在主线程，防御性加固）。
+    @Volatile
     private var generation = 0
 
     /**
@@ -212,9 +215,26 @@ class SearchViewModel @Inject constructor(
             // 无痕模式不写搜索历史（阶段 4）。
             // B6-P2-11：服务端写失败的返回值不再丢弃——写失败时给一次 Toast，
             // 不假装已写进历史（展示用的 history 仍从服务端重读，不会“幽灵出现”）。
+            // B7-P2-4：写历史/读最新历史各包独立 try/catch——抛错只影响
+            // toast/历史，不丢已搜到的结果（旧实现任一抛错都会进外层 catch，
+            // 结果被错误态覆盖）。
             var historySaved = true
-            if (!settingsRepository.incognitoMode.first()) {
-                historySaved = searchHistoryRepository.add(query)
+            var freshHistory = _uiState.value.history
+            try {
+                if (!settingsRepository.incognitoMode.first()) {
+                    historySaved = searchHistoryRepository.add(query)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                historySaved = false
+            }
+            try {
+                freshHistory = searchHistoryRepository.getLatest20()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // 读失败留旧 history，不丢结果。
             }
             // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
             // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
@@ -224,7 +244,7 @@ class SearchViewModel @Inject constructor(
                 isLoading = false,
                 error = if (results.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
-                history = searchHistoryRepository.getLatest20(),
+                history = freshHistory,
                 toast = if (!historySaved) {
                     nextToastEvent("搜索历史保存失败，本次搜索不受影响")
                 } else {

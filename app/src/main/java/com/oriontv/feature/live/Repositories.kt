@@ -195,5 +195,64 @@ internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String?
             out.write(buffer, 0, read)
         }
     }
-    return String(out.toByteArray(), Charsets.UTF_8)
+    return decodeBodyBytes(out.toByteArray(), response.header("Content-Type"))
+}
+
+/**
+ * 响应体解码（A7-P2-3）：M3U/EPG 源常有 GBK 编码，旧实现硬解码 UTF-8——
+ * String(bytes, UTF_8) 永不抛错，只会把 GBK 台名解成乱码（核实结论：是真
+ * 缺陷，国内 IPTV 源 GBK 很常见；EPG 的 StringReader 还会忽略 XML 声明
+ * 里的 encoding，同样中招）。顺序：BOM → Content-Type charset → XML 声明
+ * encoding → 严格 UTF-8 → 回退 GBK。纯函数，可单测。
+ */
+internal fun decodeBodyBytes(bytes: ByteArray, contentType: String?): String {
+    // BOM：UTF-8 / UTF-16LE / UTF-16BE。
+    if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() &&
+        bytes[2] == 0xBF.toByte()
+    ) {
+        return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+    }
+    if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+        return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+    }
+    if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+        return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+    }
+    // Content-Type 里声明的 charset。
+    val headerCharset = contentType
+        ?.split(";")
+        ?.map { it.trim() }
+        ?.firstOrNull { it.startsWith("charset=", ignoreCase = true) }
+        ?.substringAfter("=", "")
+        ?.trim()
+        ?.trim('"', '\'')
+        ?.takeIf { it.isNotBlank() }
+    if (headerCharset != null) {
+        try {
+            return String(bytes, java.nio.charset.Charset.forName(headerCharset))
+        } catch (_: Exception) {
+            // 不支持/非法的 charset 声明，继续往下判断。
+        }
+    }
+    // XML 声明里的 encoding（如 <?xml version="1.0" encoding="GBK"?>）：
+    // 按 Latin-1 读前 512 字节找声明（字节与字符 1:1，不会误切多字节字符）。
+    val head = String(bytes, 0, minOf(bytes.size, 512), Charsets.ISO_8859_1)
+    val xmlEncoding = Regex("""<\?xml[^>]*encoding=["']([^"']+)["']""")
+        .find(head)?.groupValues?.getOrNull(1)
+    if (xmlEncoding != null) {
+        try {
+            return String(bytes, java.nio.charset.Charset.forName(xmlEncoding))
+        } catch (_: Exception) {
+            // 非法声明，继续往下判断。
+        }
+    }
+    // 严格 UTF-8 解码，失败回退 GBK（GBK 字节几乎不可能是合法 UTF-8）。
+    return try {
+        java.nio.charset.Charset.forName("UTF-8").newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+    } catch (_: java.nio.charset.CharacterCodingException) {
+        String(bytes, java.nio.charset.Charset.forName("GBK"))
+    }
 }

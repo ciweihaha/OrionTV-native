@@ -332,7 +332,15 @@ class MoonTvApi @Inject constructor(
             val bodyJson = buildJsonObject { put("keyword", JsonPrimitive(keyword)) }
                 .toString().toRequestBody("application/json".toMediaType())
             val body = execute(Request.Builder().url(url).post(bodyJson).build())
-            runCatching { json.decodeFromString<List<String>>(body) }.getOrDefault(listOf(keyword))
+            // B7-P2-5：服务端 200 但体非数组时，旧实现解码失败默认返回成功
+            //（listOf(keyword)），历史静默没写上、调用方还以为写成功了；
+            // 解码失败即抛错，让 serverWrite 走重试/失败路径（返回 false，
+            // 搜索页给“保存失败”提示）。
+            try {
+                json.decodeFromString<List<String>>(body)
+            } catch (e: Exception) {
+                throw IOException("搜索历史返回格式异常：${e.message}")
+            }
         }
 
     suspend fun deleteSearchHistory(baseUrl: String, keyword: String? = null): Boolean =
