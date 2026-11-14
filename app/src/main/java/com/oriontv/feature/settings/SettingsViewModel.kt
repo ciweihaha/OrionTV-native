@@ -2,6 +2,7 @@ package com.oriontv.feature.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.oriontv.core.util.ApiUrlPolicy
 import com.oriontv.data.local.CredentialsStore
 import com.oriontv.data.repo.AuthRepository
 import com.oriontv.data.repo.SettingsRepository
@@ -134,6 +135,14 @@ class SettingsViewModel @Inject constructor(
                         configFailed = true
                     }
                 }
+                // D-P2-8：公网 http 地址保存时提示明文风险（局域网/回环除外）；
+                // 只提示、不拦截保存。
+                val httpWarning =
+                    if (ApiUrlPolicy.check(state.apiUrl.trim()) is ApiUrlPolicy.Check.PlainHttpPublic) {
+                        "，注意：http 明文地址，登录密码将明文传输"
+                    } else {
+                        ""
+                    }
                 _uiState.update {
                     it.copy(
                         isSaving = false,
@@ -142,14 +151,14 @@ class SettingsViewModel @Inject constructor(
                         apiUrl = state.apiUrl.trim(),
                         m3uUrl = state.m3uUrl.trim(),
                         toast = when {
-                            configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行"
-                            apiChanged -> "已保存，登录状态已清除"
-                            else -> "已保存"
+                            configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行$httpWarning"
+                            apiChanged -> "已保存，登录状态已清除$httpWarning"
+                            else -> "已保存$httpWarning"
                         },
                     )
                 }
             } catch (e: CancellationException) {
-                // B-P1-9：取消原样抛出，不把取消写成“保存失败”。
+                // B-P1-9 / D-P2-2：取消原样抛出，不把取消写成“保存失败”。
                 throw e
             } catch (e: Exception) {
                 _uiState.update {
