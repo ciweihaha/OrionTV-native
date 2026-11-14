@@ -142,6 +142,22 @@ class FavoritesRepository @Inject constructor(
         return db.favoriteDao().getByKey(key) != null
     }
 
+    /**
+     * 删收藏前的严格存在检查（B8-P1-2）：与 [isFavorite] 不同，服务端失败时
+     * 直接抛错、不返回上次已知态/默认 false——否则网络失败时调用方会把
+     * “查不到”当成“已删过”而静默 return，删除无事发生、无任何提示。
+     * 展示侧（详情页初始化）仍用宽容版 [isFavorite]，不误显示“未收藏”。
+     */
+    suspend fun isFavoriteStrict(key: String): Boolean {
+        if (settingsRepository.useServerStorage()) {
+            val baseUrl = settingsRepository.currentApiBaseUrl()
+            return moonTvApi.getFavorites(baseUrl, key).isNotEmpty().also {
+                lastKnownFavorites[key] = it
+            }
+        }
+        return db.favoriteDao().getByKey(key) != null
+    }
+
     suspend fun toggle(key: String, favorite: Favorite): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
             // D-P2-13（延期，客户端修不了）：服务端 toggle 是“先 GET 判存在、
@@ -327,8 +343,11 @@ class SearchHistoryRepository @Inject constructor(
                 moonTvApi.getSearchHistory(baseUrl).also { lastGoodHistory = it }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 // B-P2-20：拉取失败≠用户没历史，返回上次成功结果，不清空。
+                // B8-P2-11：失败要记一条可见日志——旧实现静默回落，服务端
+                // 改 shape/历史丢了都无迹可查。
+                Log.w("SearchHistoryRepository", "搜索历史拉取失败，沿用上次成功结果：${e.message}")
                 lastGoodHistory ?: emptyList()
             }
             return history.take(20)

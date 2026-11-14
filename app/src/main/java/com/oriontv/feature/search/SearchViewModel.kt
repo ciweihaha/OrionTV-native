@@ -196,15 +196,18 @@ class SearchViewModel @Inject constructor(
             return
         }
         _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-        val baseUrl = settingsRepository.currentApiBaseUrl()
-        if (baseUrl.isBlank()) {
-            _uiState.value = _uiState.value.copy(
-                isLoading = false,
-                error = SearchError.NotConfigured,
-            )
-            return
-        }
         try {
+            // B8-P2-1：currentApiBaseUrl() 读 DataStore，失败会抛错——原来在
+            // try 块之外，未捕获即协程崩溃、搜索页卡在“正在搜索…”；放进 try，
+            // 按普通搜索失败落错误态、可重试。
+            val baseUrl = settingsRepository.currentApiBaseUrl()
+            if (baseUrl.isBlank()) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = SearchError.NotConfigured,
+                )
+                return
+            }
             val results = moonTvApi.searchVideos(baseUrl, query)
             // B-P2-23①：网络返回后复核 generation；迟到结果不得覆盖更新的搜索。
             //（旧任务被取消时，OkHttp 同步调用不响应取消，返回后本应由 CE 拦截，

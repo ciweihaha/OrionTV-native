@@ -191,6 +191,63 @@ class UpdateDownloaderResumeTest {
     }
 
     @Test
+    fun `restarts from zero when 206 response lacks Content-Range`() {
+        // B8-P2-9：206 缺 Content-Range 头时旧实现直接当续传成功追加，文件写坏、
+        // 要到 SHA 校验才暴露；现在删残文件、从头重下。
+        val dir = Files.createTempDirectory("oriontv-resume-test").toFile()
+        try {
+            val getCalls = AtomicInteger(0)
+            val rangeHeaders = mutableListOf<String?>()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                when {
+                    request.method == "HEAD" -> Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", full.size.toString())
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                    else -> {
+                        getCalls.incrementAndGet()
+                        val range = request.header("Range")
+                        rangeHeaders.add(range)
+                        when (getCalls.get()) {
+                            1 -> {
+                                // 第一次：下到 400 字节后停顿。
+                                responseFor(request, 200, FlakyBody(full, failAfter = 400))
+                            }
+                            2 -> {
+                                // 第二次：带 Range 续下，服务端回 206 但缺 Content-Range 头。
+                                assertEquals("bytes=400-", range)
+                                val rest = full.copyOfRange(400, full.size)
+                                responseFor(
+                                    request, 206,
+                                    rest.toResponseBody("application/octet-stream".toMediaTypeOrNull()),
+                                )
+                            }
+                            else -> {
+                                // 第三次：残文件已删，从头下整包。
+                                assertEquals(null, range)
+                                responseFor(request, 200, full.toResponseBody("application/octet-stream".toMediaTypeOrNull()))
+                            }
+                        }
+                    }
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.Unconfined)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            val result = runBlocking { downloader.downloadApk("https://example.com/orionTV.apk", dest) }
+            assertEquals(dest, result)
+            assertEquals(3, getCalls.get())
+            assertEquals(listOf(null, "bytes=400-", null), rangeHeaders)
+            assertTrue(dest.readBytes().contentEquals(full))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+
+    @Test
     fun `restarts from zero when server ignores Range`() {
         val dir = Files.createTempDirectory("oriontv-resume-test").toFile()
         try {

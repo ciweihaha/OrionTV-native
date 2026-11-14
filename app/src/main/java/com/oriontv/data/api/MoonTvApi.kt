@@ -235,34 +235,50 @@ class MoonTvApi @Inject constructor(
             // 整表解码失败时保留可解析条目（P1-8），而不是整个变空；
             // 整表逐条解出来是空时，再看对象里有没有 Favorite 的字段名，
             // 有才按单条解（Favorite 全字段有默认值，直接试单条会把整表误认成单条）。
+            // B8-P2-8：非预期 shape 不再静默返回空表——调用方（Repositories）
+            // 会无条件拿空表覆盖 lastGood* 并清 loadFailed，等于悄悄清空
+            // 用户的收藏/记录/历史；现在抛错，让调用方保留旧展示 + 置失败标记。
             runCatching { json.decodeFromString<Map<String, Favorite>>(body) }.getOrElse {
                 val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
                 if (raw == null) {
-                    // D-P2-15：体是 JSON 数组时之前静默返回空表（收藏页空白、无任何日志）；
-                    // 现在记一条可见日志再返回空表，服务端改 shape 时能在线上排查。
                     if (runCatching { json.parseToJsonElement(body) }.getOrNull() is JsonArray) {
-                        AppLog.w("MoonTvApi", "getFavorites 收到 JSON 数组体（期望对象表），返回空表")
-                        return@withContext emptyMap()
+                        AppLog.w("MoonTvApi", "getFavorites 收到 JSON 数组体（期望对象表），抛错保留旧表")
+                        throw IOException("收藏返回格式异常：收到 JSON 数组，期望对象表")
                     }
-                    runCatching {
-                        val single = json.decodeFromString<Favorite>(body)
-                        mapOf((key ?: "") to single)
-                    }.getOrDefault(emptyMap())
+                    val single = runCatching { json.decodeFromString<Favorite>(body) }.getOrElse { e ->
+                        throw IOException("收藏返回格式异常：无法解析：${e.message}")
+                    }
+                    mapOf(singleFavoriteKey(key, single) to single)
                 } else {
                     val lenient = LenientDecode.decodeMap(json, raw, Favorite.serializer())
                     if (lenient.isNotEmpty()) {
                         lenient
                     } else if (raw.keys.any { it in FAVORITE_KEYS }) {
-                        runCatching {
-                            val single = json.decodeFromString<Favorite>(body)
-                            mapOf((key ?: "") to single)
-                        }.getOrDefault(emptyMap())
+                        val single = runCatching { json.decodeFromString<Favorite>(body) }.getOrElse { e ->
+                            throw IOException("收藏返回格式异常：无法解析：${e.message}")
+                        }
+                        mapOf(singleFavoriteKey(key, single) to single)
                     } else {
-                        emptyMap()
+                        AppLog.w("MoonTvApi", "getFavorites 收到非预期对象体（无收藏字段），抛错保留旧表")
+                        throw IOException("收藏返回格式异常：对象体无收藏字段")
                     }
                 }
             }
         }
+
+    /**
+     * 单条 Favorite 对象的记录键（B8-P2-12）：调用方带 key 时用它；整表拉取
+     * （key==null）时按影片自身的 source_name + 标题派生（recordKey 的
+     * 空 id 兜底），不用 "" 作键——"" 键会混进收藏表、删/跳收藏时误伤。
+     * 来源与标题都空白时无法归属，抛错让调用方保留旧表。
+     */
+    private fun singleFavoriteKey(key: String?, favorite: Favorite): String {
+        key?.let { return it }
+        if (favorite.source_name.isBlank() && favorite.title.isBlank()) {
+            throw IOException("收藏返回格式异常：单条收藏无来源与标题，无法归属")
+        }
+        return recordKey(favorite.source_name, "", favorite.title)
+    }
 
     suspend fun addFavorite(baseUrl: String, key: String, favorite: Favorite): Boolean =
         withContext(ioDispatcher) {
@@ -291,10 +307,16 @@ class MoonTvApi @Inject constructor(
             val body = execute(Request.Builder().url(url).get().build())
             if (body.isBlank()) return@withContext emptyMap()
             // 整表解码失败时保留可解析条目（P1-8），而不是整个变空。
-            runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }.getOrElse {
+            // B8-P2-8：体不是对象时不再静默返回空表（调用方会拿空表覆盖
+            // lastGoodRecords 并清 loadFailed）；对象体逐条解出来是空时
+            // （例如 {} 或全是坏条目）仍按空表——那是合法的空记录。
+            runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }.getOrElse { e ->
                 val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
-                raw?.let { LenientDecode.decodeMap(json, it, PlayRecord.serializer()) }
-                    ?: emptyMap()
+                if (raw == null) {
+                    AppLog.w("MoonTvApi", "getPlayRecords 收到非对象体，抛错保留旧表")
+                    throw IOException("播放记录返回格式异常：期望对象表：${e.message}")
+                }
+                LenientDecode.decodeMap(json, raw, PlayRecord.serializer())
             }
         }
 
@@ -323,7 +345,15 @@ class MoonTvApi @Inject constructor(
         val url = "${baseUrl.trimEnd('/')}/api/searchhistory"
         val body = execute(Request.Builder().url(url).get().build())
         if (body.isBlank()) return@withContext emptyList()
-        runCatching { json.decodeFromString<List<String>>(body) }.getOrDefault(emptyList())
+        // B8-P2-8/B8-P2-11：解码失败不再静默返回空列表、无日志——调用方会拿
+        // 空表覆盖 lastGoodHistory，用户历史悄悄清空；现在抛错，让调用方
+        // 保留旧历史（addSearchHistory 同款处理，见 B7-P2-5）。
+        try {
+            json.decodeFromString<List<String>>(body)
+        } catch (e: Exception) {
+            AppLog.w("MoonTvApi", "getSearchHistory 返回格式异常：${e.message}")
+            throw IOException("搜索历史返回格式异常：${e.message}")
+        }
     }
 
     suspend fun addSearchHistory(baseUrl: String, keyword: String): List<String> =

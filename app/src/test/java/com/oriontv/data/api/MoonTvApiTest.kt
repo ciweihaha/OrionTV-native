@@ -193,12 +193,53 @@ class MoonTvApiTest {
     }
 
     @Test
-    fun `getFavorites returns empty map for json array body`() {
-        // D-P2-15：数组体不再静默空表（现在还记一条可见日志，行为仍是返回空表）。
+    fun `getFavorites throws on json array body instead of silently returning empty`() {
+        // B8-P2-8：数组体不再静默返回空表——调用方会拿空表覆盖 lastGood* 并清
+        // loadFailed，等于悄悄清空用户收藏；现在抛错，让调用方保留旧表 + 置失败标记。
         val body = """[{"cover":"","title":"单片","source_name":"源","total_episodes":3,"search_title":"单片"}]"""
         val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getFavorites("https://example.com") }
+        }
+    }
+
+    @Test
+    fun `getFavorites derives key from source and title when single object has no key`() {
+        // B8-P2-12：整表拉取（key==null）时服务端回单条对象，旧实现用 "" 作键
+        // 混进收藏表；现在按影片自身的来源 + 标题派生 recordKey。
+        val body = """{"cover":"","title":"单片","source_name":"源","total_episodes":3,"search_title":"单片"}"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
         val favs = runBlocking { api(client).getFavorites("https://example.com") }
-        assertEquals(emptyMap<String, Favorite>(), favs)
+        assertEquals(1, favs.size)
+        assertEquals("源+title:单片", favs.keys.first())
+        assertEquals("单片", favs.values.first().title)
+    }
+
+    @Test
+    fun `getFavorites throws on unexpected object shape`() {
+        // B8-P2-8：对象体无收藏字段也不再静默空表。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, """{"foo":1}""") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getFavorites("https://example.com") }
+        }
+    }
+
+    @Test
+    fun `getSearchHistory throws on undecodable body instead of silently returning empty`() {
+        // B8-P2-8/B8-P2-11：解码失败不再静默返回空列表、无日志。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, """{"not":"a-list"}""") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getSearchHistory("https://example.com") }
+        }
+    }
+
+    @Test
+    fun `getPlayRecords throws on non-object body instead of silently returning empty`() {
+        // B8-P2-8：非对象体不再静默返回空表。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, """[{"title":"x"}]""") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getPlayRecords("https://example.com") }
+        }
     }
 
     @Test

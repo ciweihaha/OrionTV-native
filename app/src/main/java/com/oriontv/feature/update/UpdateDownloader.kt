@@ -1,5 +1,6 @@
 package com.oriontv.feature.update
 
+import com.oriontv.core.util.VersionUtils
 import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
@@ -135,11 +136,18 @@ class UpdateDownloader @Inject constructor(
                     val isResume = response.code == 206
                     if (isResume) {
                         // 206 必须从断点处续上，否则追加会写坏文件：起点不对就删残文件重下。
+                        // B8-P2-9：缺 Content-Range 头时旧实现直接当续传成功追加——
+                        // 服务端没确认起点就追加，文件必然写坏、SHA 校验才暴露；
+                        // 缺头与起点不一致同等处理：删残文件、抛错重下。
                         val rangeStart = response.header("Content-Range")
                             ?.substringAfter("bytes ", "")
                             ?.substringBefore("-")
                             ?.toLongOrNull()
-                        if (rangeStart != null && rangeStart != resumedFrom) {
+                        if (rangeStart == null) {
+                            destFile.delete()
+                            throw IOException("下载失败：服务端 206 响应缺 Content-Range 头，无法确认续传起点，从头重下")
+                        }
+                        if (rangeStart != resumedFrom) {
                             destFile.delete()
                             throw IOException("下载失败：服务端续传起点 $rangeStart 与断点 $resumedFrom 不一致，从头重下")
                         }
@@ -296,12 +304,12 @@ class UpdateDownloader @Inject constructor(
                 // "1" < "9"），刚下好的新包反被当旧包删掉；改按最后修改时间倒序，
                 // 与“只保留最新 N 个”的注释一致。
                 // 第 5 轮 CI 跟进：lastModified 只有毫秒精度，快机器上连续创建的
-                // 文件会打平——sortedByDescending 是稳定排序，打平时结果取决于
-                // listFiles() 的未定义顺序，CI 两次因此红了、本地慢机器却全绿。
-                // 加文件名倒序作平局决胜，结果在任何文件系统上都确定。
-            }?.sortedWith(
-                compareByDescending<File> { it.lastModified() }.thenByDescending { it.name },
-            ).orEmpty()
+                // 文件会打平——打平时结果取决于 listFiles() 的未定义顺序，
+                // CI 两次因此红了、本地慢机器却全绿。
+                // B8-P2-10：平局决胜不能按文件名倒序——那是 B5-P1-4 同款坑换了
+                // 个位置复活（字典序 v2.0.10 < v2.0.9），打平时刚下好的包照
+                // 样被当旧包删掉；改按版本号倒序（见 compareApkFilesForCleanup）。
+            }?.sortedWith(Comparator(::compareApkFilesForCleanup)).orEmpty()
             if (files.size <= keep) return
             files.drop(keep).forEach { runCatching { it.delete() } }
         } catch (_: Exception) {
@@ -326,6 +334,21 @@ class UpdateDownloader @Inject constructor(
  */
 fun shouldTreat416AsComplete(resumedFrom: Long, declaredSizeBytes: Long?): Boolean =
     declaredSizeBytes != null && resumedFrom >= declaredSizeBytes
+
+/**
+ * 旧 APK 清理排序（可单测，B8-P2-10）：最后修改时间倒序为主；打平时按
+ * 版本号倒序决胜，不按文件名倒序——字典序下 v2.0.10 < v2.0.9（B5-P1-4
+ * 同款坑换了个位置复活），打平时刚下好的包会被当旧包删掉、该版本永远装不上。
+ */
+internal fun compareApkFilesForCleanup(a: File, b: File): Int {
+    val byTime = b.lastModified().compareTo(a.lastModified())
+    if (byTime != 0) return byTime
+    return VersionUtils.compare(apkVersionOf(b), apkVersionOf(a))
+}
+
+/** 从 OrionTV_v<版本>.apk 文件名取版本号（去前后缀；取不到时原样返回，比较时按 0 处理）。 */
+internal fun apkVersionOf(file: File): String =
+    file.name.removePrefix("OrionTV_v").removeSuffix(".apk")
 
 /** 更新流程错误分型（各步失败都要有明确提示，不静默失败）。 */
 sealed interface UpdateError {

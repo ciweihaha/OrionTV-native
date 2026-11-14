@@ -307,6 +307,10 @@ class AuthRepository @Inject constructor(
             } catch (e: Exception) {
                 AppLog.w("AuthRepository", "静默恢复成功但登录标记保存失败，下次冷启动需重新登录：${e.message}")
             }
+            // B8-P1-1：写标记后、置位前再复核一次世代——登出若插在上面
+            // 的检查与写态之间，旧实现会把已退出的会话悄悄复活（置
+            // _isLoggedIn=true、关登录弹窗）；世代变了即不碰登录态。
+            if (logoutEpoch.get() != epochAtStart) return false
             _isLoggedIn.value = true
             _showLoginModal.value = false
             true

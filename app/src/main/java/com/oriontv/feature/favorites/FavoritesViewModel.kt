@@ -112,7 +112,10 @@ class FavoritesViewModel @Inject constructor(
         _uiState.update { it.copy(removingKeys = it.removingKeys + key) }
         viewModelScope.launch {
             try {
-                if (!favoritesRepository.isFavorite(key)) return@launch
+                // B8-P1-2：删前存在检查用严格版——服务端网络失败时抛错走下面
+                // 的 catch 弹提示；宽容版 isFavorite 失败返回 false，会让
+                // 删除静默 return、无事发生、无任何提示。
+                if (!favoritesRepository.isFavoriteStrict(key)) return@launch
                 val items = _uiState.value.items
                 val idx = items.indexOfFirst { it.first == key }
                 savedFocusKey = when {

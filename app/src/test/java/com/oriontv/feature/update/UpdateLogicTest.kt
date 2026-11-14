@@ -108,6 +108,29 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `clean old apks breaks mtime ties by version not by filename`() {
+        // B8-P2-10：lastModified 打平时旧实现按文件名倒序决胜，字典序下
+        // v2.0.10 < v2.0.9，刚下好的包会被当旧包删掉；现在按版本号倒序。
+        val downloader = UpdateDownloader(OkHttpClient())
+        val dir = Files.createTempDirectory("oriontv-apk-tie-test").toFile()
+        try {
+            val now = System.currentTimeMillis()
+            listOf("OrionTV_v2.0.8.apk", "OrionTV_v2.0.9.apk", "OrionTV_v2.0.10.apk", "OrionTV_v2.0.11.apk")
+                .forEach { name ->
+                    File(dir, name).apply {
+                        writeText("x")
+                        setLastModified(now)
+                    }
+                }
+            downloader.cleanOldApkFiles(dir)
+            val remaining = dir.listFiles()?.map { it.name }?.toSet().orEmpty()
+            assertEquals(setOf("OrionTV_v2.0.11.apk", "OrionTV_v2.0.10.apk"), remaining)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `version check error distinguishes bad version format`() {
         // P2-4（第 5 轮）：带 v 前缀的版本号在 AggApi 层抛错，壳侧文案与网络
         // 失败区分开；普通异常仍走原来的“检查网络”文案。
