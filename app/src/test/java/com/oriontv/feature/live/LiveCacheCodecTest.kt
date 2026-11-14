@@ -43,10 +43,18 @@ class LiveCacheCodecTest {
     }
 
     @Test
-    fun `m3u cache over 3MB is refused`() {
+    fun `m3u cache between 3MB and 5MB is now kept`() {
+        // P2-10：拉取上限 5MB、缓存上限 3MB 不一致，3–5MB 的源每次重下、无离线；
+        // 对齐到 5MB 后该区间可落盘，超 5MB 仍拒绝。
+        val mid = channels + M3uParser.Channel(
+            id = "http://a/mid.m3u8",
+            name = "x".repeat(3 * 1024 * 1024 + 1),
+            urls = listOf("http://a/mid.m3u8"),
+        )
+        assertTrue(LiveCacheCodec.encodeM3u(M3uCache(ts = 0L, channels = mid), json) != null)
         val huge = channels + M3uParser.Channel(
             id = "http://a/huge.m3u8",
-            name = "x".repeat(3 * 1024 * 1024 + 1),
+            name = "x".repeat(5 * 1024 * 1024 + 1),
             urls = listOf("http://a/huge.m3u8"),
         )
         assertNull(LiveCacheCodec.encodeM3u(M3uCache(ts = 0L, channels = huge), json))

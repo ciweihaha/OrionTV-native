@@ -11,7 +11,7 @@ import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** M3U 落盘缓存（plan §5.4：`mytv_m3u_cache_<m3uUrl>`，TTL 7 天，JSON 超 3MB 不落盘）。 */
+/** M3U 落盘缓存（plan §5.4：`mytv_m3u_cache_<m3uUrl>`，TTL 7 天；M3U JSON 上限 5MB，与拉取上限对齐）。 */
 @Serializable
 data class M3uCache(
     val ts: Long,
@@ -25,11 +25,18 @@ data class EpgCache(
     val data: EpgParser.EpgData,
 )
 
-/** 缓存编解码（纯函数，可单测；3MB 上限在这里卡）。 */
+/** 缓存编解码（纯函数，可单测）。 */
 object LiveCacheCodec {
+    /**
+     * M3U 缓存上限 5MB，与拉取上限（ApiClient.MAX_M3U_BYTES）对齐：
+     * 之前拉取放 5MB、缓存只放 3MB，3–5MB 的源每次都重下、永无离线。
+     * EPG 仍用 3MB（拉取也是 3MB，两处本来就一致）。
+     */
+    const val MAX_M3U_CACHE_BYTES = ApiClient.MAX_M3U_BYTES
+
     fun encodeM3u(cache: M3uCache, json: Json): String? {
         val text = json.encodeToString(cache)
-        return text.takeIf { it.toByteArray(Charsets.UTF_8).size <= ApiClient.MAX_CACHE_BYTES }
+        return text.takeIf { it.toByteArray(Charsets.UTF_8).size <= MAX_M3U_CACHE_BYTES }
     }
 
     fun decodeM3u(text: String, json: Json): M3uCache? =
@@ -77,7 +84,7 @@ class LiveCacheStore @Inject constructor(
         val encoded = LiveCacheCodec.encodeM3u(
             M3uCache(ts = System.currentTimeMillis(), channels = channels),
             json,
-        ) ?: return // 超 3MB 不落盘
+        ) ?: return // 超 5MB 不落盘（与拉取上限对齐）
         runCatching { m3uFile(m3uUrl).writeText(encoded) }
     }
 
