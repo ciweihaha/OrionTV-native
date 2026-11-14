@@ -114,4 +114,49 @@ class FavoritesToggleTest {
             }
         }
     }
+
+    @Test
+    fun `verify match returns expected and records server state`() {
+        // D-P2-13：校验一致时返回写结果，并按服务端实态更新 lastKnown。
+        val known = mutableListOf<Boolean>()
+        assertTrue(applyToggleVerification(true, true) { known.add(it) })
+        assertEquals(listOf(true), known)
+        assertFalse(applyToggleVerification(false, false) { known.add(it) })
+        assertEquals(listOf(true, false), known)
+    }
+
+    @Test
+    fun `verify fetch failure keeps write result and touches nothing`() {
+        // D-P2-13：校验 GET 本身失败不得推翻已成功的写——返回预期态，
+        // 不更新 lastKnown、不抛错（否则用户一点重试会把刚写好的翻回去）。
+        val known = mutableListOf<Boolean>()
+        assertTrue(applyToggleVerification(true, null) { known.add(it) })
+        assertFalse(applyToggleVerification(false, null) { known.add(it) })
+        assertTrue(known.isEmpty())
+    }
+
+    @Test
+    fun `verify mismatch updates known state to server truth then throws`() {
+        // D-P2-13：分叉时以服务端实态为准（先更新 lastKnown），再抛错让
+        // 调用方提示失败并重读 isFavorite() 展示实态。
+        val known = mutableListOf<Boolean>()
+        val thrown = assertThrows(IOException::class.java) {
+            applyToggleVerification(true, false) { known.add(it) }
+        }
+        assertTrue(thrown.message!!.contains("不一致"))
+        assertEquals(listOf(false), known)
+        val thrown2 = assertThrows(IOException::class.java) {
+            applyToggleVerification(false, true) { known.add(it) }
+        }
+        assertTrue(thrown2.message!!.contains("不一致"))
+        assertEquals(listOf(false, true), known)
+    }
+
+    @Test
+    fun `decideFavoriteState maps known states and unknown`() {
+        // D7-P2-10：从未查过时是 UNKNOWN，不是“未收藏”。
+        assertEquals(FavoriteState.FAVORITE, decideFavoriteState(true))
+        assertEquals(FavoriteState.NOT_FAVORITE, decideFavoriteState(false))
+        assertEquals(FavoriteState.UNKNOWN, decideFavoriteState(null))
+    }
 }
