@@ -54,9 +54,12 @@ class SearchViewModel @Inject constructor(
     private var searchJob: Job? = null
     private var generation = 0
 
-    /** P1-4：首进才落搜索框锚点；返回时恢复 savedResultIndex。 */
+    /** P1-4：首进才落搜索框锚点；返回时恢复 savedResultKey。 */
     var initialFocusDone: Boolean = false
-    var savedResultIndex: Int = -1
+
+    /** P2-9（第 5 轮）：返回焦点恢复按条目键（source+id）锚定，不按 index——
+     * 搜索结果刷新后 index 对应的已是另一张卡。 */
+    var savedResultKey: String? = null
 
     init {
         // C4-P1-5：搜索切走再回不丢结果——query/结果/searchedQuery 进 SavedStateHandle
@@ -302,6 +305,16 @@ class SearchViewModel @Inject constructor(
 
 /** P2-11：只缓存非空结果；空结果不进缓存（纯逻辑，可单测）。 */
 fun shouldCacheSearchResults(results: List<SearchResult>): Boolean = results.isNotEmpty()
+
+/** 搜索结果条目键（纯逻辑，可单测）：source+id。 */
+fun searchResultKey(result: SearchResult): String =
+    "${result.source}+${result.id.orEmpty()}"
+
+/** P2-9（第 5 轮）：按条目键找返回焦点位置（纯逻辑，可单测）；找不到返回 -1。 */
+fun findSavedResult(results: List<SearchResult>, savedKey: String?): Int {
+    if (savedKey == null) return -1
+    return results.indexOfFirst { searchResultKey(it) == savedKey }
+}
 
 /** 搜索错误分型（ui-design.md §5.5：错误分型提示，不是一句“失败”）。 */
 sealed interface SearchError {

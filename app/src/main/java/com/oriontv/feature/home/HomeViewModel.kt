@@ -52,27 +52,24 @@ class HomeViewModel @Inject constructor(
             savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
         }
 
-    var savedFocusRow: Int
-        get() = savedStateHandle[SAVED_FOCUS_ROW] ?: -1
+    /**
+     * P2-9（第 5 轮）：返回焦点恢复按条目键锚定（行标题 + source+id），
+     * 不按行/卡片 index——列表变化后 index 对应的已是另一张卡。
+     * 键同样由 SavedStateHandle 承载（不只用内存变量，否则导航轨切走后
+     * ViewModel 被清、键就丢了）。
+     */
+    var savedFocusKey: String?
+        get() = savedStateHandle[SAVED_FOCUS_KEY]
         set(value) {
-            savedStateHandle[SAVED_FOCUS_ROW] = value
-        }
-
-    var savedFocusCard: Int
-        get() = savedStateHandle[SAVED_FOCUS_CARD] ?: -1
-        set(value) {
-            savedStateHandle[SAVED_FOCUS_CARD] = value
+            savedStateHandle[SAVED_FOCUS_KEY] = value
         }
 
     companion object {
         /** SavedStateHandle 键：是否已落过默认锚点。 */
         const val SAVED_INITIAL_FOCUS_DONE = "home_initial_focus_done"
 
-        /** SavedStateHandle 键：上次所在的行下标（-1 = 未记录）。 */
-        const val SAVED_FOCUS_ROW = "home_saved_focus_row"
-
-        /** SavedStateHandle 键：上次所在的卡片下标（-1 = 未记录）。 */
-        const val SAVED_FOCUS_CARD = "home_saved_focus_card"
+        /** SavedStateHandle 键：上次所在的卡片条目键（P2-9 按键锚定，不按 index）。 */
+        const val SAVED_FOCUS_KEY = "home_saved_focus_key"
     }
 
     init {

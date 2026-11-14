@@ -120,3 +120,31 @@ fun remainingMinutesLabel(playTimeSeconds: Long, totalTimeSeconds: Long): String
     val minutes = (remaining + 59) / 60
     return "剩余 $minutes 分钟"
 }
+
+/** 返回焦点恢复用的条目键（纯函数，可单测）：“行标题 + source+id”。 */
+fun homeFocusKey(rowTitle: String, item: HomeRowItem): String =
+    "$rowTitle\u0001${item.source}+${item.id}"
+
+/**
+ * P2-9（第 5 轮）：按条目键找返回焦点位置（纯函数，可单测）。
+ * 先在同名行里找，找不到再在任意行里找同 source+id 的卡片（同一部片
+ * 可能同时在“最近播放”与分类行里），都找不到返回 null（调用方回落
+ * 首 chip）。返回 (行 index, 卡片 index)。
+ */
+fun findSavedCard(rows: List<HomeRow>, savedKey: String?): Pair<Int, Int>? {
+    if (savedKey == null) return null
+    val parts = savedKey.split("\u0001", limit = 2)
+    val rowTitle = if (parts.size == 2) parts[0] else ""
+    val itemKey = if (parts.size == 2) parts[1] else savedKey
+    rows.forEachIndexed { rowIndex, row ->
+        if (row.title == rowTitle) {
+            val cardIndex = row.items.indexOfFirst { "${it.source}+${it.id}" == itemKey }
+            if (cardIndex >= 0) return rowIndex to cardIndex
+        }
+    }
+    rows.forEachIndexed { rowIndex, row ->
+        val cardIndex = row.items.indexOfFirst { "${it.source}+${it.id}" == itemKey }
+        if (cardIndex >= 0) return rowIndex to cardIndex
+    }
+    return null
+}

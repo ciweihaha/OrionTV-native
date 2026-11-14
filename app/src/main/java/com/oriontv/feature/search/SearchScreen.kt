@@ -45,6 +45,7 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import kotlinx.coroutines.delay
 
 /**
  * 搜索页（ui-design.md §5.5）：
@@ -89,19 +90,28 @@ fun SearchScreen(
         }
     }
 
-    // P1-4：首进落搜索框；返回时恢复上次的结果卡片。
+    // P1-4/P2-9：首进落搜索框；返回时按条目键恢复上次的结果卡片。
+    // 结果可能仍在加载（返回时搜索在途），最多等 1 秒；等不到或键已不在
+    // 结果里，回落搜索框。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
     LaunchedEffect(focusRestoreTick) {
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true
         } else {
-            val saved = viewModel.savedResultIndex
-            if (saved in uiState.results.indices) {
-                gridState.scrollToItem(saved)
+            // P2-9：按条目键恢复；返回时结果可能仍在加载，最多等 1 秒。
+            val key = viewModel.savedResultKey
+            var target = -1
+            for (attempt in 0 until 10) {
+                target = findSavedResult(uiState.results, key)
+                if (target >= 0) break
+                delay(100)
+            }
+            if (target >= 0) {
+                gridState.scrollToItem(target)
                 // C4-P2-2/B4-P2-23：目标卡片尚未组合完成时重试请求，仍失败才回搜索框，
                 // 不再靠 120ms 固定延时猜时序、也不再静默丢焦点。
-                val restored = resultRequesters[saved]?.requestFocusWithRetry() ?: false
+                val restored = resultRequesters[target]?.requestFocusWithRetry() ?: false
                 if (!restored) searchRequester.requestFocus()
             } else {
                 searchRequester.requestFocus()
@@ -287,7 +297,7 @@ fun SearchScreen(
                                     ),
                                 )
                             },
-                            onFocused = { viewModel.savedResultIndex = index },
+                            onFocused = { viewModel.savedResultKey = searchResultKey(result) },
                             modifier = Modifier.preferredFocus(
                                 resultRequesters.getOrPut(index) { FocusRequester() },
                             ),
