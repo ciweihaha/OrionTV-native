@@ -363,4 +363,38 @@ class MoonTvApiTest {
         }
         assertEquals(1, calls.get())
     }
+
+    @Test
+    fun `getPlayRecords with key sends keyed url`() {
+        // D7-P2-7：查一条记录发 ?key= 单条查询，不再全表拉取；服务端忽略
+        // 参数回整表时，客户端按 key 取值结果仍正确。
+        val body = """{"agg+1": {"title":"片一","source_name":"源","cover":"","index":1,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123},
+            "agg+2": {"title":"片二","source_name":"源","cover":"","index":2,"total_episodes":12,"play_time":6,"total_time":120,"save_time":124}}"""
+        val (client, _, lastUrl) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com", "agg+1") }
+        assertTrue(lastUrl.get().contains("api/playrecords?key=agg%2B1"))
+        assertEquals(2, records.size)
+        assertEquals("片一", records.getValue("agg+1").title)
+    }
+
+    @Test
+    fun `getPlayRecords with key wraps single object response`() {
+        // D7-P2-7：服务端直接回单条 PlayRecord 对象时（与 getFavorites 单条
+        // 兜底同款），按 key 包成单条表，不丢记录。
+        val body = """{"title":"片一","source_name":"源","cover":"","index":1,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123}"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com", "agg+1") }
+        assertEquals(1, records.size)
+        assertEquals("片一", records.getValue("agg+1").title)
+    }
+
+    @Test
+    fun `getPlayRecords without key keeps full table url`() {
+        // D7-P2-7 的另一半：整表查询（getAllWithKeys 用）不带 ?key=，行为不变。
+        val body = """{"agg+1": {"title":"片一","source_name":"源","cover":"","index":1,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123}}"""
+        val (client, _, lastUrl) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com") }
+        assertFalse(lastUrl.get().contains("?key="))
+        assertEquals(1, records.size)
+    }
 }

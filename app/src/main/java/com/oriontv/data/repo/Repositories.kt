@@ -253,8 +253,12 @@ class PlayRecordsRepository @Inject constructor(
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
             return try {
-                moonTvApi.getPlayRecords(baseUrl).also {
-                    lastGoodRecords = it
+                // D7-P2-7：单条查询（?key=，与 getFavorites 同款），不再为查
+                // 一条记录全表拉取；服务端忽略参数回整表时按 key 取值仍正确。
+                // 注意：单条回表不得整体覆盖 lastGoodRecords（会把全表缓存
+                // 冲成一条），只做合并；失败时仍用旧缓存里的断点兜底。
+                moonTvApi.getPlayRecords(baseUrl, key).also {
+                    lastGoodRecords = lastGoodRecords?.plus(it) ?: it
                     _loadFailed.value = false
                 }[key]
             } catch (e: CancellationException) {
