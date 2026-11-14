@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 更新 ViewModel（plan §5.1/§5.5/§6 M3）：
@@ -113,6 +114,7 @@ class UpdateViewModel @Inject constructor(
                     }
                 }
             } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不转成 error 状态（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (e: Exception) {
                 _uiState.update {
@@ -156,6 +158,9 @@ class UpdateViewModel @Inject constructor(
                     // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
                     it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
                 }
+            } catch (e: CancellationException) {
+                // D-P2-2：取消原样抛出，不转成 error 状态。
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(

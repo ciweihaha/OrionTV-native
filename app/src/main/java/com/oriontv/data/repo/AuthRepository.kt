@@ -1,9 +1,10 @@
 package com.oriontv.data.repo
 
 import com.oriontv.core.util.AppLog
-import com.oriontv.data.api.AuthApi
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.UnauthorizedException
-import com.oriontv.data.local.CredentialStore
+import com.oriontv.data.local.CredentialsStore
+import com.oriontv.di.ApplicationScope
 import com.oriontv.di.InMemoryCookieJar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -31,10 +32,12 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 @Singleton
 class AuthRepository @Inject constructor(
-    private val moonTvApi: AuthApi,
-    private val settingsRepository: AuthSettings,
-    private val credentialsStore: CredentialStore,
+    private val moonTvApi: MoonTvApi,
+    private val settingsRepository: SettingsRepository,
+    private val credentialsStore: CredentialsStore,
     private val cookieJar: InMemoryCookieJar,
+    /** 应用级作用域：server-config 后台刷新（D-P2-7）与登录态判定不互相阻塞。 */
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) {
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()

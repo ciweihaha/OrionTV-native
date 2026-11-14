@@ -29,12 +29,6 @@ import javax.inject.Singleton
 /** 应用级协程作用域（D-P2-7/D-P1-6）：后台刷新 server-config、RN 首启迁移等不阻塞 UI 的一次性任务；随进程存活，不取消。 */
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
-@Target(
-    AnnotationTarget.FUNCTION,
-    AnnotationTarget.FIELD,
-    AnnotationTarget.VALUE_PARAMETER,
-    AnnotationTarget.PROPERTY,
-)
 annotation class ApplicationScope
 
 /** Hilt 单例模块：网络、序列化、数据库。 */
@@ -47,22 +41,6 @@ object AppModule {
     @ApplicationScope
     fun provideApplicationScope(): CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    /**
-     * D-P1-4：AuthRepository 只依赖三个小接口（AuthApi / AuthSettings /
-     * CredentialStore），这里绑到具体实现；单测用内存假实现替换。
-     */
-    @Provides
-    @Singleton
-    fun provideAuthApi(api: MoonTvApi): com.oriontv.data.api.AuthApi = api
-
-    @Provides
-    @Singleton
-    fun provideAuthSettings(repo: com.oriontv.data.repo.SettingsRepository): com.oriontv.data.repo.AuthSettings = repo
-
-    @Provides
-    @Singleton
-    fun provideCredentialStore(store: com.oriontv.data.local.CredentialsStore): com.oriontv.data.local.CredentialStore = store
 
     /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
