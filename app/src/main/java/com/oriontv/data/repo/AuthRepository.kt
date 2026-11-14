@@ -2,6 +2,7 @@ package com.oriontv.data.repo
 
 import com.oriontv.core.util.AppLog
 import com.oriontv.data.api.AuthApi
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.local.CredentialStore
 import com.oriontv.di.InMemoryCookieJar
