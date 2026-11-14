@@ -39,6 +39,9 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 下载中显示进度，下载完成变“安装”；失败原因红字显示在卡片内。
  * 焦点（P1-5）：打开时 requestFocus 到主按钮（“立即更新/立即安装”）；
  * 三个按钮间方向键循环，不会移到背后页面；关闭后焦点由调用方还给触发点。
+ * 焦点（P1-2，第 5 轮）：焦点随卡片状态走，不只打开瞬间抢一次——
+ * 下载完成变“立即安装”时落回主按钮；超限包打开时主按钮禁用，直接落
+ * 到“跳过此版”；下载中主按钮禁用，落到“稍后”（下载继续在后台跑）。
  * P2-21：旧写死通用“更新说明”已去掉（服务端不返回 changelog 时不编文案）。
  * P2-22：安装包超 200MB 时禁用更新按钮并提示（下载层原有拦截，卡片层提前拦）。
  */
@@ -60,11 +63,20 @@ fun UpdateCard(
     val skipRequester = remember { FocusRequester() }
     val dismissRequester = remember { FocusRequester() }
 
-    // P1-5：打开即抢焦点到主按钮。
-    LaunchedEffect(Unit) { primaryRequester.requestFocus() }
-
     // P2-22：超 200MB 的包卡片层直接禁用更新按钮（不让用户点进去才报 TooLarge）。
     val apkTooLarge = apkSizeBytes != null && apkSizeBytes > UpdateDownloader.MAX_APK_BYTES
+
+    // P1-2（第 5 轮）：焦点随卡片状态走，不只打开瞬间抢一次。
+    // 下载完成变“立即安装”时落回主按钮；超限包打开时主按钮禁用，直接落
+    // 到“跳过此版”；下载中主按钮禁用，落到“稍后”（下载继续在后台跑）。
+    LaunchedEffect(downloading, downloaded, apkTooLarge) {
+        when {
+            downloaded -> primaryRequester.requestFocus()
+            downloading -> dismissRequester.requestFocus()
+            apkTooLarge -> skipRequester.requestFocus()
+            else -> primaryRequester.requestFocus()
+        }
+    }
 
     AnimatedVisibility(
         visible = true,

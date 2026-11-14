@@ -1,6 +1,7 @@
 package com.oriontv.feature.settings
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -33,13 +34,19 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.Text
 import com.oriontv.BuildConfig
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.feature.remoteinput.QrCodeGenerator
+import com.oriontv.feature.remoteinput.RemoteInputLogic
 import com.oriontv.feature.remoteinput.RemoteInputModal
 import com.oriontv.feature.update.UpdateViewModel
 import com.oriontv.ui.components.OrionToast
@@ -120,6 +127,14 @@ fun SettingsScreen(
             qrModalWasOpen = false
             qrTriggerRequester.requestFocus()
         }
+    }
+
+    // P2-5（第 5 轮）：返回键先关更新卡片/二维码弹窗，不直接退出设置页。
+    // 注意：卡片只由 NavHost 全局渲染（P1-2 已删设置页那份），但关闭状态
+    // 是同一个 ViewModel，这里照样能拦住；二维码弹窗是设置页自己的。
+    BackHandler(enabled = updateState.showUpdateCard || showQrModal) {
+        if (updateState.showUpdateCard) updateViewModel.dismissCard()
+        else showQrModal = false
     }
 
     Box(
@@ -204,6 +219,7 @@ fun SettingsScreen(
                         isRunning = remoteState.isRunning,
                         serverUrl = remoteState.serverUrl,
                         pairingCode = remoteState.pairingCode,
+                        pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
                         error = remoteState.error,
                         onToggle = { viewModel.setRemoteInputEnabled(it) },
                         onShowQr = { showQrModal = true },
@@ -268,6 +284,7 @@ fun SettingsScreen(
         RemoteInputModal(
             serverUrl = remoteState.serverUrl,
             pairingCode = remoteState.pairingCode,
+            pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
             error = remoteState.error,
             onDismiss = { showQrModal = false },
             // P2-14：服务未启动时弹窗内一键开启。
@@ -357,6 +374,16 @@ private fun SettingsInputRow(
     focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
+    // P2-1（第 5 轮）：输入框内部用 TextFieldValue，才能知道光标位置。
+    // 左键行为：光标不在行首时只移光标（消费掉松键，不冒泡到父级回菜单）；
+    // 光标已在行首时放行，冒泡到父级回左菜单。光标移动发生在 KeyDown，
+    // 这里只拦 KeyUp，不影响光标移动本身。真机待验证。
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+    LaunchedEffect(value) {
+        if (value != textFieldValue.text) {
+            textFieldValue = TextFieldValue(value, TextRange(value.length))
+        }
+    }
     Column {
         Text(text = label, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         Spacer(modifier = Modifier.height(8.dp))
@@ -373,15 +400,26 @@ private fun SettingsInputRow(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
+                value = textFieldValue,
+                onValueChange = {
+                    textFieldValue = it
+                    onValueChange(it.text)
+                },
                 textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                    .onFocusChanged { focused = it.isFocused },
+                    .onFocusChanged { focused = it.isFocused }
+                    .onKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionLeft) {
+                            // 光标不在行首：消费松键，只移光标，不回菜单。
+                            textFieldValue.selection.start > 0
+                        } else {
+                            false
+                        }
+                    },
                 decorationBox = { innerTextField ->
-                    if (value.isEmpty()) {
+                    if (textFieldValue.text.isEmpty()) {
                         Text(text = "请输入$label", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
                     }
                     innerTextField()
@@ -526,6 +564,7 @@ private fun RemoteInputSettings(
     isRunning: Boolean,
     serverUrl: String?,
     pairingCode: String?,
+    pairingCodeRemainingSeconds: Int?,
     error: String?,
     onToggle: (Boolean) -> Unit,
     onShowQr: () -> Unit,
@@ -565,7 +604,13 @@ private fun RemoteInputSettings(
                     )
                     if (!pairingCode.isNullOrBlank()) {
                         Text(
-                            text = "配对码：$pairingCode（5 分钟内有效）",
+                            // P2-8：倒计时（轮换任务每 5 秒刷新）；没拿到剩余秒数时
+                            // 回落到旧文案“5 分钟内有效”。
+                            text = "配对码：$pairingCode（${
+                                RemoteInputLogic.formatPairingRemaining(
+                                    pairingCodeRemainingSeconds,
+                                ) ?: "5 分钟内有效"
+                            }）",
                             style = OrionTextStyles.SectionTitle,
                             color = OrionColors.Brand,
                         )

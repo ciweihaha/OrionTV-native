@@ -18,6 +18,8 @@ import com.oriontv.feature.remoteinput.RemoteInputManager
 import com.oriontv.navigation.OrionNavHost
 import com.oriontv.ui.theme.OrionTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -92,10 +94,15 @@ class MainActivity : ComponentActivity() {
     /**
      * P1-7/P2-23：远程输入跟随应用生命周期——
      * 进前台时如果设置里开着，把服务拉起来（冷启动恢复，不再只靠进设置页触发）；
-     * 切后台时停服，不随进程常驻后台占着 12346 端口。
+     * 切后台时不停服，改为 60 秒宽限后停（P2-13，见 onStop）。
      */
+    private var remoteInputStopJob: Job? = null
+
     override fun onStart() {
         super.onStart()
+        // 回前台：先取消待执行的延迟停服，再按设置恢复服务。
+        remoteInputStopJob?.cancel()
+        remoteInputStopJob = null
         lifecycleScope.launch {
             if (settingsRepository.remoteInputEnabled.first()) {
                 remoteInputManager.start()
@@ -104,13 +111,25 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        remoteInputManager.stop()
+        // P2-13（第 5 轮）：切后台不停服，改为 60 秒宽限后停。直接停服的
+        // 副作用：从更新卡片点“立即安装”调起系统安装器时 MainActivity
+        // 同样走 onStop，服务停掉、回来时 onStart 重启并换新配对码，
+        // 手机端须重新配对。60 秒宽限覆盖安装流程（调起安装器→安装→返回）；
+        // 真按 Home 离开的，服务仍在 60 秒内停掉，不随进程常驻占着
+        // 12346 端口。进画中画时不走 onStop，不受影响。
+        remoteInputStopJob = lifecycleScope.launch {
+            delay(REMOTE_INPUT_STOP_DELAY_MS)
+            remoteInputManager.stop()
+        }
         super.onStop()
     }
 
     override fun onDestroy() {
         // 真退出（非配置变更重建）时释放管理器；否则单例 scope 被 cancel 后无法再启动。
-        if (isFinishing) remoteInputManager.release()
+        if (isFinishing) {
+            remoteInputStopJob?.cancel()
+            remoteInputManager.release()
+        }
         super.onDestroy()
     }
 
@@ -143,6 +162,9 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /** 切后台后延迟停服的宽限（P2-13：覆盖调起安装器的流程）。 */
+        internal const val REMOTE_INPUT_STOP_DELAY_MS = 60_000L
+
         /** 切后台决策：开关开 + 在播 → PiP；开关关 → 暂停；开关开 + 未播 → 不动。 */
         internal fun leaveHintAction(backgroundPlaybackEnabled: Boolean, isPlaying: Boolean): LeaveHintAction =
             when {

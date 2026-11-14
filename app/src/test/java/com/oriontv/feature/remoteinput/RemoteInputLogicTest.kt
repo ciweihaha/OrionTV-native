@@ -191,11 +191,17 @@ class RemoteInputLogicTest {
         assertEquals(32, token.length)
         assertTrue(token.all { it.isDigit() || it in 'a'..'f' })
         // 凭 token 发消息，不用再带码；错 token 拒绝。
+        // P2-14（第 5 轮）：token 绑定签发时客户端 IP，同一 IP 才能用。
         val viaToken = router.handle(
+            "POST", "/message", mapOf("X-Session-Token" to token),
+            """{"message":"你好"}""", "1.2.3.4",
+        )
+        assertEquals(200, viaToken.statusCode)
+        val otherIp = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to token),
             """{"message":"你好"}""", "9.9.9.9",
         )
-        assertEquals(200, viaToken.statusCode)
+        assertEquals(403, otherIp.statusCode)
         val badToken = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to "0".repeat(32)),
             """{"message":"你好"}""", "9.9.9.9",
@@ -203,7 +209,7 @@ class RemoteInputLogicTest {
         assertEquals(403, badToken.statusCode)
         // token 过期后拒绝。
         now += RemoteInputLogic.SESSION_TOKEN_TTL_MS + 1
-        assertFalse(router.isSessionTokenValid(token))
+        assertFalse(router.isSessionTokenValid(token, "1.2.3.4"))
         val expiredToken = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to token),
             """{"message":"你好"}""", "9.9.9.9",
@@ -237,6 +243,49 @@ class RemoteInputLogicTest {
     }
 
     @Test
+    fun `previous pairing code works during grace after rotation`() {
+        var now = 1_000_000L
+        val router = RemoteInputRouter(nowMs = { now })
+        router.rotatePairingCode()
+        val oldCode = router.pairingCode
+        // 轮换发生在旧码 5 分钟到期时。
+        now += RemoteInputLogic.PAIRING_CODE_TTL_MS
+        router.rotatePairingCode()
+        val newCode = router.pairingCode
+        // 轮换后 30 秒：旧码仍在 60 秒宽限期内，新码也可用。
+        now += 30_000L
+        assertTrue(router.matchesPairingCode(oldCode))
+        val oldOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to oldCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, oldOk.statusCode)
+        val newOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to newCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, newOk.statusCode)
+        // 宽限期过后：旧码拒绝，新码仍可用。
+        now += 31_000L
+        assertFalse(router.matchesPairingCode(oldCode))
+        val oldExpired = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to oldCode), "{}", "1.2.3.4",
+        )
+        assertEquals(403, oldExpired.statusCode)
+        val newStillOk = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to newCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, newStillOk.statusCode)
+    }
+
+    @Test
+    fun `format pairing remaining`() {
+        assertEquals("还剩约 5 分", RemoteInputLogic.formatPairingRemaining(300))
+        assertEquals("还剩约 4 分 30 秒", RemoteInputLogic.formatPairingRemaining(270))
+        assertEquals("还剩约 45 秒", RemoteInputLogic.formatPairingRemaining(45))
+        assertEquals("还剩约 0 秒", RemoteInputLogic.formatPairingRemaining(0))
+        assertNull(RemoteInputLogic.formatPairingRemaining(null))
+    }
+
+    @Test
     fun `session token is 32 hex chars and varies`() {
         val tokens = (1..10).map { RemoteInputLogic.generateSessionToken() }.toSet()
         assertEquals(10, tokens.size)
@@ -265,11 +314,13 @@ class RemoteInputLogicTest {
         val router = RemoteInputRouter(nowMs = { 1_000L })
         val tokens = java.util.Collections.synchronizedList(mutableListOf<String>())
         val threads = (1..20).map {
-            Thread { tokens.add(router.issueSessionToken()) }
+            // P2-14：发 token 时绑定签发 IP，校验时须用同一 IP（无 IP 的
+            // 1 参调用在 P2-14 后已不存在，见 isSessionTokenValid 签名）。
+            Thread { tokens.add(router.issueSessionToken(clientIp = "1.2.3.4")) }
         }
         threads.forEach { it.start() }
         threads.forEach { it.join(5_000) }
         assertEquals(20, tokens.toSet().size)
-        assertTrue(tokens.all { router.isSessionTokenValid(it) })
+        assertTrue(tokens.all { router.isSessionTokenValid(it, "1.2.3.4") })
     }
 }

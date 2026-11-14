@@ -52,27 +52,24 @@ class HomeViewModel @Inject constructor(
             savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
         }
 
-    var savedFocusRow: Int
-        get() = savedStateHandle[SAVED_FOCUS_ROW] ?: -1
+    /**
+     * P2-9（第 5 轮）：返回焦点恢复按条目键锚定（行标题 + source+id），
+     * 不按行/卡片 index——列表变化后 index 对应的已是另一张卡。
+     * 键同样由 SavedStateHandle 承载（不只用内存变量，否则导航轨切走后
+     * ViewModel 被清、键就丢了）。
+     */
+    var savedFocusKey: String?
+        get() = savedStateHandle[SAVED_FOCUS_KEY]
         set(value) {
-            savedStateHandle[SAVED_FOCUS_ROW] = value
-        }
-
-    var savedFocusCard: Int
-        get() = savedStateHandle[SAVED_FOCUS_CARD] ?: -1
-        set(value) {
-            savedStateHandle[SAVED_FOCUS_CARD] = value
+            savedStateHandle[SAVED_FOCUS_KEY] = value
         }
 
     companion object {
         /** SavedStateHandle 键：是否已落过默认锚点。 */
         const val SAVED_INITIAL_FOCUS_DONE = "home_initial_focus_done"
 
-        /** SavedStateHandle 键：上次所在的行下标（-1 = 未记录）。 */
-        const val SAVED_FOCUS_ROW = "home_saved_focus_row"
-
-        /** SavedStateHandle 键：上次所在的卡片下标（-1 = 未记录）。 */
-        const val SAVED_FOCUS_CARD = "home_saved_focus_card"
+        /** SavedStateHandle 键：上次所在的卡片条目键（P2-9 按键锚定，不按 index）。 */
+        const val SAVED_FOCUS_KEY = "home_saved_focus_key"
     }
 
     init {
@@ -115,14 +112,19 @@ class HomeViewModel @Inject constructor(
     /** 返回首页时只刷新“最近播放”行（断点续播刚看完要立刻出现），其他行走缓存。 */
     fun refreshRecent() {
         viewModelScope.launch {
-            // B4-P2-4：取消原样抛出，不当成普通失败吞掉。
+            // P2-11（第 5 轮）：加载失败时不删旧行——以前先删行、失败后不补回，
+            // 一次瞬时失败就让首页丢一行，直到下次 refresh()。
+            // 区分两种 null：抛异常 = 失败，留旧行；正常返回 null = 确实
+            // 没有播放记录，删行是正确的。
+            // B4-P2-4：取消原样抛出，不当成普通失败吞掉（见下面的
+            // CancellationException 分支）。
             val recent = try {
                 loadCategory(HomeCategory.RECENT, "")
             } catch (e: CancellationException) {
                 // D-P2-2：取消原样抛出，不吞成 null（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (_: Exception) {
-                null
+                return@launch
             }
             val rows = _uiState.value.rows.toMutableList()
             rows.removeAll { it.title == HomeCategory.RECENT.title }

@@ -22,13 +22,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.delay
@@ -55,6 +59,8 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 失效源置灰仍可切换；换源保留集数。
  * 第 3 轮收尾 B-P2-24：三参旧入口已删（全仓零调用，唯一调用走四参），
  * title 为空时仍用 id 兜底（见 DetailScreenContent 的 init 调用）。
+ * 返回全靠系统 Back/导航（P2-6：第 5 轮删掉从未被调用的 onBack 死参数，
+ * main 的 B-P2-24 已先删掉四参入口的 onBack，这里只剩注释对齐）。
  */
 @Composable
 fun DetailScreen(
@@ -83,6 +89,11 @@ private fun DetailScreenContent(
     val playRequester = remember { FocusRequester() }
     // C4-P1-4：加载失败后“重试”按钮的焦点锚点（之前失败页无任何焦点，“重试”按不到）。
     val retryRequester = remember { FocusRequester() }
+    val density = LocalDensity.current
+    // P2-15（第 5 轮）：选集网格高度不再用手算的 44dp 魔法值——
+    // CategoryChip 的实际高度由 onSizeChanged 量出来；首帧未量到时
+    // 先用 44dp 估算，不闪空屏。
+    var episodeChipHeight by remember { mutableStateOf(44.dp) }
 
     LaunchedEffect(source, id) {
         viewModel.init(source, id, title.ifBlank { id })
@@ -285,8 +296,9 @@ private fun DetailScreenContent(
                                 color = OrionColors.TextSecondary,
                             )
                         } else {
-                            // P2-1：选集改 LazyVerticalGrid（每行 8 个，带复用）；
-                            // 在 LazyColumn 里需固定高度：行数按组内集数算，每行约 44dp + 12dp 间距。
+                            // P2-15（第 5 轮）：选集改 LazyVerticalGrid（每行 8 个，
+                            // 带复用）；在 LazyColumn 里需固定高度：行数按组内集数算，
+                            // 每行高 = 实测 chip 高 + 12dp 间距（不再手算 44dp）。
                             val episodeCount = groupEnd - groupStart + 1
                             val gridRows =
                                 (episodeCount + OrionDimens.EpisodeGridColumns - 1) /
@@ -298,8 +310,8 @@ private fun DetailScreenContent(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(
-                                        (gridRows * 44).dp +
-                                            ((gridRows - 1).coerceAtLeast(0) * 12).dp,
+                                        (episodeChipHeight.value * gridRows +
+                                            ((gridRows - 1).coerceAtLeast(0) * 12)).dp,
                                     ),
                             ) {
                                 items(episodeCount) { offset ->
@@ -324,6 +336,14 @@ private fun DetailScreenContent(
                                                     ),
                                                 ),
                                             )
+                                        },
+                                        modifier = Modifier.onSizeChanged { size ->
+                                            with(density) {
+                                                val h = size.height.toDp()
+                                                if (h > 0.dp && h != episodeChipHeight) {
+                                                    episodeChipHeight = h
+                                                }
+                                            }
                                         },
                                     )
                                 }

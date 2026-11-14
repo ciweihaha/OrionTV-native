@@ -20,6 +20,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +46,7 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import kotlinx.coroutines.delay
 
 /**
  * 搜索页（ui-design.md §5.5）：
@@ -67,7 +69,9 @@ fun SearchScreen(
     val resultRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
-    var showKeyboard by remember { mutableStateOf(false) }
+    // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
+    // 状态不丢（普通 remember 随组合处置而丢失）。
+    var showKeyboard by rememberSaveable { mutableStateOf(false) }
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
 
@@ -89,19 +93,28 @@ fun SearchScreen(
         }
     }
 
-    // P1-4：首进落搜索框；返回时恢复上次的结果卡片。
+    // P1-4/P2-9：首进落搜索框；返回时按条目键恢复上次的结果卡片。
+    // 结果可能仍在加载（返回时搜索在途），最多等 1 秒；等不到或键已不在
+    // 结果里，回落搜索框。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
     LaunchedEffect(focusRestoreTick) {
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true
         } else {
-            val saved = viewModel.savedResultIndex
-            if (saved in uiState.results.indices) {
-                gridState.scrollToItem(saved)
+            // P2-9：按条目键恢复；返回时结果可能仍在加载，最多等 1 秒。
+            val key = viewModel.savedResultKey
+            var target = -1
+            for (attempt in 0 until 10) {
+                target = findSavedResult(uiState.results, key)
+                if (target >= 0) break
+                delay(100)
+            }
+            if (target >= 0) {
+                gridState.scrollToItem(target)
                 // C4-P2-2/B4-P2-23：目标卡片尚未组合完成时重试请求，仍失败才回搜索框，
                 // 不再靠 120ms 固定延时猜时序、也不再静默丢焦点。
-                val restored = resultRequesters[saved]?.requestFocusWithRetry() ?: false
+                val restored = resultRequesters[target]?.requestFocusWithRetry() ?: false
                 if (!restored) searchRequester.requestFocus()
             } else {
                 searchRequester.requestFocus()
@@ -121,6 +134,14 @@ fun SearchScreen(
             scanButtonRequester.requestFocus()
         }
     }
+
+    // P2-10（第 5 轮）：返回键先收屏上键盘。注册在弹窗 handler 之前，
+    // 两者都开时弹窗先关（后注册的优先）。
+    BackHandler(enabled = showKeyboard) { showKeyboard = false }
+    // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
+    // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
+    // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
+    BackHandler(enabled = showRemoteInputModal) { showRemoteInputModal = false }
 
     Column(
         modifier = Modifier
@@ -167,6 +188,7 @@ fun SearchScreen(
             RemoteInputModal(
                 serverUrl = remoteState.serverUrl,
                 pairingCode = remoteState.pairingCode,
+                pairingCodeRemainingSeconds = remoteState.pairingCodeRemainingSeconds,
                 error = remoteState.error,
                 onDismiss = { showRemoteInputModal = false },
                 // P2-14：服务未开启时弹窗内一键开启，不用退出搜索去设置。
@@ -175,12 +197,17 @@ fun SearchScreen(
         }
 
         // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
+        // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
+        // 都是“搜完”，都收起，不再盖住下方结果区）。
         if (showKeyboard) {
             Spacer(modifier = Modifier.height(16.dp))
             OnScreenKeyboard(
                 query = uiState.query,
                 onQueryChange = { viewModel.onQueryChange(it) },
-                onSearch = { viewModel.searchNow(uiState.query) },
+                onSearch = {
+                    showKeyboard = false
+                    viewModel.searchNow(uiState.query)
+                },
                 onDismiss = { showKeyboard = false },
             )
         }
@@ -193,7 +220,10 @@ fun SearchScreen(
                     CategoryChip(
                         text = suggestion,
                         selected = false,
-                        onClick = { viewModel.searchNow(suggestion) },
+                        onClick = {
+                            showKeyboard = false
+                            viewModel.searchNow(suggestion)
+                        },
                     )
                 }
             }
@@ -210,7 +240,10 @@ fun SearchScreen(
                         CategoryChip(
                             text = keyword,
                             selected = false,
-                            onClick = { viewModel.searchHistory(keyword) },
+                            onClick = {
+                                showKeyboard = false
+                                viewModel.searchHistory(keyword)
+                            },
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
@@ -281,7 +314,7 @@ fun SearchScreen(
                                     ),
                                 )
                             },
-                            onFocused = { viewModel.savedResultIndex = index },
+                            onFocused = { viewModel.savedResultKey = searchResultKey(result) },
                             modifier = Modifier.preferredFocus(
                                 resultRequesters.getOrPut(index) { FocusRequester() },
                             ),

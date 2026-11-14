@@ -56,8 +56,8 @@ import kotlinx.coroutines.launch
  * → “热门剧集”行 → 各分类行（每行 6 张卡片，横向滚动）；
  * 未配置服务器时空态：一行提示 + “去设置”按钮。
  * 点分类 chip 滚动到对应行；返回首页时只刷新“最近播放”行。
- * 焦点：首进落分类栏锚点；从详情/播放返回时恢复上次所在的卡片（行 + 卡片 index），
- * 不拉回顶部（P1-4）。
+ * 焦点：首进落分类栏锚点；从详情/播放返回时恢复上次所在的卡片（行标题
+ * + source+id 键锚定，P2-9），不拉回顶部（P1-4）。
  */
 @Composable
 fun HomeScreen(
@@ -115,27 +115,52 @@ fun HomeScreen(
         return
     }
 
-    // P1-4：焦点默认只在首次进入时落在分类栏“最近播放”上；
-    // 返回时恢复保存的焦点目标（行 index + 卡片 index），滚动到位后再请求焦点。
-    // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
-    LaunchedEffect(focusRestoreTick) {
+    // P1-4/P2-9：焦点默认只在首次进入时落在分类栏“最近播放”上；
+    // 返回时按条目键恢复保存的焦点目标（行标题 + source+id），滚动到位
+    // 后再请求焦点。恢复逻辑见下面的 restoreSavedCard（两个 effect 共用）。
+    // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路（effect B）。
+    var restoreDone by remember { mutableStateOf(false) }
+
+    // 按保存的条目键恢复焦点（P2-9：不按行/卡片 index，列表变化后 index
+    // 对应的已是另一张卡）。返回时行还没回来不回落首 chip，返回 false
+    // 让调用方等下一次 rows 变化再试；行已加载完仍找不到才回落首 chip。
+    // 目标卡片尚未组合完成时重试请求（C4-P2-2），仍失败才回默认锚点，
+    // 不再静默丢焦点；固定 120ms 延时已去掉（B4-P2-23 同款问题）。
+    suspend fun restoreSavedCard(): Boolean {
+        val rows = uiState.rows
+        val found = findSavedCard(rows, viewModel.savedFocusKey)
+        if (found == null) {
+            if (!uiState.isLoading) {
+                firstChipRequester.requestFocus()
+                return true
+            }
+            return false
+        }
+        val (row, card) = found
+        listState.scrollToItem(row + 1)
+        rowListStates[rows[row].title]?.scrollToItem(card)
+        val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry() ?: false
+        if (!restored) firstChipRequester.requestFocus()
+        return true
+    }
+
+    // effect A：以 rows 为键——返回时行若尚未加载完（refresh() 在途），
+    // 等行回来再恢复；恢复只做一次，常驻期间 rows 变化（refreshRecent）
+    // 不再抢焦点。
+    LaunchedEffect(uiState.rows) {
         if (!viewModel.initialFocusDone) {
             firstChipRequester.requestFocus()
             viewModel.initialFocusDone = true
-        } else {
-            val row = viewModel.savedFocusRow
-            val card = viewModel.savedFocusCard
-            val rows = uiState.rows
-            if (row in rows.indices && card in 0 until rows[row].items.size) {
-                listState.scrollToItem(row + 1)
-                rowListStates[rows[row].title]?.scrollToItem(card)
-                // C4-P2-2：目标卡片尚未组合完成时重试请求，仍失败才回默认锚点，
-                // 不再静默丢焦点；固定 120ms 延时已去掉（B4-P2-23 同款问题）。
-                val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry() ?: false
-                if (!restored) firstChipRequester.requestFocus()
-            } else {
-                firstChipRequester.requestFocus()
-            }
+            restoreDone = true
+        } else if (!restoreDone) {
+            if (restoreSavedCard()) restoreDone = true
+        }
+    }
+    // effect B：弹窗关闭后 tick 变化重跑恢复；行还在加载时跳过
+    // （等 effect A 在行回来时恢复），不回落首 chip。
+    LaunchedEffect(focusRestoreTick) {
+        if (focusRestoreTick > 0 && viewModel.initialFocusDone) {
+            restoreSavedCard()
         }
     }
 
@@ -255,8 +280,7 @@ fun HomeScreen(
                                     }
                                 },
                                 onFocused = {
-                                    viewModel.savedFocusRow = rowIndex
-                                    viewModel.savedFocusCard = cardIndex
+                                    viewModel.savedFocusKey = homeFocusKey(row.title, item)
                                 },
                                 modifier = Modifier
                                     .width(cardWidth)
