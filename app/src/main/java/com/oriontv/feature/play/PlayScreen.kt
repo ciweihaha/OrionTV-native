@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -35,6 +36,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.onKeyUp
@@ -81,6 +85,16 @@ fun PlayScreen(
         viewModel.init(source, id, title, episodeIndex, positionMs)
     }
     LaunchedEffect(Unit) { rootRequester.requestFocus() }
+
+    // 从设置页返回 / 切回前台时刷新开播设置缓存（P2-9：轮询不再每 500ms 重读 DataStore）。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshCachedSettings()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // 标记成功/清除提示：Toast 底部居中，2 秒消失（ui-design.md §5.8）。
     LaunchedEffect(uiState.toast) {

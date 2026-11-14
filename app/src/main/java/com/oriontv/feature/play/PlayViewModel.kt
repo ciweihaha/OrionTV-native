@@ -61,8 +61,14 @@ class PlayViewModel @Inject constructor(
     private var lastSavedPositionMs: Long = -1L
     private var lastSavedAtMs: Long = 0L
     private var introSkippedThisEpisode = false
+    /** 跳过片头胶囊本集是否已出现过（每集只出现一次，隐藏后不再出现）。 */
+    private var skipIntroShownThisEpisode = false
     private var skipIntroShownAtMs: Long = 0L
     private var nextEpisodeShownForIndex: Int = -1
+    /** 开播时读一次的设置缓存（P2-9）：轮询每 500ms 不再重读 DataStore；设置页返回时刷新。 */
+    private var cachedAutoSkipIntro: Boolean = true
+    private var cachedIntroSkipSeconds: Int = 90
+    private var cachedNextEpisodeOverlayEnabled: Boolean = true
     /** 本片手动标记的片头结束时间（毫秒），null 表示没标过（用默认时长兜底）。 */
     private var markedIntroEndMs: Long? = null
     private var currentKey: String = ""
@@ -133,6 +139,18 @@ class PlayViewModel @Inject constructor(
         startPolling()
     }
 
+    /** 设置页返回 / 切回前台时刷新开播设置缓存（供 PlayScreen 的 ON_RESUME 调用）。 */
+    fun refreshCachedSettings() {
+        viewModelScope.launch { loadCachedSettings() }
+    }
+
+    /** 开播时读一次开关（autoSkipIntro / 片头时长 / 下一集预告），轮询只读缓存。 */
+    private suspend fun loadCachedSettings() {
+        cachedAutoSkipIntro = settingsRepository.autoSkipIntro.first()
+        cachedIntroSkipSeconds = settingsRepository.introSkipSeconds.first()
+        cachedNextEpisodeOverlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
+    }
+
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
     private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
         val episodes = result.episodes
@@ -140,6 +158,7 @@ class PlayViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
             return
         }
+        loadCachedSettings()
         val key = "${result.source}+${result.id.orEmpty()}"
         currentKey = key
         val settings = playerSettingsRepository.get(key)
@@ -161,6 +180,7 @@ class PlayViewModel @Inject constructor(
             }
         }
         introSkippedThisEpisode = false
+        skipIntroShownThisEpisode = false
         skipIntroShownAtMs = 0L
         nextEpisodeShownForIndex = -1
         lastSavedPositionMs = -1L
@@ -179,7 +199,7 @@ class PlayViewModel @Inject constructor(
                 // 手动标记优先，没标过用设置里的默认片头时长兜底（0=不跳）。
                 introEndMs = IntroSkip.resolveIntroEndMs(
                     settings?.introEndTime,
-                    settingsRepository.introSkipSeconds.first(),
+                    cachedIntroSkipSeconds,
                 ),
                 // 片尾标记：绝对位置，播到该处提前弹下一集预告。
                 markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 },
@@ -245,8 +265,7 @@ class PlayViewModel @Inject constructor(
         val current = state.current ?: return
         saveRecordNow()
         viewModelScope.launch {
-            val overlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
-            if (overlayEnabled && state.episodeIndex < current.episodes.size - 1) {
+            if (cachedNextEpisodeOverlayEnabled && state.episodeIndex < current.episodes.size - 1) {
                 _uiState.update { it.copy(showNextEpisode = true) }
             }
         }
@@ -277,7 +296,9 @@ class PlayViewModel @Inject constructor(
                     )
                 }
                 if (wasLoading && isPlaybackReady(playing)) readyTimeoutJob?.cancel()
-                // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失。
+                // 自动跳过片头（每集一次，先于胶囊判断：自动跳开了就不出胶囊）。
+                maybeAutoSkipIntro(position)
+                // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失，每集只出现一次。
                 updateSkipIntroVisibility(position)
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
                 // 标过片尾的，播到片尾标记处就提前出预告。
@@ -287,10 +308,8 @@ class PlayViewModel @Inject constructor(
                         IntroSkip.isAtOutro(position, duration, state.outroStartMs))
                 ) {
                     nextEpisodeShownForIndex = state.episodeIndex
-                    viewModelScope.launch {
-                        if (settingsRepository.nextEpisodeOverlayEnabled.first()) {
-                            _uiState.update { it.copy(showNextEpisode = true) }
-                        }
+                    if (cachedNextEpisodeOverlayEnabled) {
+                        _uiState.update { it.copy(showNextEpisode = true) }
                     }
                 }
                 // 断点 10 秒节流保存。
@@ -301,15 +320,32 @@ class PlayViewModel @Inject constructor(
         }
     }
 
-    private suspend fun updateSkipIntroVisibility(positionMs: Long) {
+    /**
+     * 自动跳过片头（P1-10，总协调已定：补自动跳，不改文案）：
+     * 每集一次，当前位置仍在片头内且 autoSkipIntro 开时 seek 到片头结束点；
+     * 断点续播位置已过片头的不触发；胶囊保留作手动入口。
+     */
+    private fun maybeAutoSkipIntro(positionMs: Long) {
         val state = _uiState.value
-        if (introSkippedThisEpisode) {
+        if (!IntroSkip.shouldAutoSkip(positionMs, state.introEndMs, cachedAutoSkipIntro, introSkippedThisEpisode)) {
+            return
+        }
+        introSkippedThisEpisode = true
+        _uiState.update { it.copy(skipIntroVisible = false) }
+        seekTo(state.introEndMs)
+    }
+
+    private fun updateSkipIntroVisibility(positionMs: Long) {
+        val state = _uiState.value
+        if (introSkippedThisEpisode || skipIntroShownThisEpisode) {
             if (state.skipIntroVisible) _uiState.update { it.copy(skipIntroVisible = false) }
             return
         }
-        val autoSkip = settingsRepository.autoSkipIntro.first()
-        val inWindow = autoSkip && state.introEndMs > 0 && positionMs < state.introEndMs
-        if (inWindow && !state.skipIntroVisible) {
+        val inWindow = cachedAutoSkipIntro && state.introEndMs > 0 && positionMs < state.introEndMs
+        if (IntroSkip.shouldShowSkipIntroCapsule(inWindow, skipIntroShownThisEpisode, introSkippedThisEpisode) &&
+            !state.skipIntroVisible
+        ) {
+            skipIntroShownThisEpisode = true
             skipIntroShownAtMs = System.currentTimeMillis()
             _uiState.update { it.copy(skipIntroVisible = true) }
         } else if (state.skipIntroVisible &&
@@ -356,7 +392,7 @@ class PlayViewModel @Inject constructor(
             if (markedIntroEndMs != null) {
                 markedIntroEndMs = null
                 playerSettingsRepository.update(currentKey) { it.copy(introEndTime = null) }
-                val fallback = settingsRepository.introSkipSeconds.first() * 1000L
+                val fallback = cachedIntroSkipSeconds * 1000L
                 _uiState.update {
                     it.copy(introEndMs = fallback, markedIntroEndMs = null, toast = "已清除片头标记")
                 }
