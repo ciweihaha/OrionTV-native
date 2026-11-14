@@ -137,7 +137,6 @@ class FavoritesViewModel @Inject constructor(
                 removeGuard.release(key)
                 _uiState.update { it.copy(removingKeys = it.removingKeys - key) }
             }
-            }
         }
     }
 
