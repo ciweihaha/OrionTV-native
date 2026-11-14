@@ -16,7 +16,17 @@ class SeekPreviewController(private val durationMs: Long) {
 
     /** 落点移动一步 10 秒，返回新落点。 */
     fun nudge(currentMs: Long, direction: Int): Long {
-        val base = pendingTargetMs ?: currentMs
+        val pending = pendingTargetMs
+        // 待定落点若被钳制在 0 或片尾边缘、且播头已不在该处，说明它是旧的
+        // 钳制值（例如先按左顶到 0，播头又走到 55 秒），从当前播头重新起步；
+        // 否则在待定落点上继续累加（连续快进 10 秒一步）。
+        val base = if (pending != null &&
+            (pending == 0L || pending == durationMs) && pending != currentMs
+        ) {
+            currentMs
+        } else {
+            pending ?: currentMs
+        }
         val target = (base + direction * STEP_MS).coerceIn(0L, durationMs)
         pendingTargetMs = target
         return target
