@@ -58,9 +58,9 @@ class MoonTvApiTest {
     }
 
     @Test
-    fun `4xx is not retried and throws NonRetryableException`() {
+    fun `4xx is not retried and throws IOException`() {
         val (client, calls, _) = countingClient { request -> responseFor(request, 404, "") }
-        val thrown = assertThrows(NonRetryableException::class.java) {
+        val thrown = assertThrows(IOException::class.java) {
             runBlocking { api(client).getFavorites("https://example.com") }
         }
         assertTrue(thrown.message!!.contains("404"))
