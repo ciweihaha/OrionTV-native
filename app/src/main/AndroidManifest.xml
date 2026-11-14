@@ -41,6 +41,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- P2-4：深层链接 oriontv://detail?… / oriontv://play?…（adb/语音助手直达）。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="oriontv" />
+            </intent-filter>
         </activity>
 
         <!-- 更新安装：FileProvider 把下载的 APK 共享给系统安装器（只读 files/update/）。 -->
