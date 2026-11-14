@@ -1,10 +1,11 @@
 package com.oriontv.data.repo
 
 import com.oriontv.data.api.AuthApi
-import com.oriontv.data.api.Favorite
 import com.oriontv.data.api.ServerConfig
 import com.oriontv.data.local.CredentialStore
 import com.oriontv.di.InMemoryCookieJar
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -29,7 +30,6 @@ class AuthRepositoryLogoutTest {
             logoutCalls++
             logoutError?.let { throw it }
         }
-        override suspend fun getFavorites(baseUrl: String, key: String?): Map<String, Favorite> = emptyMap()
     }
 
     private class FakeAuthSettings(var baseUrl: String = "https://example.com") : AuthSettings {
@@ -44,16 +44,15 @@ class AuthRepositoryLogoutTest {
             refreshCalls++
             return null
         }
-        override suspend fun isServerConfigUnknown(): Boolean = false
     }
 
     private class FakeCredentialStore(var saved: Pair<String, String>? = "user" to "pass") : CredentialStore {
         var clearCalls = 0
-        override suspend fun save(username: String, password: String) {
+        override fun save(username: String, password: String) {
             saved = username to password
         }
-        override suspend fun load(): Pair<String, String>? = saved
-        override suspend fun clear() {
+        override fun load(): Pair<String, String>? = saved
+        override fun clear() {
             clearCalls++
             saved = null
         }
@@ -65,7 +64,7 @@ class AuthRepositoryLogoutTest {
         store: FakeCredentialStore = FakeCredentialStore(),
         jar: InMemoryCookieJar = InMemoryCookieJar(),
     ): AuthRepository =
-        AuthRepository(api, settings, store, jar)
+        AuthRepository(api, settings, store, jar, CoroutineScope(Dispatchers.Unconfined))
 
     private fun seedCookie(jar: InMemoryCookieJar) {
         val url = "https://example.com/".toHttpUrl()
