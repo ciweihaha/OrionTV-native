@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.repo.DetailRepository
@@ -28,6 +29,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
@@ -57,15 +60,20 @@ class PlayViewModel @Inject constructor(
     private var pollJob: Job? = null
     private var readyTimeoutJob: Job? = null
     private var searchJob: Job? = null
+    /** 抓帧串行化（P2-7）：同一时刻只保留一次 MediaMetadataRetriever 抓帧。 */
+    private val previewFrameMutex = Mutex()
     /** 退出时保存断点用：onCleared 时 viewModelScope 已取消，不能用它写库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var lastSavedPositionMs: Long = -1L
     private var lastSavedAtMs: Long = 0L
     private var introSkippedThisEpisode = false
-    /** 跳过片头胶囊本集是否已出现过（每集只出现一次，隐藏后不再出现）。 */
-    private var skipIntroShownThisEpisode = false
-    private var skipIntroShownAtMs: Long = 0L
+    /** 跳过片头胶囊的轮询状态机（P0-1）：“已出现过”与“当前可见”分开管。 */
+    private val skipIntroCapsule = SkipIntroCapsule()
     private var nextEpisodeShownForIndex: Int = -1
+    /** 用户点过“取消”的下一集预告属于哪集（P1-1）：播完也不再重弹，换集时清除。 */
+    private var nextEpisodeDismissedForIndex: Int = -1
+    /** 用户手动暂停标志（P2-6）：暂停期间就绪超时不触发自动换源。 */
+    private var userPaused = false
     /** 开播时读一次的设置缓存（P2-9）：轮询每 500ms 不再重读 DataStore；设置页返回时刷新。 */
     private var cachedAutoSkipIntro: Boolean = true
     private var cachedIntroSkipSeconds: Int = 90
@@ -95,10 +103,10 @@ class PlayViewModel @Inject constructor(
     }
 
     fun init(source: String, id: String, title: String, episodeIndex: Int, positionMs: Long) {
-        if (initialised && currentKey == "$source+$id") return
+        if (initialised && currentKey == MoonTvApi.generateKey(source, id)) return
         initialised = true
         playbackToken = playerManager.claimPlayback()
-        currentKey = "$source+$id"
+        currentKey = MoonTvApi.generateKey(source, id)
         routePositionMs = positionMs
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
         viewModelScope.launch {
@@ -160,7 +168,7 @@ class PlayViewModel @Inject constructor(
             return
         }
         loadCachedSettings()
-        val key = "${result.source}+${result.id.orEmpty()}"
+        val key = MoonTvApi.generateKey(result.source, result.id.orEmpty())
         currentKey = key
         val settings = playerSettingsRepository.get(key)
         // 倍速记忆关掉时一律 1×（阶段 4）；开着才恢复该片保存的倍速。
@@ -181,9 +189,10 @@ class PlayViewModel @Inject constructor(
             }
         }
         introSkippedThisEpisode = false
-        skipIntroShownThisEpisode = false
-        skipIntroShownAtMs = 0L
+        skipIntroCapsule.resetForEpisode()
         nextEpisodeShownForIndex = -1
+        nextEpisodeDismissedForIndex = -1
+        userPaused = false
         lastSavedPositionMs = -1L
         markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
         playerManager.setPlaybackSpeed(rate)
@@ -212,13 +221,13 @@ class PlayViewModel @Inject constructor(
         armReadyTimeout()
     }
 
-    /** VOD 就绪 20 秒超时：超时未就绪按播放错误走自动换源。 */
+    /** VOD 就绪 20 秒超时：超时未就绪按播放错误走自动换源；用户手动暂停不算断流（P2-6）。 */
     private fun armReadyTimeout() {
         readyTimeoutJob?.cancel()
         readyTimeoutJob = viewModelScope.launch {
             delay(20_000)
             val state = _uiState.value
-            if (state.isLoading && state.current != null) {
+            if (state.isLoading && state.current != null && !userPaused) {
                 handlePlaybackError(null)
             }
         }
@@ -260,13 +269,19 @@ class PlayViewModel @Inject constructor(
         }
     }
 
-    /** 播完：有下一集且开启预告时出预告卡（3 秒倒计时），否则停在末尾。 */
+    /** 播完：有下一集且开启预告、且本集没被用户取消过时出预告卡（3 秒倒计时），否则停在末尾。 */
     private fun onPlaybackEnded() {
         val state = _uiState.value
         val current = state.current ?: return
         saveRecordNow()
         viewModelScope.launch {
-            if (cachedNextEpisodeOverlayEnabled && state.episodeIndex < current.episodes.size - 1) {
+            if (shouldShowNextEpisode(
+                    cachedNextEpisodeOverlayEnabled,
+                    state.episodeIndex,
+                    current.episodes.size,
+                    nextEpisodeDismissedForIndex,
+                )
+            ) {
                 _uiState.update { it.copy(showNextEpisode = true) }
             }
         }
@@ -303,8 +318,14 @@ class PlayViewModel @Inject constructor(
                 updateSkipIntroVisibility(position)
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
                 // 标过片尾的，播到片尾标记处就提前出预告。
-                if (duration > 0 && state.episodeIndex < (state.current?.episodes?.size ?: 0) - 1 &&
-                    nextEpisodeShownForIndex != state.episodeIndex &&
+                // 用户点过“取消”的本集不再重弹（P1-1）。
+                if (duration > 0 && nextEpisodeShownForIndex != state.episodeIndex &&
+                    shouldShowNextEpisode(
+                        cachedNextEpisodeOverlayEnabled,
+                        state.episodeIndex,
+                        state.current?.episodes?.size ?: 0,
+                        nextEpisodeDismissedForIndex,
+                    ) &&
                     (duration - position in 1..10_000 ||
                         IntroSkip.isAtOutro(position, duration, state.outroStartMs))
                 ) {
@@ -336,30 +357,32 @@ class PlayViewModel @Inject constructor(
         seekTo(state.introEndMs)
     }
 
+    /**
+     * 跳过片头胶囊的轮询接线（P0-1）：状态机在 [SkipIntroCapsule] 里，
+     * 这里只把“是否在片头窗口内”喂进去、把结果同步到 uiState。
+     * 胶囊是否出现只看片头窗口，与自动跳开关解耦。
+     */
     private fun updateSkipIntroVisibility(positionMs: Long) {
         val state = _uiState.value
-        if (introSkippedThisEpisode || skipIntroShownThisEpisode) {
-            if (state.skipIntroVisible) _uiState.update { it.copy(skipIntroVisible = false) }
-            return
-        }
-        val inWindow = cachedAutoSkipIntro && state.introEndMs > 0 && positionMs < state.introEndMs
-        if (IntroSkip.shouldShowSkipIntroCapsule(inWindow, skipIntroShownThisEpisode, introSkippedThisEpisode) &&
-            !state.skipIntroVisible
-        ) {
-            skipIntroShownThisEpisode = true
-            skipIntroShownAtMs = System.currentTimeMillis()
-            _uiState.update { it.copy(skipIntroVisible = true) }
-        } else if (state.skipIntroVisible &&
-            System.currentTimeMillis() - skipIntroShownAtMs > 10_000
-        ) {
-            _uiState.update { it.copy(skipIntroVisible = false) }
+        val inWindow = state.introEndMs > 0 && positionMs < state.introEndMs
+        val visible = skipIntroCapsule.update(inWindow, introSkippedThisEpisode)
+        if (visible != state.skipIntroVisible) {
+            _uiState.update { it.copy(skipIntroVisible = visible) }
         }
     }
 
     // ---- 控制操作（供 PlayScreen 调用） ----
 
     fun togglePlayPause() {
-        if (playerManager.isPlaying) playerManager.pause() else playerManager.play()
+        if (playerManager.isPlaying) {
+            playerManager.pause()
+            userPaused = true
+        } else {
+            playerManager.play()
+            userPaused = false
+            // 暂停期间就绪超时不触发（P2-6）；恢复播放后若仍在加载，重新起 20 秒超时。
+            if (_uiState.value.isLoading) armReadyTimeout()
+        }
         _uiState.update { it.copy(isPlaying = playerManager.isPlaying) }
         saveRecordNow()
     }
@@ -441,11 +464,14 @@ class PlayViewModel @Inject constructor(
         val current = state.current ?: return
         val next = state.episodeIndex + 1
         if (next >= current.episodes.size) return
+        nextEpisodeDismissedForIndex = -1
         _uiState.update { it.copy(showNextEpisode = false) }
         viewModelScope.launch { startEpisode(current, next) }
     }
 
+    /** 取消下一集预告：记一笔，播完也不再重弹、不自动播下一集（P1-1）；换集时清除。 */
     fun dismissNextEpisode() {
+        nextEpisodeDismissedForIndex = _uiState.value.episodeIndex
         _uiState.update { it.copy(showNextEpisode = false) }
     }
 
@@ -456,6 +482,7 @@ class PlayViewModel @Inject constructor(
             _uiState.update { it.copy(drawer = null) }
             return
         }
+        nextEpisodeDismissedForIndex = -1
         _uiState.update { it.copy(showNextEpisode = false, drawer = null) }
         viewModelScope.launch { startEpisode(current, index) }
     }
@@ -486,23 +513,27 @@ class PlayViewModel @Inject constructor(
 
     /** 落点预览缩略图：MediaMetadataRetriever 尽力抓帧，m3u8 抓不到时返回 null（用海报兜底）。 */
     suspend fun grabPreviewFrame(url: String, timeMs: Long): Bitmap? =
-        withContext(Dispatchers.IO) {
-            try {
-                val retriever = MediaMetadataRetriever()
+        // 同一时刻只保留一次抓帧（P2-7）：Mutex 串行化，快速连按不在 IO 池里堆 retriever；
+        // 取消的等待者直接出队，不执行抓帧。
+        previewFrameMutex.withLock {
+            withContext(Dispatchers.IO) {
                 try {
-                    retriever.setDataSource(url, mapOf())
-                    retriever.getFrameAtTime(
-                        timeMs * 1000,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    )
-                } finally {
-                    retriever.release()
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(url, mapOf())
+                        retriever.getFrameAtTime(
+                            timeMs * 1000,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        )
+                    } finally {
+                        retriever.release()
+                    }
+                } catch (e: CancellationException) {
+                    // 取消异常必须重抛：runCatching 吞掉它会让已取消的协程继续跑。
+                    throw e
+                } catch (_: Exception) {
+                    null
                 }
-            } catch (e: CancellationException) {
-                // 取消异常必须重抛：runCatching 吞掉它会让已取消的协程继续跑。
-                throw e
-            } catch (_: Exception) {
-                null
             }
         }
 
@@ -515,9 +546,12 @@ class PlayViewModel @Inject constructor(
                 startEpisode(current, state.episodeIndex)
             } else {
                 initialised = false
+                // 拆键按最后一个 + 切分（与 RN 一致）：键由两段转义后用 + 连接，
+                // 源/ID 自身含 + 时（转义后为 %2B）也不能从第一个 + 切。
+                val sep = currentKey.lastIndexOf("+")
                 init(
-                    currentKey.substringBefore("+"),
-                    currentKey.substringAfter("+"),
+                    if (sep >= 0) currentKey.substring(0, sep) else currentKey,
+                    if (sep >= 0) currentKey.substring(sep + 1) else "",
                     state.title,
                     state.episodeIndex,
                     state.positionMs,
@@ -603,6 +637,18 @@ class PlayViewModel @Inject constructor(
         /** 是否临近片尾（可单测）：距片尾不到阈值即视为看完，不存断点。 */
         internal fun isNearEnd(positionMs: Long, durationMs: Long): Boolean =
             durationMs > 0 && positionMs >= durationMs - END_THRESHOLD_MS
+
+        /**
+         * 下一集预告是否应出现（可单测，P1-1）：预告开关开、有下一集、
+         * 且本集没被用户点过“取消”（取消后播完也不再弹、不自动播下一集）。
+         */
+        internal fun shouldShowNextEpisode(
+            overlayEnabled: Boolean,
+            episodeIndex: Int,
+            episodeCount: Int,
+            dismissedForIndex: Int,
+        ): Boolean =
+            overlayEnabled && episodeIndex < episodeCount - 1 && dismissedForIndex != episodeIndex
 
         /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；
