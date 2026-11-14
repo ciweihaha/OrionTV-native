@@ -14,9 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -65,6 +68,44 @@ internal fun shouldShowPlayerControls(
     hasError: Boolean,
     showNextEpisode: Boolean,
 ): Boolean = (controlsVisible || showNextEpisode) && !hasError
+
+/**
+ * 控制条 5 秒无操作是否应自动隐藏（可单测，P2-2，第 6 轮修订）：
+ * 控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
+ * 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
+ * 旧版守卫没有错误页一项：错误出现不会取消已在跑的延时，到点仍抢焦点。
+ */
+internal fun shouldAutoHideControls(
+    controlsVisible: Boolean,
+    drawerOpen: Boolean,
+    hasPendingPreview: Boolean,
+    showNextEpisode: Boolean,
+    hasError: Boolean,
+): Boolean =
+    controlsVisible && !drawerOpen && !hasPendingPreview && !showNextEpisode && !hasError
+
+/**
+ * 落点预览 2 秒无操作是否应自动提交（可单测，P2-3）：
+ * 有待定落点且抽屉关闭时才提交；抽屉打开时不提交——否则挑集时视频
+ * 在抽屉后跳进度。打开抽屉时待定落点另由抽屉 effect 直接取消（同款处理），
+ * 这里是兜底（落点在抽屉打开期间才产生时，关抽屉后才起定时器）。
+ */
+internal fun shouldAutoCommitPreview(previewTargetMs: Long, drawerOpen: Boolean): Boolean =
+    previewTargetMs >= 0 && !drawerOpen
+
+/**
+ * 方向键/OK 按键是否应重置 5 秒自动隐藏计时器（可单测，P2-1/P2-2）：
+ * 控制条显示、抽屉关闭、无错误页时才重置；按钮行内左/右横向移动、
+ * 上/下进出按钮行都算用户操作，计时器应从这次按键重算 5 秒——
+ * 旧版只在唤出/快进/点按钮时重置，慢慢浏览按钮时控制条会在手底下消失。
+ * 错误页上不重置：错误页没有按钮行，按键只移动“重试/返回”焦点，
+ * 重置会重新武装计时器、5 秒后把焦点从“重试”拉回根部。
+ */
+internal fun shouldResetAutoHideTimer(
+    controlsVisible: Boolean,
+    drawerOpen: Boolean,
+    hasError: Boolean,
+): Boolean = controlsVisible && !drawerOpen && !hasError
 
 /**
  * 左/右键是否由预览拦截（可单测，P1-2，第 5 轮 P1-B 修订）：
@@ -195,11 +236,15 @@ fun PlayScreen(
     // 播放错误页出现时焦点默认落到“重试”（P2-3）：否则焦点停在根部/原控制条按钮上，
     // 首次按 OK 只会 pokeControls，用户需先用方向键盲找按钮。
     // A4-P1-2：错误消失（重试成功）时焦点回控制条首选按钮；控制条未组合时回根。
+    // 第 6 轮 P2-7：单次 requestFocus 改 requestFocusWithRetry（与抽屉/面板一致）——
+    // 错误页首帧组合未完成时单次请求静默失败，焦点停在根部；仍失败回退到根。
     var hadError by remember { mutableStateOf(false) }
     LaunchedEffect(uiState.error) {
         if (uiState.error != null) {
             hadError = true
-            errorRetryRequester.requestFocus()
+            if (!errorRetryRequester.requestFocusWithRetry()) {
+                rootRequester.requestFocus()
+            }
         } else if (hadError) {
             hadError = false
             if (!controlsFirstButtonRequester.requestFocus()) rootRequester.requestFocus()
@@ -214,10 +259,17 @@ fun PlayScreen(
 
     // 抽屉关闭后焦点落回控制条首选按钮（P1-9）；只在“从打开变关闭”时触发，不抢初始焦点。
     // C5-P2-1：固定 delay(100)+单次请求改 requestFocusWithRetry；仍失败回退到根。
+    // 第 6 轮 P2-3：抽屉打开时取消待定落点（与按返回取消同款处理）——
+    // 否则 2 秒自动提交到点仍 seek，视频在抽屉后跳进度。
     LaunchedEffect(uiState.drawer) {
         val wasOpen = previousDrawer != null
         previousDrawer = uiState.drawer
-        if (uiState.drawer == null && wasOpen) {
+        if (uiState.drawer != null) {
+            previewController.cancel()
+            previewTargetMs = -1L
+            previewDirection = 0
+            previewThumbnail = null
+        } else if (wasOpen) {
             if (!controlsFirstButtonRequester.requestFocusWithRetry()) {
                 rootRequester.requestFocus()
             }
@@ -233,12 +285,20 @@ fun PlayScreen(
         }
     }
 
-    // 控制条 5 秒无操作自动隐藏（抽屉打开、有待定落点或下一集预告时不隐藏）；
+    // 控制条 5 秒无操作自动隐藏（抽屉打开、有待定落点、下一集预告或错误页时不隐藏）；
     // 隐藏后焦点回根，方向键/OK 才能继续唤出控制条（P1-9）。
-    // A6-P1-4：key 加 error——错误页出现后若定时器已在跑，旧协程会被取消，
-    // 不会在 5 秒到点时把焦点从“重试”按钮抢回根；到点后也再复核 error==null。
+    // A6-P1-4 / 第 6 轮 P2-2：key 加 error——错误页出现后若定时器已在跑，
+    // 旧协程会被取消，不会在 5 秒到点时把焦点从“重试”按钮抢回根；
+    // 到点后也再复核 error==null（双保险）。
     LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error) {
-        if (controlsVisible && uiState.drawer == null && previewTargetMs < 0 && !uiState.showNextEpisode && uiState.error == null) {
+        if (shouldAutoHideControls(
+                controlsVisible,
+                uiState.drawer != null,
+                previewTargetMs >= 0,
+                uiState.showNextEpisode,
+                uiState.error != null,
+            )
+        ) {
             delay(5000)
             if (uiState.error == null) {
                 controlsVisible = false
@@ -247,10 +307,12 @@ fun PlayScreen(
         }
     }
     // 落点预览 2 秒无操作自动提交（T6/T7）。
-    // 只有 previewTargetMs >= 0 才起定时器：时长未出时 nudge() 返回 null，
+    // 只有 previewTargetMs >= 0 且抽屉关闭时才起定时器：时长未出时 nudge() 返回 null，
     // 从不产生预览，也就不会启用提交定时器（P1-3）。
-    LaunchedEffect(previewTargetMs) {
-        if (previewTargetMs >= 0) {
+    // 第 6 轮 P2-3：key 加抽屉、守卫加抽屉关闭——抽屉打开时不提交（另有
+    // 抽屉 effect 在打开时直接取消待定落点，这里是落点在抽屉打开期间才产生的兜底）。
+    LaunchedEffect(previewTargetMs, uiState.drawer) {
+        if (shouldAutoCommitPreview(previewTargetMs, uiState.drawer != null)) {
             delay(SeekPreviewController.AUTO_COMMIT_MS)
             viewModel.seekTo(previewTargetMs)
             previewController.cancel()
@@ -338,7 +400,8 @@ fun PlayScreen(
                                 previewTargetMs = -1L
                                 previewDirection = 0
                                 previewThumbnail = null
-                                pokeControls()
+                                // 错误页上不 poke（P2-2）；取消预览本身不受影响。
+                                if (uiState.error == null) pokeControls()
                                 true
                             }
                             uiState.drawer != null -> {
@@ -375,12 +438,25 @@ fun PlayScreen(
                         if (uiState.drawer != null) {
                             false // 抽屉内方向键交给焦点移动
                         } else if (!controlsVisible) {
-                            pokeControls() // 控制条隐藏时方向键只唤出，不 seek
+                            // 控制条隐藏时方向键只唤出，不 seek；错误页上不 poke（P2-2）。
+                            if (uiState.error == null) pokeControls()
                             true
                         } else {
                             // 控制条可见时左/右已在预览阶段做过快进（P1-2），
                             // 或焦点在按钮行上、已由焦点移动处理横向切换；
                             // 这里只消费、不再重复 nudge。
+                            // 第 6 轮 P2-1：按钮行内横向移动也要重置 5 秒计时器，
+                            // 否则慢慢浏览按钮时控制条会在手底下消失；根部收到的
+                            // KeyUp 是预览 KeyDown 的尾巴（已 poke 过），只在
+                            // 焦点不在根部时重置；错误页不重置（P2-2）。
+                            if (!rootFocused && shouldResetAutoHideTimer(
+                                    controlsVisible,
+                                    uiState.drawer != null,
+                                    uiState.error != null,
+                                )
+                            ) {
+                                pokeControls()
+                            }
                             true
                         }
                     }
@@ -393,14 +469,35 @@ fun PlayScreen(
                         when {
                             uiState.drawer != null -> false // 抽屉内上下交给焦点移动
                             !controlsVisible -> {
-                                pokeControls() // 控制条隐藏时下键只唤出，不进按钮行
+                                // 控制条隐藏时下键只唤出，不进按钮行；错误页上不 poke（P2-2）。
+                                if (uiState.error == null) pokeControls()
                                 true
                             }
                             rootFocused -> {
+                                // 第 6 轮 P2-1：进按钮行也是用户操作，重置 5 秒计时器。
+                                if (shouldResetAutoHideTimer(
+                                        controlsVisible,
+                                        uiState.drawer != null,
+                                        uiState.error != null,
+                                    )
+                                ) {
+                                    pokeControls()
+                                }
                                 controlsFirstButtonRequester.requestFocus()
                                 true
                             }
-                            else -> false // 焦点已在按钮行/胶囊上，上下交给焦点移动
+                            else -> {
+                                // 第 6 轮 P2-1：按钮行/胶囊上按上下移动焦点也要重置计时器。
+                                if (shouldResetAutoHideTimer(
+                                        controlsVisible,
+                                        uiState.drawer != null,
+                                        uiState.error != null,
+                                    )
+                                ) {
+                                    pokeControls()
+                                }
+                                false // 焦点已在按钮行/胶囊上，上下交给焦点移动
+                            }
                         }
                     }
                     Key.DirectionUp -> {
@@ -412,11 +509,21 @@ fun PlayScreen(
                                     uiState.error != null,
                                     uiState.showNextEpisode,
                                 ) -> {
+                                // 第 6 轮 P2-1：从按钮行回根部也要重置 5 秒计时器。
+                                if (shouldResetAutoHideTimer(
+                                        controlsVisible,
+                                        uiState.drawer != null,
+                                        uiState.error != null,
+                                    )
+                                ) {
+                                    pokeControls()
+                                }
                                 rootRequester.requestFocus()
                                 true
                             }
                             else -> {
-                                pokeControls()
+                                // 错误页上不 poke（P2-2）。
+                                if (uiState.error == null) pokeControls()
                                 false
                             }
                         }
@@ -427,7 +534,8 @@ fun PlayScreen(
                         } else if (commitPreview()) {
                             true
                         } else if (!controlsVisible) {
-                            pokeControls() // 控制条隐藏时 OK 只唤出，不暂停
+                            // 控制条隐藏时 OK 只唤出，不暂停；错误页上不 poke（P2-2）。
+                            if (uiState.error == null) pokeControls()
                             true
                         } else {
                             pokeControls()
@@ -436,7 +544,8 @@ fun PlayScreen(
                         }
                     }
                     else -> {
-                        pokeControls()
+                        // 错误页上不 poke（P2-2）：错误页按键只移动焦点，不重新武装计时器。
+                        if (uiState.error == null) pokeControls()
                         false
                     }
                 }
@@ -504,6 +613,7 @@ fun PlayScreen(
                 bufferedMs = uiState.bufferedMs,
                 breakpointMs = uiState.breakpointMs,
                 isPlaying = uiState.isPlaying,
+                // 第 6 轮 P1-1：播完态传进去，倒计时门控靠它与“用户暂停”区分。
                 isEnded = uiState.isEnded,
                 playbackRate = uiState.playbackRate,
                 seekPreviewMs = previewTargetMs,
@@ -622,10 +732,23 @@ private fun EpisodeDrawerContent(
     }
     val (groupStart, groupEnd) = groups.getOrNull(selectedGroup) ?: (1 to totalEpisodes)
     LaunchedEffect(Unit) { currentRequester.requestFocus() }
+    // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
+    // 却仍可获焦（焦点视觉上“消失”）；LazyRow 让超出的 chip 能滚到、能获焦。
+    // 当前集在第 6 组及之后时，打开即滚到选中分组，不让它落在可视区外。
+    val groupListState = rememberLazyListState()
+    LaunchedEffect(Unit) {
+        if (groups.size > 1) {
+            groupListState.scrollToItem(selectedGroup.coerceIn(0, groups.size - 1))
+        }
+    }
     Column {
         if (groups.size > 1) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                groups.forEachIndexed { g, (start, end) ->
+            LazyRow(
+                state = groupListState,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(groups.size) { g ->
+                    val (start, end) = groups[g]
                     CategoryChip(
                         text = "$start-$end",
                         selected = selectedGroup == g,
@@ -635,8 +758,10 @@ private fun EpisodeDrawerContent(
             }
             Spacer(modifier = Modifier.height(16.dp))
         }
+        // 第 6 轮 P2-4：5 列时每列 76.8dp，集数 chip（“第 N 集”+40dp 内边距，
+        // 约 82dp）放不下、文案折成两行；改 4 列（每列约 99dp），“第 120 集”也放得下。
         LazyVerticalGrid(
-            columns = GridCells.Fixed(5),
+            columns = GridCells.Fixed(4),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxSize(),

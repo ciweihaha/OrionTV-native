@@ -91,9 +91,12 @@ fun PlayerControls(
     modifier: Modifier = Modifier,
 ) {
     var countdown by remember(showNextEpisode) { mutableIntStateOf(3) }
-    // P2-1：倒计时在暂停或抽屉打开时冻结——每秒只在“正在播且抽屉关闭”时减 1，
-    // 暂停期间 / 用户在抽屉里挑集时不强制切集。LaunchedEffect 的 key 含 isPlaying
-    // 与 drawerOpen：状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
+    // P2-1（第 6 轮 P1-1 修订）：倒计时在暂停或抽屉打开时冻结——每秒只在
+    // “正在播（或已自然播完）且抽屉关闭”时减 1；暂停期间 / 用户在抽屉里挑集时
+    // 不强制切集。旧谓词只看 isPlaying：自然播完时 isPlaying 恒 false，
+    // 倒计时永久冻结、预告卡“3 秒后自动播放”落空。
+    // LaunchedEffect 的 key 含 isPlaying、isEnded 与 drawerOpen：
+    // 状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
     // 保留当前值，不会重置回 3；预告关闭（showNextEpisode 变 false）时直接返回。
     // A6-P1-1：播完态（STATE_ENDED，isPlaying=false）倒计时也要走，否则预告卡
     // 永远停在“3 秒后自动播放”——条件是“正在播或已播完”。

@@ -127,6 +127,9 @@ class PlayerManager @Inject constructor(
     val durationMs: Long get() = player.duration.coerceAtLeast(0L)
     val bufferedPositionMs: Long get() = player.bufferedPosition.coerceAtLeast(0L)
     val isPlaying: Boolean get() = player.isPlaying
+    /** 是否自然播完（STATE_ENDED；第 6 轮 P1-1：播完态下 isPlaying 恒 false，
+     * 须用它与“用户暂停”区分——播完时下一集倒计时应继续走，暂停时应冻结）。 */
+    val isEnded: Boolean get() = player.playbackState == Player.STATE_ENDED
     val isBuffering: Boolean get() = player.playbackState == Player.STATE_BUFFERING
 
     fun release() {

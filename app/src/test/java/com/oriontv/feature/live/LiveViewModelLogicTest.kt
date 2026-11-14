@@ -21,4 +21,14 @@ class LiveViewModelLogicTest {
         assertTrue(LiveViewModel.shouldRunTicker(isForeground = true))
         assertFalse(LiveViewModel.shouldRunTicker(isForeground = false))
     }
+
+    @Test
+    fun `page resume replays only when not already owner and playing`() {
+        // 第 6 轮 P1-4：应用内导航返回（导航轨切走再回来）也要恢复——
+        // 已是本页 token 所有者且在播时不动；被抢走/停掉时重开播当前台。
+        assertFalse(LiveViewModel.shouldResumePlayback(isCurrentOwner = true, isPlaying = true))
+        assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = true))
+        assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = true, isPlaying = false))
+        assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = false))
+    }
 }

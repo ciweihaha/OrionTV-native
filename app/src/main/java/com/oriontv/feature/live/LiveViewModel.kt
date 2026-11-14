@@ -171,7 +171,9 @@ class LiveViewModel @Inject constructor(
     /** 手动重试加载（空态/失败页的“重试”按钮）。 */
     fun reload() {
         // A4-P2-4：重载先停掉旧播放——否则失败时旧台音频继续播、UI 却显示加载失败。
-        playerManager.stop()
+        // 第 6 轮 P2-9：无归属的 stop() 改 stopIfOwner——本页没认领过播放（token 0）
+        // 时不碰别人的播放（例如后台播放开着时点播页正在播）；只停自己那一代。
+        playerManager.stopIfOwner(playbackToken)
         initialised = false
         _uiState.update { LiveUiState(favorites = _uiState.value.favorites) }
         init()
@@ -357,19 +359,34 @@ class LiveViewModel @Inject constructor(
     }
 
     /**
-     * 回页（A5-P1-1，供 LiveScreen 的 ON_RESUME 调用）：ViewModel 因 saveState
-     * 存活、init() 早退，而播放器已被点播页停掉/抢走，旧实现直接黑屏。
-     * 定时器重起；当前不是本页 token 所有者或未在播时，重新认领并开播当前台。
+     * 回页（A5-P1-1，供 LiveScreen 的 ON_RESUME 与应用内导航返回调用）：
+     * ViewModel 因 saveState 存活、init() 早退，而播放器已被点播页停掉/抢走，
+     * 旧实现直接黑屏。定时器重起；当前不是本页 token 所有者或未在播时，
+     * 重新认领并开播当前台。
+     * 第 6 轮 P1-4：之前只挂在 Activity ON_RESUME 上——应用内导航（导航轨
+     * 切走再回来）不经过 Activity 生命周期，ON_RESUME 不触发；现在
+     * LiveScreen 的 LaunchedEffect(Unit) 在每次重进组合时也调这里
+     * （init() 早退分支里不调，保持 init() 只负责首启加载）。
      */
     fun onPageResumed() {
         if (!initialised || _uiState.value.channels.isEmpty()) return
         startTicker()
-        if (playerManager.isCurrentOwner(playbackToken) && playerManager.isPlaying) return
+        if (!shouldResumePlayback(
+                playerManager.isCurrentOwner(playbackToken),
+                playerManager.isPlaying,
+            )
+        ) {
+            return
+        }
         playCurrent()
     }
 
     /** OK 重试当前台（失败过且未耗尽自动跳台上限时，OK 不开面板、改重试）。 */
     fun retryCurrent() {
+        // 第 6 轮 P2-5：重试也取消数字键提交定时器（与 afterManualChannelChange /
+        // changeLine / openPanel 对齐）——否则失败页上按数字键、1.5 秒内点重试，
+        // 定时器到点仍会把刚重试的台切到数字键那个台。
+        cancelDigitCommit()
         controller.resetFailures()
         _uiState.update { it.copy(failCount = 0, playbackFailed = false) }
         playCurrent()
@@ -679,6 +696,13 @@ class LiveViewModel @Inject constructor(
          * 与后台播放开关无关；恢复前台后下一跳继续）。
          */
         internal fun shouldRunTicker(isForeground: Boolean): Boolean = isForeground
+
+        /**
+         * 回页是否应重开播（可单测，P1-4）：已是本页 token 所有者且在播时不动；
+         * 播放器被抢走（点播页开播）或停掉（离页时暂停）时重新认领并开播当前台。
+         */
+        internal fun shouldResumePlayback(isCurrentOwner: Boolean, isPlaying: Boolean): Boolean =
+            !(isCurrentOwner && isPlaying)
 
         /**
          * 面板定时器是否应挂起（可单测，P1-4）：面板打开且 EPG 弹窗未打开时才挂 15 秒定时器；

@@ -20,14 +20,32 @@ object IntroSkip {
      * 是否该自动跳过片头（可单测）：开关开、片头结束点 >0、当前位置仍在片头内、
      * 本集还没跳过。断点续播位置已过片头（position >= introEnd）的不触发；
      * 有标记用标记，无标记用设置的片头时长，0=不跳（introEndMs==0 即不触发）。
+     * 第 6 轮 P1-2 片长守卫：片头结束点距片尾不到余量（或已越过片尾）时不自动跳——
+     * 默认 90 秒兜底会把 60 秒的短片开播即送到片尾前 1 秒；手动跳（skipIntro）
+     * 是用户当场点的意图，不走这条守卫。
+     * @param durationMs 片长（毫秒）；<=0 表示未知，不做守卫（保持旧行为）。
      */
     fun shouldAutoSkip(
         positionMs: Long,
         introEndMs: Long,
         autoSkipEnabled: Boolean,
         alreadySkipped: Boolean,
-    ): Boolean =
-        autoSkipEnabled && introEndMs > 0 && !alreadySkipped && positionMs < introEndMs
+        durationMs: Long = 0L,
+    ): Boolean {
+        if (!autoSkipEnabled || introEndMs <= 0 || alreadySkipped) return false
+        if (positionMs >= introEndMs) return false
+        // 片长守卫：跳完剩不到 10 秒就没得看了，不自动跳。
+        if (durationMs > 0 && introEndMs >= durationMs - INTRO_SKIP_MIN_REMAINING_MS) return false
+        return true
+    }
+
+    /**
+     * 自动跳片头后至少要剩的正片时长（第 6 轮 P1-2）：跳点距片尾不到它时
+     * 不自动跳；与“临近片尾 10 秒视为看完”（PlayViewModel.END_THRESHOLD_MS）
+     * 取同一量级。
+     */
+    const val INTRO_SKIP_MIN_REMAINING_MS = 10_000L
+}
 
     /**
      * 跳过片头胶囊是否该出现（可单测）：在片头窗口内、本集没出现过、还没跳过。

@@ -48,7 +48,23 @@ class IntroSkipTest {
     }
 
     @Test
-    fun `skip intro capsule shows only once per episode`() {
+    fun `auto skip does not fire when intro end leaves no watchable remainder`() {
+        // 第 6 轮 P1-2：短片遇默认 90 秒兜底，开播即被送到片尾前 1 秒。
+        // 跳点距片尾不到 10 秒（或已越过片尾）时不自动跳。
+        // 60 秒片 + 90 秒片头 → 不跳
+        assertFalse(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 60_000L))
+        // 90 秒片头、100 秒片长（只剩 10 秒）→ 不跳
+        assertFalse(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 100_000L))
+        // 90 秒片头、101 秒片长（剩 11 秒）→ 跳
+        assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 101_000L))
+        // 长片正常跳
+        assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 1_800_000L))
+        // 片头本身很短的短片照常跳（5 秒片头、60 秒片长）
+        assertTrue(IntroSkip.shouldAutoSkip(0L, 5_000L, true, false, durationMs = 60_000L))
+        // 片长未知（durationMs=0）时不做守卫，保持旧行为
+        assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false, durationMs = 0L))
+        assertTrue(IntroSkip.shouldAutoSkip(0L, 90_000L, true, false))
+    }
         // P2-5：90 秒片头不再每 10 秒重现（之前约出现 9 次）
         assertTrue(IntroSkip.shouldShowSkipIntroCapsule(true, false, false))
         assertFalse(IntroSkip.shouldShowSkipIntroCapsule(true, true, false))
