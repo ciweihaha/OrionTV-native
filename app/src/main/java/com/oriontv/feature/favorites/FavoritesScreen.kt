@@ -111,8 +111,9 @@ fun FavoritesScreen(
         restorePending = false
         lastHandledTick = focusRestoreTick
         if (!viewModel.initialFocusDone) {
-            if (uiState.items.isNotEmpty()) firstCardRequester.requestFocus()
-            else goHomeRequester.requestFocus()
+            // A8-P2-2：空态/首卡的单次焦点请求改重试版（卡片尚未组合完成时静默失败）。
+            if (uiState.items.isNotEmpty()) firstCardRequester.requestFocusWithRetry()
+            else goHomeRequester.requestFocusWithRetry()
             viewModel.initialFocusDone = true
         } else {
             // P2-9（第 5 轮）：按记录键（source+id）锚定，不按 index——
@@ -129,10 +130,10 @@ fun FavoritesScreen(
                     // C4-P2-2：目标卡片尚未组合完成时重试请求，仍失败才回首张卡片，
                     // 不再静默丢焦点。
                     val restored = cardRequesters[savedIndex]?.requestFocusWithRetry() ?: false
-                    if (!restored) firstCardRequester.requestFocus()
+                    if (!restored) firstCardRequester.requestFocusWithRetry()
                 }
-                uiState.items.isNotEmpty() -> firstCardRequester.requestFocus()
-                else -> goHomeRequester.requestFocus()
+                uiState.items.isNotEmpty() -> firstCardRequester.requestFocusWithRetry()
+                else -> goHomeRequester.requestFocusWithRetry()
             }
         }
     }
@@ -152,8 +153,13 @@ fun FavoritesScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
             PrimaryButton(
-                text = "去首页",
-                onClick = { onNavigate(OrionRoute.Home) },
+                // C8-P2-6：加载失败时空态只有“去首页”，无原地重试入口——
+                // 失败时按钮换成“重试”，调已有的 viewModel.refresh()。
+                text = if (uiState.loadFailed) "重试" else "去首页",
+                onClick = {
+                    if (uiState.loadFailed) viewModel.refresh()
+                    else onNavigate(OrionRoute.Home)
+                },
                 modifier = Modifier.preferredFocus(goHomeRequester),
             )
         }

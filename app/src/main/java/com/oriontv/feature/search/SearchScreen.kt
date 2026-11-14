@@ -69,6 +69,9 @@ fun SearchScreen(
     val remoteState by viewModel.remoteInputState.collectAsState()
     val searchRequester = remember { FocusRequester() }
     val scanButtonRequester = remember { FocusRequester() }
+    // C8-P1-3/A8-P2-2：错误态按钮的焦点锚点（“重试”之前根本没有 requester）。
+    val retryRequester = remember { FocusRequester() }
+    val changeKeywordRequester = remember { FocusRequester() }
     val resultRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     // C6-P1-1：搜索框获焦态（焦点描边用；首进默认落点却无任何焦点态时，
     // 用户分不清焦点在搜索框还是在旁边的按钮上）。
@@ -120,6 +123,25 @@ fun SearchScreen(
                 searchRequester.requestFocus()
             }
         }
+    }
+
+    // C8-P1-3：远程输入触发新搜索时结果网格卸载，焦点若在结果卡上即丢失、
+    // 无任何恢复——加载一开始就把焦点收回搜索框（网格卸载后焦点有明确落点）；
+    // 搜索失败时落到错误态按钮（有“重试”落“重试”，无结果落“换个关键词”，
+    // 都落不上才回搜索框）。
+    LaunchedEffect(uiState.isLoading) {
+        if (uiState.isLoading) {
+            searchRequester.requestFocus()
+        }
+    }
+    LaunchedEffect(uiState.error) {
+        val error = uiState.error ?: return@LaunchedEffect
+        val landed = if (error is SearchError.Empty) {
+            changeKeywordRequester.requestFocusWithRetry()
+        } else {
+            retryRequester.requestFocusWithRetry()
+        }
+        if (!landed) searchRequester.requestFocus()
     }
 
     // B6-P2-12：requester map 只增不减——结果数缩减时清掉越界下标的旧
@@ -308,11 +330,16 @@ fun SearchScreen(
                     Text(text = error?.message ?: "", style = OrionTextStyles.Body)
                     Spacer(modifier = Modifier.height(24.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        PrimaryButton(text = "换个关键词", onClick = { viewModel.clearQuery() })
+                        PrimaryButton(
+                            text = "换个关键词",
+                            onClick = { viewModel.clearQuery() },
+                            modifier = Modifier.preferredFocus(changeKeywordRequester),
+                        )
                         if (error !is SearchError.Empty) {
                             SecondaryButton(
                                 text = "重试",
                                 onClick = { viewModel.searchNow(uiState.searchedQuery) },
+                                modifier = Modifier.preferredFocus(retryRequester),
                             )
                         }
                         if (error is SearchError.NotConfigured) {

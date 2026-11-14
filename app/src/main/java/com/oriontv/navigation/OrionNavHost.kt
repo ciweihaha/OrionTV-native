@@ -211,6 +211,7 @@ fun OrionNavHost(
                         onNavigate = navigateSingleTop,
                         onBack = { navController.popBackStack() },
                         focusRestoreTick = focusRestoreTick,
+                        globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }
                 // P2-4：深层链接（adb/语音助手/外部调用可直达详情/播放）。

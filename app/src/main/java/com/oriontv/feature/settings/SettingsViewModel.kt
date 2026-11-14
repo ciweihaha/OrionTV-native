@@ -127,6 +127,9 @@ class SettingsViewModel @Inject constructor(
      */
     fun saveSourceAddresses() {
         val state = _uiState.value
+        // C8-P2-5：加载完成前直接返回——UI 侧按钮已禁用，这里是防御
+        // （加载中的 draft 还是空串/旧值，存了会把已保存地址清掉）。
+        if (state.isLoading) return
         if (state.isSaving || !isDirty) return
         // B6-P1-1：非法地址直接拒绝保存——旧实现照单全收还先登出清掉登录态，
         // 用户填错一个字符就丢登录。空地址允许（= 不配服务器，本地模式）。

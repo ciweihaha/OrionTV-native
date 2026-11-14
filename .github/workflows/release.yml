@@ -130,7 +130,8 @@ jobs:
           echo "current cert SHA-256: $CURRENT_FP"
           # C6-P2-2：按最高版本 tag 取上一版，不按“最新创建的 Release”——
           # 补发旧版 hotfix Release 会比新版晚创建，旧实现会拿错上一版比对指纹。
-          PREV_TAG=$(gh release list --limit 50 --json tagName --jq -r '.[].tagName' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          # C8-P2-4：--limit 50 在超 50 个 Release 时会漏掉老版本，拉全量。
+          PREV_TAG=$(gh release list --limit 1000 --json tagName --jq -r '.[].tagName' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           if [ -n "$PREV_TAG" ]; then PREV_TAG="v$PREV_TAG"; fi
           if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "null" ]; then
             echo "no previous release, skipping cert check"
@@ -139,7 +140,13 @@ jobs:
           echo "previous release: $PREV_TAG"
           rm -rf /tmp/prev-release && mkdir -p /tmp/prev-release
           gh release download "$PREV_TAG" --pattern '*.apk' --dir /tmp/prev-release
-          PREV_APK=$(ls /tmp/prev-release/*.apk | head -n 1)
+          # C8-P2-4：单 Release 多 APK 时旧实现 head -n 1 任意取一个，可能比错；
+          # 按版本排序确定性取最新，多于一个时告警（仍取最新继续比对）。
+          PREV_COUNT=$(ls /tmp/prev-release/*.apk 2>/dev/null | wc -l)
+          if [ "$PREV_COUNT" -gt 1 ]; then
+            echo "::warning::previous release $PREV_TAG has $PREV_COUNT APKs, using latest by version"
+          fi
+          PREV_APK=$(ls /tmp/prev-release/*.apk | sort -V | tail -n 1)
           PREV_FP=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$PREV_APK" | grep -i "SHA-256 digest" | head -n 1 | sed 's/.*: //')
           echo "previous cert SHA-256: $PREV_FP"
           if [ "$CURRENT_FP" != "$PREV_FP" ]; then

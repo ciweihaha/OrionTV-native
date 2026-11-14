@@ -156,6 +156,12 @@ fun LiveScreen(
     viewModel: LiveViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * C8-P1-1：全局弹窗（登录/更新卡片）是否打开——打开时直播页的 BackHandler
+     * 必须让位，否则它后注册、优先级更高，返回键会在卡片底下打开退出确认，
+     * 而不是先关卡片（全局 handler 在 NavHost 里先注册）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val rootRequester = remember { FocusRequester() }
@@ -169,7 +175,7 @@ fun LiveScreen(
     // 有一层打开时 BackHandler 让位，返回键仍走根 Box 的层级处理。
     BackHandler(
         enabled = !uiState.panelOpen && uiState.epgDialogChannel == null &&
-            !uiState.exitConfirmOpen,
+            !uiState.exitConfirmOpen && !globalModalOpen,
     ) {
         viewModel.openExitConfirm()
     }
@@ -182,7 +188,8 @@ fun LiveScreen(
         // onPageResumed 直接早退，不干扰 init() 的加载；重进时才真正重起
         // 定时器、重开播。Home/PiP 返回仍走 ON_RESUME，两条路不重叠。
         viewModel.onPageResumed()
-        rootRequester.requestFocus()
+        // A8-P2-2：单次请求在根尚未组合完成时静默失败，改重试版。
+        rootRequester.requestFocusWithRetry()
     }
 
     // A5-P1-1/A5-P1-2/A5-P2-10：离页/回页的播放与定时器接线。
@@ -232,7 +239,8 @@ fun LiveScreen(
         if (uiState.channels.isNotEmpty() && !uiState.panelOpen &&
             uiState.epgDialogChannel == null && !uiState.exitConfirmOpen
         ) {
-            rootRequester.requestFocus()
+            // A8-P2-2：失败页消失后的根焦点恢复也是单次，改重试版。
+            rootRequester.requestFocusWithRetry()
         }
     }
 
@@ -557,7 +565,8 @@ private fun EmptyState(
     onRetry: () -> Unit,
 ) {
     val requester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { requester.requestFocus() }
+    // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
+    LaunchedEffect(Unit) { requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -608,7 +617,8 @@ private fun PlaybackFailedOverlay(
     onOpenPanel: () -> Unit,
 ) {
     val requester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { requester.requestFocus() }
+    // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
+    LaunchedEffect(Unit) { requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -718,6 +728,9 @@ private fun ChannelPanel(
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
     val currentRequester = remember { FocusRequester() }
+    // C8-P2-2：分组为空时无任何行挂 currentRequester，焦点无处可落——
+    // 首个分组 chip（★ 收藏/全部恒存在）作空态落点。
+    val firstChipRequester = remember { FocusRequester() }
 
     // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）；
     // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
@@ -726,15 +739,23 @@ private fun ChannelPanel(
     // 返回键仍能关面板），不再靠固定 delay(100) 猜时序。
     LaunchedEffect(uiState.panelOpen, uiState.selectedGroup) {
         if (uiState.panelOpen) {
-            val idx = resolvePanelFocusIndex(filtered, currentChannel)
-            listState.scrollToItem(idx)
-            currentRequester.requestFocusWithRetry()
+            if (filtered.isEmpty()) {
+                firstChipRequester.requestFocusWithRetry()
+            } else {
+                val idx = resolvePanelFocusIndex(filtered, currentChannel)
+                listState.scrollToItem(idx)
+                currentRequester.requestFocusWithRetry()
+            }
         }
     }
     // EPG 弹窗关闭后焦点回落到面板当前台。
     LaunchedEffect(uiState.epgDialogChannel) {
         if (uiState.epgDialogChannel == null && uiState.panelOpen) {
-            currentRequester.requestFocusWithRetry()
+            if (filtered.isEmpty()) {
+                firstChipRequester.requestFocusWithRetry()
+            } else {
+                currentRequester.requestFocusWithRetry()
+            }
         }
     }
 
@@ -770,11 +791,13 @@ private fun ChannelPanel(
         }
         // 分组 chip（★ 收藏在最前）。
         LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-            items(groups) { group ->
+            itemsIndexed(groups) { index, group ->
                 CategoryChip(
                     text = group,
                     selected = uiState.selectedGroup == group,
                     onClick = { onSelectGroup(group) },
+                    // C8-P2-2：分组为空时的焦点落点挂首个 chip（分组恒存在）。
+                    modifier = if (index == 0) Modifier.preferredFocus(firstChipRequester) else Modifier,
                 )
             }
         }

@@ -39,6 +39,7 @@ import kotlinx.coroutines.delay
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
@@ -108,7 +109,8 @@ private fun DetailScreenContent(
     // C4-P1-4：加载失败（current 为空且 error 非空）时焦点落到“重试”按钮。
     LaunchedEffect(uiState.error) {
         if (uiState.error != null && uiState.current == null) {
-            retryRequester.requestFocus()
+            // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
+            retryRequester.requestFocusWithRetry()
         }
     }
     // P1-4：从播放页返回时重组，焦点已随旧组合处置而丢失，把焦点还给“播放”按钮。
@@ -225,6 +227,9 @@ private fun DetailScreenContent(
                                             ),
                                         )
                                     },
+                                    // C8-P2-7：0 集时播放按钮置灰禁用——旧实现仍可点，
+                                    // 点进去播放页直接报错。
+                                    enabled = current.episodes.isNotEmpty(),
                                     modifier = Modifier.preferredFocus(playRequester),
                                 )
                                 Spacer(modifier = Modifier.width(16.dp))

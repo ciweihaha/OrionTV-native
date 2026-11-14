@@ -206,6 +206,7 @@ fun SettingsScreen(
                         onM3uUrlChange = { viewModel.onM3uUrlChange(it) },
                         dirty = viewModel.isDirty,
                         isSaving = uiState.isSaving,
+                        isLoading = uiState.isLoading,
                         onSave = { viewModel.saveSourceAddresses() },
                         firstRequester = rightRequester,
                     )
@@ -365,6 +366,8 @@ private fun SourceSettings(
     onM3uUrlChange: (String) -> Unit,
     dirty: Boolean,
     isSaving: Boolean,
+    // C8-P2-5：加载完成前输入仍可编辑、保存按钮极窄窗口可用——加载中禁用保存。
+    isLoading: Boolean,
     onSave: () -> Unit,
     firstRequester: FocusRequester,
 ) {
@@ -380,7 +383,7 @@ private fun SourceSettings(
         PrimaryButton(
             text = if (isSaving) "保存中…" else "保存",
             onClick = onSave,
-            enabled = dirty && !isSaving,
+            enabled = dirty && !isSaving && !isLoading,
         )
         Text(text = "保存后立即生效，并清除登录状态。", style = OrionTextStyles.Small)
     }
