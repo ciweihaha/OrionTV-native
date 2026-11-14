@@ -73,7 +73,7 @@ fun HomeScreen(
     LaunchedEffect(Unit) { firstChipRequester.requestFocus() }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val cardWidth = (maxWidth - 96.dp - 5 * OrionDimens.CardSpacing) / OrionDimens.HomeRowCards
+        val cardWidth = (maxWidth - 96.dp - OrionDimens.CardSpacing * 5f) / OrionDimens.HomeRowCards.toFloat()
         LazyColumn(
             contentPadding = OrionDimens.ContentPadding,
             verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),

@@ -66,7 +66,7 @@ fun DetailScreen(
     var isFavorite by remember { mutableStateOf(false) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val gridCellWidth = (maxWidth - 96.dp - 7 * 12.dp) / OrionDimens.EpisodeGridColumns
+        val gridCellWidth = (maxWidth - 96.dp - 12.dp * 7f) / OrionDimens.EpisodeGridColumns.toFloat()
         LazyColumn(
             contentPadding = OrionDimens.ContentPadding,
             verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),

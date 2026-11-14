@@ -27,17 +27,13 @@ object FocusUtils {
 }
 
 /** 把 [FocusRequester] 挂到组件上，并对 KeyUp 事件做统一去重处理。 */
-fun Modifier.onKeyUp(onKeyUp: () -> Boolean): Modifier = this.onKeyEvent { event ->
-    FocusUtils.handleKeyUp(event, onKeyUp)
-}
-
-/**
- * 带按键事件的重载：需要按是哪个键分流时用（方向键/返回键/数字键）。
- * 同样只在 [KeyEventType.KeyUp] 时回调，[onKeyUp] 返回 true 表示已消费。
- */
 fun Modifier.onKeyUp(onKeyUp: (KeyEvent) -> Boolean): Modifier = this.onKeyEvent { event ->
     if (event.type != KeyEventType.KeyUp) false else onKeyUp(event)
 }
+
+// 注意：不要再加一个无参的 onKeyUp(() -> Boolean) 重载——两个重载并存时，
+// 调用处用隐式 it（{ it.key == ... }）会报 Overload resolution ambiguity。
+// 所有调用方都按是哪个键分流，本来就需要 KeyEvent。
 
 /** 首选焦点锚点：挂到“当前项”上，打开时 requestFocus 到它。 */
 fun Modifier.preferredFocus(requester: FocusRequester): Modifier =

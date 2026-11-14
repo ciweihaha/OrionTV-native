@@ -25,14 +25,14 @@ fun BrandProgressBar(
         modifier = modifier
             .fillMaxWidth()
             .height(height)
-            .clip(RoundedCornerShape(height / 2))
+            .clip(RoundedCornerShape(height / 2f))
             .background(OrionColors.Divider),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth(fraction.coerceIn(0f, 1f))
                 .height(height)
-                .clip(RoundedCornerShape(height / 2))
+                .clip(RoundedCornerShape(height / 2f))
                 .background(OrionColors.Brand),
         )
     }

@@ -79,8 +79,8 @@ object EpgParser {
     fun nowPlaying(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
         val byId = tvgId?.let { data.programmesByChannel[it] }
         val list = byId ?: data.programmesByChannel.entries
-            .firstOrNull { (_, programmes) ->
-                val name = data.channelNames[it.key]
+            .firstOrNull { (channelId, _) ->
+                val name = data.channelNames[channelId]
                 name != null && normalizeName(name) == normalizeName(channelName)
             }?.value
             ?: return null
@@ -91,8 +91,8 @@ object EpgParser {
     fun nextProgramme(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
         val byId = tvgId?.let { data.programmesByChannel[it] }
         val list = byId ?: data.programmesByChannel.entries
-            .firstOrNull { (_, programmes) ->
-                val name = data.channelNames[it.key]
+            .firstOrNull { (channelId, _) ->
+                val name = data.channelNames[channelId]
                 name != null && normalizeName(name) == normalizeName(channelName)
             }?.value
             ?: return null
