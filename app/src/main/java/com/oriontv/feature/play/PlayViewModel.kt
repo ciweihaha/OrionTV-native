@@ -437,6 +437,7 @@ class PlayViewModel @Inject constructor(
                 val duration = playerManager.durationMs
                 val buffered = playerManager.bufferedPositionMs
                 val playing = playerManager.isPlaying
+                val ended = playerManager.isEnded
                 val state = _uiState.value
                 val wasLoading = state.isLoading
                 _uiState.update {
@@ -445,6 +446,11 @@ class PlayViewModel @Inject constructor(
                         durationMs = duration,
                         bufferedMs = buffered,
                         isPlaying = playing,
+                        // 第 6 轮 P1-1：每轮询用播放器实态刷新播完标志——
+                        // onPlaybackEnded 事件置真、这里在重播/快进离尾后清掉，
+                        // 不靠状态机猜（暂停后 500ms 内重播再暂停的竞态会留 stale 真值，
+                        // togglePlayPause 的重播判断直接读 playerManager.isEnded，不读它）。
+                        isEnded = ended,
                         isBuffering = playerManager.isBuffering,
                         // 就绪判据：只有真正开始播（首帧已出）才解除加载态；
                         // 光出时长（duration>0）不算——分片全死的流一直 STATE_BUFFERING，
@@ -463,7 +469,7 @@ class PlayViewModel @Inject constructor(
                     handlePlaybackError(null, resumeFromStart = true)
                 }
                 // 自动跳过片头（每集一次，先于胶囊判断：自动跳开了就不出胶囊）。
-                maybeAutoSkipIntro(position)
+                maybeAutoSkipIntro(position, duration)
                 // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失，每集只出现一次。
                 updateSkipIntroVisibility(position)
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
@@ -496,10 +502,18 @@ class PlayViewModel @Inject constructor(
      * 自动跳过片头（P1-10，总协调已定：补自动跳，不改文案）：
      * 每集一次，当前位置仍在片头内且 autoSkipIntro 开时 seek 到片头结束点；
      * 断点续播位置已过片头的不触发；胶囊保留作手动入口。
+     * 第 6 轮 P1-2：把片长传进去做守卫——短片遇默认 90 秒兜底不再开播即被送走。
      */
-    private fun maybeAutoSkipIntro(positionMs: Long) {
+    private fun maybeAutoSkipIntro(positionMs: Long, durationMs: Long) {
         val state = _uiState.value
-        if (!IntroSkip.shouldAutoSkip(positionMs, state.introEndMs, cachedAutoSkipIntro, introSkippedThisEpisode)) {
+        if (!IntroSkip.shouldAutoSkip(
+                positionMs,
+                state.introEndMs,
+                cachedAutoSkipIntro,
+                introSkippedThisEpisode,
+                durationMs,
+            )
+        ) {
             return
         }
         introSkippedThisEpisode = true
@@ -527,6 +541,18 @@ class PlayViewModel @Inject constructor(
         if (playerManager.isPlaying) {
             playerManager.pause()
             userPaused = true
+        } else if (shouldReplayFromStart(playerManager.isPlaying, playerManager.isEnded)) {
+            // 第 6 轮 P1-1：播完态下 OK 是“重播本集”——STATE_ENDED 下 play()
+            // 不重启播放，须先 seekTo(0)；同时只关预告卡、不记“取消”，
+            // 本集再次播完时预告卡还能重弹、自动切下一集。
+            // 注意：重播判断直接读 playerManager.isEnded（实态），不读
+            // uiState.isEnded——后者是轮询刷新的，暂停竞态下可能 stale。
+            _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }
+            seekTo(0L)
+            playerManager.play()
+            userPaused = false
+            // 暂停期间就绪超时不触发（P2-6）；恢复播放后若仍在加载，重新起 20 秒超时。
+            if (_uiState.value.isLoading) armReadyTimeout()
         } else {
             playerManager.play()
             userPaused = false
@@ -787,6 +813,14 @@ class PlayViewModel @Inject constructor(
     }
 
     companion object {
+        /**
+         * 播完态按 OK 是否应重播本集（可单测，P1-1）：未在播且已到片尾
+         * （STATE_ENDED）时 play() 须先 seekTo 才能重播，OK 在此态是重播；
+         * 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。
+         */
+        internal fun shouldReplayFromStart(isPlaying: Boolean, isEnded: Boolean): Boolean =
+            !isPlaying && isEnded
+
         /** 播错自动换源最多 2 次（ui-design.md §5.3）。 */
         const val MAX_AUTO_SWITCH = 2
 
@@ -874,7 +908,8 @@ data class PlayUiState(
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
     /** A6-P1-1：是否已播完（STATE_ENDED）——下一集倒计时在播完态也要走，
-     * 不能只看 isPlaying（播完时 isPlaying=false，倒计时永久冻结）。 */
+     * 不能只看 isPlaying（播完时 isPlaying=false，倒计时永久冻结）。
+     * 第 6 轮 P1-1（本分支）：轮询按播放器实态刷新它、OK 重播时清掉。 */
     val isEnded: Boolean = false,
     val playbackRate: Float = 1f,
     val showNextEpisode: Boolean = false,

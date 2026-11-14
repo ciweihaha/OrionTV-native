@@ -57,6 +57,16 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `ok replays only after natural end not after user pause`() {
+        // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
+        // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。
+        assertTrue(PlayViewModel.shouldReplayFromStart(isPlaying = false, isEnded = true))
+        assertFalse(PlayViewModel.shouldReplayFromStart(isPlaying = false, isEnded = false))
+        assertFalse(PlayViewModel.shouldReplayFromStart(isPlaying = true, isEnded = false))
+        assertFalse(PlayViewModel.shouldReplayFromStart(isPlaying = true, isEnded = true))
+    }
+
+    @Test
     fun `next episode overlay respects dismiss`() {
         // P1-1：没取消过 → 出现；本集点过“取消” → 播完也不再弹、不自动播下一集
         assertTrue(PlayViewModel.shouldShowNextEpisode(true, 0, 10, -1))

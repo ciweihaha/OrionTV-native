@@ -168,6 +168,12 @@ fun LiveScreen(
 
     LaunchedEffect(Unit) {
         viewModel.init()
+        // 第 6 轮 P1-4：应用内导航返回（导航轨切走再回来）也要恢复——
+        // Activity 全程 RESUMED，ON_RESUME 不触发；init() 早退（ViewModel
+        // 存活），只靠它恢复不了播放与定时器。首启时频道表还是空的，
+        // onPageResumed 直接早退，不干扰 init() 的加载；重进时才真正重起
+        // 定时器、重开播。Home/PiP 返回仍走 ON_RESUME，两条路不重叠。
+        viewModel.onPageResumed()
         rootRequester.requestFocus()
     }
 
@@ -175,6 +181,8 @@ fun LiveScreen(
     // ON_PAUSE（切后台、进画中画）与 onDispose（导航轨切走本页）都走
     // onPagePaused：开关关着即停本页音频，时钟/EPG 刷新定时器随页停；
     // ON_RESUME 走 onPageResumed：定时器重起，播放器被抢走/停掉时重开播。
+    // 第 6 轮 P1-4：应用内导航返回不经过 Activity 生命周期，恢复还挂在
+    // 上面的 LaunchedEffect(Unit) 里（见 init() 调用处）。
     // P2-9：同时维护前台标志（LiveViewModel.startTicker 的门控），
     // 切后台时停时钟/EPG 刷新，回前台恢复；只看 Activity 前台，与点播页同款接线。
     // ON_RESUME 先开门控再重起定时器，ON_PAUSE 先关门控再停页。
@@ -1001,8 +1009,9 @@ private fun EpgDialog(
     val closeRequester = remember { FocusRequester() }
     // P2-6 焦点陷阱：记录当前焦点在弹窗内的位置——节目行 0..n-1，n = “关闭”按钮；
     // 初始值取将要获焦的行（正在播的节目，无则首行；无节目单时为“关闭”按钮下标 0）。
-    // 注意：打开后 100ms 才 requestFocus，之前焦点仍在背后频道行上；
-    // 该窗口内按上下最多只影响背后行一次，陷阱在焦点入弹窗后生效（需真机确认）。
+    // 注意：落焦用 requestFocusWithRetry（见下），不是固定 delay(100)；
+    // 焦点入弹窗前仍在背后频道行上，该窗口内按上下最多只影响背后行一次，
+    // 陷阱在焦点入弹窗后生效（窗口期需真机确认）。
     var focusedIndex by remember(channel.url) {
         mutableIntStateOf(if (programmes.isEmpty()) 0 else currentIndex.coerceAtLeast(0))
     }

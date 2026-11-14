@@ -56,4 +56,36 @@ class PlayScreenLogicTest {
             ),
         )
     }
+
+    @Test
+    fun `auto-hide fires only with controls shown and nothing else holding them`() {
+        // P2-2：控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
+        // 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
+        assertTrue(shouldAutoHideControls(true, false, false, false, false))
+        assertFalse(shouldAutoHideControls(false, false, false, false, false))
+        assertFalse(shouldAutoHideControls(true, true, false, false, false))
+        assertFalse(shouldAutoHideControls(true, false, true, false, false))
+        assertFalse(shouldAutoHideControls(true, false, false, true, false))
+        assertFalse(shouldAutoHideControls(true, false, false, false, true))
+    }
+
+    @Test
+    fun `preview auto-commit pauses while drawer open`() {
+        // P2-3：有待定落点且抽屉关闭时才 2 秒自动提交；抽屉打开时不提交，
+        // 否则挑集时视频在抽屉后跳进度。
+        assertTrue(shouldAutoCommitPreview(30_000L, drawerOpen = false))
+        assertFalse(shouldAutoCommitPreview(30_000L, drawerOpen = true))
+        assertFalse(shouldAutoCommitPreview(-1L, drawerOpen = false))
+        assertFalse(shouldAutoCommitPreview(-1L, drawerOpen = true))
+    }
+
+    @Test
+    fun `auto-hide timer resets on control-row navigation but not on error page`() {
+        // P2-1：按钮行内按键（横向移动/进出）重置 5 秒计时器；
+        // P2-2：错误页上不重置——错误页没有按钮行，按键只移动“重试/返回”焦点。
+        assertTrue(shouldResetAutoHideTimer(true, false, false))
+        assertFalse(shouldResetAutoHideTimer(false, false, false))
+        assertFalse(shouldResetAutoHideTimer(true, true, false))
+        assertFalse(shouldResetAutoHideTimer(true, false, true))
+    }
 }
