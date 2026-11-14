@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -53,10 +54,29 @@ class AuthRepository @Inject constructor(
     private val restoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** 第 3 轮收尾 B-P1-8：冷启动配置拉取失败后的一次延迟重试任务（只排一个）。 */
     private var configRetryJob: Job? = null
+    /**
+     * 第 6 轮 D6-P1-1/D6-P2-4：退出登录世代号——logout() 推进一次；
+     * performRestore 成功落盘前复核，世代变了说明期间已退出（或退出后重登），
+     * 不再碰任何登录态，防止在途恢复/延迟配置重试把已登出态悄悄置回 true。
+     */
+    private val logoutEpoch = AtomicInteger(0)
+    /**
+     * 第 6 轮 D6-P2-5：401 续期回调触发次数——verifySession 藉此判断本次 401
+     * 是否已试过静默重登，试过且失败就不再由 checkLoginStatus 重跑第二遍。
+     */
+    private val unauthorizedRefreshCount = AtomicInteger(0)
+    /**
+     * 第 6 轮 D6-P1-1：配置重试延迟（毫秒），默认 [CONFIG_RETRY_DELAY_MS]；
+     * internal 可写只为单测能缩短等待，生产代码不动它。
+     */
+    internal var configRetryDelayMs: Long = CONFIG_RETRY_DELAY_MS
 
     init {
         // MoonTvApi 的 401 续期回调：静默重登。
-        moonTvApi.onUnauthorized = { restoreSession() }
+        moonTvApi.onUnauthorized = {
+            unauthorizedRefreshCount.incrementAndGet()
+            restoreSession()
+        }
     }
 
     /** 登录：成功写标记位 + 存凭据（供下次自动续期），失败返回原因。 */
@@ -110,6 +130,12 @@ class AuthRepository @Inject constructor(
      * CookieJar 里的会话 cookie 也还在（P0-4）。三处都要清。
      */
     suspend fun logout() {
+        // D6-P1-1/D6-P2-4：退出即作废一切在途/待跑的恢复——先取消配置重试任务、
+        // 推进退出世代号（performRestore 成功落盘前复核），再走远程登出；
+        // 否则 31 秒内退出会被冷启动配置重试悄悄复登，或被在途恢复置回 true。
+        configRetryJob?.cancel()
+        configRetryJob = null
+        logoutEpoch.incrementAndGet()
         // B5-P2-3：DataStore 读失败按无地址处理，不让冷启动/登出崩溃。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         try {
@@ -134,6 +160,8 @@ class AuthRepository @Inject constructor(
      * 同步拉一次配置（30 秒失败缓存）+ 失败时 31 秒后延迟重试，不再双通道刷新。
      */
     suspend fun checkLoginStatus() {
+        // D6-P2-4：函数入口记一次退出世代，期间退出登录后不再碰登录态/弹窗。
+        val epochAtStart = logoutEpoch.get()
         // B5-P2-3：DataStore 读失败按未配置/未拉取处理，冷启动不崩溃；
         // 取消原样抛出（runOrDefault 内处理）。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
@@ -150,7 +178,10 @@ class AuthRepository @Inject constructor(
         }
         val marker = runOrDefault("") { settingsRepository.currentAuthCookies() }
         if (marker.isNotBlank()) {
-            when (verifySession(baseUrl)) {
+            val check = verifySession(baseUrl)
+            // D6-P2-4：校验在途时用户点了退出登录：校验结果已过期，不再据此置态。
+            if (logoutEpoch.get() != epochAtStart) return
+            when (check) {
                 SessionCheck.VALID -> {
                     _isLoggedIn.value = true
                     _showLoginModal.value = false
@@ -163,12 +194,21 @@ class AuthRepository @Inject constructor(
                     _showLoginModal.value = false
                     return
                 }
+                SessionCheck.EXPIRED_REFRESH_TRIED -> {
+                    // D6-P2-5：401 回调里已试过一次静默重登且失败，不再重跑
+                    // 第二遍登录 POST，直接弹登录框。
+                    _isLoggedIn.value = false
+                    _showLoginModal.value = true
+                    return
+                }
                 SessionCheck.EXPIRED -> {
                     // 掉到下面的静默重登。
                 }
             }
         }
         val restored = restoreSession()
+        // D6-P2-4：恢复在途时用户点了退出登录：不再按恢复结果改登录态/弹窗。
+        if (logoutEpoch.get() != epochAtStart) return
         if (!restored) {
             _isLoggedIn.value = false
             _showLoginModal.value = true
@@ -178,13 +218,18 @@ class AuthRepository @Inject constructor(
     /** B-P1-8：冷启动配置失败后的一次延迟重试（31 秒，越过 30 秒失败缓存）。 */
     private fun scheduleConfigRetry() {
         if (configRetryJob?.isActive == true) return
+        // D6-P1-1：记下排队时的退出世代；重试触发时世代变了（期间已退出登录，
+        // 甚至退出后重登），不再重跑恢复——logout() 也会直接取消本任务，这里是
+        // 第二道防线（任务排队后、触发前世代变化的竞态）。
+        val epochAtSchedule = logoutEpoch.get()
         configRetryJob = restoreScope.launch {
-            delay(CONFIG_RETRY_DELAY_MS)
+            delay(configRetryDelayMs)
+            if (logoutEpoch.get() != epochAtSchedule) return@launch
             // B4-P2-17：31 秒后配置重拉成功时重跑登录恢复——否则冷启动时
             // 配置未到、restoreSession 已失败，登录弹窗一直滞留；
             // 重跑成功时 performRestore 会把弹窗关掉，失败则弹窗继续留着。
             val refreshed = runCatching { settingsRepository.refreshServerConfig() }.getOrNull()
-            if (refreshed != null) {
+            if (refreshed != null && logoutEpoch.get() == epochAtSchedule) {
                 restoreSession()
             }
         }
@@ -193,22 +238,29 @@ class AuthRepository @Inject constructor(
     /**
      * B-P2-16：冷启动轻量会话校验（复用已有的 getFavorites，不新增服务端接口）。
      * 401 续期回调里已试过一次静默重登，仍 401 即会话过期；网络错则算不可达。
+     * D6-P2-5：回调是否在本次校验里触发过，用计数区分——触发过说明重登已试且
+     * 失败，调用方不再重跑第二遍（返回 [SessionCheck.EXPIRED_REFRESH_TRIED]）。
      */
     private suspend fun verifySession(baseUrl: String): SessionCheck {
+        val refreshCountBefore = unauthorizedRefreshCount.get()
         return try {
             moonTvApi.getFavorites(baseUrl)
             SessionCheck.VALID
         } catch (e: CancellationException) {
             throw e
         } catch (_: UnauthorizedException) {
-            SessionCheck.EXPIRED
+            if (unauthorizedRefreshCount.get() > refreshCountBefore) {
+                SessionCheck.EXPIRED_REFRESH_TRIED
+            } else {
+                SessionCheck.EXPIRED
+            }
         } catch (_: Exception) {
             SessionCheck.UNREACHABLE
         }
     }
 
-    /** 会话校验结果：有效 / 已过期 / 服务端不可达（无法判定）。 */
-    private enum class SessionCheck { VALID, EXPIRED, UNREACHABLE }
+    /** 会话校验结果：有效 / 已过期 / 已过期且续期已试过 / 服务端不可达（无法判定）。 */
+    private enum class SessionCheck { VALID, EXPIRED, EXPIRED_REFRESH_TRIED, UNREACHABLE }
 
     /**
      * 用已保存凭据静默重登；无凭据时对无密码服务试一次空登录。
@@ -229,6 +281,9 @@ class AuthRepository @Inject constructor(
     }
 
     private suspend fun performRestore(): Boolean {
+        // D6-P2-4：记下恢复开始时的退出世代；成功落盘前复核，世代变了说明
+        // 期间已退出登录（或退出后重登），一律不碰登录态，直接返回未恢复。
+        val epochAtStart = logoutEpoch.get()
         // B5-P2-3：同 checkLoginStatus，DataStore 读失败按未恢复处理。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) return false
@@ -241,6 +296,7 @@ class AuthRepository @Inject constructor(
         } catch (_: Exception) {
             false
         }
+        if (logoutEpoch.get() != epochAtStart) return false
         return if (ok) {
             // B5-P2-3：标记写失败不推翻已建好的会话（本次登录成功），只记日志；
             // 下次冷启动静默重登会失败、再提示登录。
