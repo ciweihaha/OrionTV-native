@@ -42,7 +42,8 @@ jobs:
         run: |
           # C4-P1-8：同时编 assembleRelease——R8/混淆问题到打 tag 才暴露太晚，
           # 每次 main 推送都提前编 release（无 Secrets 时出未签名包，只校验构建）。
-          ./gradlew assembleDebug assembleRelease testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
+          # C6-P2-3：debug 与 release 单测都跑（之前只跑 testDebugUnitTest）。
+          ./gradlew assembleDebug assembleRelease testDebugUnitTest testReleaseUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
           if [ "${BUILD_FAILED:-0}" = "1" ]; then
             # 日志文件只能在 Actions 界面下载；把关键错误行打成 check-run 注解，
             # 这样不用进界面也能从 API 读到失败原因（见注解）。

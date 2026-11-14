@@ -57,15 +57,8 @@ fun ConfirmDialog(
     val confirmRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val cancelRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     androidx.compose.runtime.LaunchedEffect(Unit) { confirmRequester.requestFocus() }
-    androidx.compose.animation.AnimatedVisibility(
-        visible = true,
-        enter = androidx.compose.animation.fadeIn(
-            animationSpec = androidx.compose.animation.core.tween(150),
-        ),
-        exit = androidx.compose.animation.fadeOut(
-            animationSpec = androidx.compose.animation.core.tween(150),
-        ),
-    ) {
+    // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方条件组合，
+    // 卸载时整棵子树直接移除，exit 动画永远跑不到；留着只是死代码。
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -118,7 +111,6 @@ fun ConfirmDialog(
                 )
             }
         }
-    }
     }
 }
 

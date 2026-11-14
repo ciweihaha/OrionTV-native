@@ -2,9 +2,6 @@ package com.oriontv.feature.remoteinput
 
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -85,17 +82,15 @@ fun RemoteInputModal(
         if (!showEnableButton) closeRequester.requestFocus()
     }
 
-    AnimatedVisibility(
-        visible = true,
-        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(150)),
-        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(150)),
+    // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方
+    // `if (showRemoteInputModal)` 条件组合，卸载时整棵子树直接移除，exit
+    // 动画永远跑不到；留着只是死代码。
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(OrionColors.Background.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(OrionColors.Background.copy(alpha = 0.6f)),
-            contentAlignment = Alignment.Center,
-        ) {
             Column(
                 modifier = Modifier
                     .width(OrionDimens.DialogWidth)
@@ -189,5 +184,4 @@ fun RemoteInputModal(
                 }
             }
         }
-    }
 }
