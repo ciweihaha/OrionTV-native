@@ -28,17 +28,17 @@ object TimeUtils {
         return sdf.format(Date(millis))
     }
 
-    /** XMLTV 时间主格式 yyyyMMddHHmmss +0800，带兜底（无时区/冒号时区）。 */
+    /** XMLTV 时间主格式 yyyyMMddHHmmss +0800，带兜底（无时区/冒号时区/无空格贴时区）。 */
     fun parseXmltvTime(raw: String): Long? {
         val trimmed = raw.trim()
-        val patterns = listOf(
-            "yyyyMMddHHmmss Z",
-            "yyyyMMddHHmmss ZZZ",
-            "yyyyMMddHHmmss",
-        )
-        // 冒号时区 "+08:00" → "+0800"
-        val normalized = trimmed.replace(Regex("([+-]\\d{2}):(\\d{2})$"), "$1$2")
-        for (pattern in patterns) {
+        if (trimmed.isEmpty()) return null
+        // 冒号时区 "+08:00" → "+0800"；无空格贴时区 "…120000+0800" → 补空格。
+        val normalized = trimmed
+            .replace(Regex("([+-]\\d{2}):(\\d{2})$"), "$1$2")
+            .replace(Regex("^(\\d{14})([+-]\\d{4})$"), "$1 $2")
+        // 带时区分支：以字符串里的时区为准；无时区分支：按本地时间解析
+        //（RN 同款；之前统一按 UTC，CST 下会偏 8 小时，P1-4）。
+        for (pattern in listOf("yyyyMMddHHmmss Z", "yyyyMMddHHmmss ZZZ")) {
             try {
                 val sdf = SimpleDateFormat(pattern, Locale.US)
                 sdf.isLenient = false
@@ -48,6 +48,13 @@ object TimeUtils {
                 // 换下一个格式重试
             }
         }
-        return null
+        return try {
+            val sdf = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
+            sdf.isLenient = false
+            sdf.timeZone = TimeZone.getDefault()
+            sdf.parse(normalized)?.time
+        } catch (_: Exception) {
+            null
+        }
     }
 }
