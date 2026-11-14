@@ -26,6 +26,19 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `background playback starts only for a continuation`() {
+        // A9-P1-2：与直播页同款门控——前台一律开播；后台只允许已开播过的延续
+        //（PiP 内自动换源/下一集、开关开着的继续播）；搜源完成时的首播在后台
+        // 一律暂缓、回前台再补开播。
+        assertTrue(PlayViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
+        assertTrue(PlayViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertTrue(PlayViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
+        assertFalse(PlayViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    }
+
+    @Test
     fun `near end counts as finished`() {
         // P1-6：距片尾不到 10 秒即视为看完，不存断点
         assertTrue(PlayViewModel.isNearEnd(1_795_000L, 1_800_000L))

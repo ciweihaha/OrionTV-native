@@ -130,4 +130,55 @@ class PlayScreenLogicTest {
         assertEquals(true to true, drawerListFocusEdges(2, 3))
         assertEquals(true to false, drawerListFocusEdges(0, 0))
     }
+
+    @Test
+    fun `up returns to root only when focus is still on the button row`() {
+        // A9-P1-4：上键回根只在焦点仍在按钮行时执行；焦点已落在跳过片头胶囊 /
+        // 下一集预告卡上时不抢——之前 KeyDown 的焦点搜索刚把它送上去，
+        // KeyUp 又拉回根部，“取消”按钮永远落不到焦点。
+        val base = shouldRestoreRootFocusOnUp(
+            drawerOpen = false, rootFocused = false, controlsVisible = true,
+            hasError = false, showNextEpisode = false,
+            skipIntroFocused = false, nextEpisodeFocused = false,
+        )
+        assertTrue(base)
+        // 焦点在胶囊上：不回根
+        assertFalse(
+            shouldRestoreRootFocusOnUp(
+                drawerOpen = false, rootFocused = false, controlsVisible = true,
+                hasError = false, showNextEpisode = false,
+                skipIntroFocused = true, nextEpisodeFocused = false,
+            ),
+        )
+        // 焦点在预告卡“取消”上：不回根
+        assertFalse(
+            shouldRestoreRootFocusOnUp(
+                drawerOpen = false, rootFocused = false, controlsVisible = true,
+                hasError = false, showNextEpisode = true,
+                skipIntroFocused = false, nextEpisodeFocused = true,
+            ),
+        )
+        // 焦点已在根部 / 抽屉打开 / 控制条未显示：都不回根
+        assertFalse(
+            shouldRestoreRootFocusOnUp(
+                drawerOpen = false, rootFocused = true, controlsVisible = true,
+                hasError = false, showNextEpisode = false,
+                skipIntroFocused = false, nextEpisodeFocused = false,
+            ),
+        )
+        assertFalse(
+            shouldRestoreRootFocusOnUp(
+                drawerOpen = true, rootFocused = false, controlsVisible = true,
+                hasError = false, showNextEpisode = false,
+                skipIntroFocused = false, nextEpisodeFocused = false,
+            ),
+        )
+        assertFalse(
+            shouldRestoreRootFocusOnUp(
+                drawerOpen = false, rootFocused = false, controlsVisible = false,
+                hasError = false, showNextEpisode = false,
+                skipIntroFocused = false, nextEpisodeFocused = false,
+            ),
+        )
+    }
 }

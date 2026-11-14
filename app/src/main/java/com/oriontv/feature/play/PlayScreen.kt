@@ -71,6 +71,23 @@ internal fun shouldShowPlayerControls(
 ): Boolean = (controlsVisible || showNextEpisode) && !hasError
 
 /**
+ * 上键是否应把焦点拉回根部（可单测，A9-P1-4）：只在焦点仍在控制条按钮行时回根；
+ * 焦点已落在跳过片头胶囊 / 下一集预告卡上时不抢——之前 KeyDown 的焦点搜索刚把
+ * 焦点送上去，KeyUp 又一律拉回根部，“取消”按钮永远落不到焦点。
+ */
+internal fun shouldRestoreRootFocusOnUp(
+    drawerOpen: Boolean,
+    rootFocused: Boolean,
+    controlsVisible: Boolean,
+    hasError: Boolean,
+    showNextEpisode: Boolean,
+    skipIntroFocused: Boolean,
+    nextEpisodeFocused: Boolean,
+): Boolean = !drawerOpen && !rootFocused &&
+    shouldShowPlayerControls(controlsVisible, hasError, showNextEpisode) &&
+    !skipIntroFocused && !nextEpisodeFocused
+
+/**
  * 控制条 5 秒无操作是否应自动隐藏（可单测，P2-2，第 6 轮修订）：
  * 控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
  * 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
@@ -211,6 +228,9 @@ fun PlayScreen(
     // C5-P2-2：跳过片头胶囊的焦点锚点与是否获焦（胶囊消失时焦点回根用）。
     val skipIntroRequester = remember { FocusRequester() }
     var skipIntroFocused by remember { mutableStateOf(false) }
+    // A9-P1-4：下一集预告卡“取消”按钮是否获焦（与胶囊同款跟踪；上键回根与
+    // 卡片消失时的焦点恢复都靠它）。
+    var nextEpisodeFocused by remember { mutableStateOf(false) }
     // 播放错误页“重试”按钮的焦点：错误出现时默认落到它（P2-3，与直播失败页一致）。
     val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
@@ -227,7 +247,12 @@ fun PlayScreen(
     LaunchedEffect(source, id, episodeIndex, positionMs) {
         viewModel.init(source, id, title, episodeIndex, positionMs)
     }
-    LaunchedEffect(Unit) { rootRequester.requestFocus() }
+    LaunchedEffect(Unit) {
+        rootRequester.requestFocus()
+        // A9-P1-2：应用内导航返回（设置页回来、导航轨切走再回来）也要补开播——
+        // Activity 全程 RESUMED，ON_RESUME 不触发；首进时暂缓/中断均为空，是空操作。
+        viewModel.onPageResumed()
+    }
     // C4-P1-2：NavHost 级弹窗关闭后焦点回根（控制条按钮无焦点时方向键/OK 才能唤出）。
     LaunchedEffect(focusRestoreTick) {
         if (focusRestoreTick > 0) rootRequester.requestFocus()
@@ -236,20 +261,29 @@ fun PlayScreen(
     // 从设置页返回 / 切回前台时刷新开播设置缓存（P2-9：轮询不再每 500ms 重读 DataStore）。
     // 同时维护前台状态供轮询门控用：ON_PAUSE（切后台/PiP）时停 UI 刷新与断点保存，
     // ON_RESUME 时恢复；后台播放开着时轮询仍全量推进（自动跳片头/下一集在后台也要走）。
+    // A9-P1-2：ON_PAUSE/onDispose 还走 onPagePaused（取消在途搜源/开播，记下待补），
+    // ON_RESUME/重进组合走 onPageResumed（补开播/补搜源）；onPageResumed 内含
+    // refreshCachedSettings，不再另调。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     viewModel.setForeground(true)
-                    viewModel.refreshCachedSettings()
+                    viewModel.onPageResumed()
                 }
-                Lifecycle.Event.ON_PAUSE -> viewModel.setForeground(false)
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.setForeground(false)
+                    viewModel.onPagePaused()
+                }
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onPagePaused()
+        }
     }
 
     // 标记成功/清除提示：Toast 底部居中，2 秒消失（ui-design.md §5.8）。
@@ -310,8 +344,15 @@ fun PlayScreen(
 
     // 下一集预告出时强制唤出控制条（P1-3）：播完时控制条可能已 5 秒自动隐藏，
     // 预告卡挂在控制条里，不唤出就播完无任何卡片/倒计时。
+    // A9-P1-4：预告卡消失（点“取消”/倒计时切集/按返回取消）时若焦点在“取消”
+    // 按钮上则焦点回根（与跳过片头胶囊消失的 C5-P2-2 同款），不留在已卸载的按钮上。
     LaunchedEffect(uiState.showNextEpisode) {
-        if (uiState.showNextEpisode) controlsVisible = true
+        if (uiState.showNextEpisode) {
+            controlsVisible = true
+        } else if (nextEpisodeFocused) {
+            nextEpisodeFocused = false
+            rootRequester.requestFocus()
+        }
     }
 
     // 抽屉关闭后焦点落回控制条首选按钮（P1-9）；只在“从打开变关闭”时触发，不抢初始焦点。
@@ -492,6 +533,12 @@ fun PlayScreen(
                             // 只隐藏控制条、无可见变化，第二次直接退出）。
                             uiState.showNextEpisode -> {
                                 viewModel.dismissNextEpisode()
+                                // A9-P1-4：焦点在“取消”按钮上时按返回，卡片卸载后
+                                // 焦点回根（与点“取消”同款；effect 兜底见上）。
+                                if (nextEpisodeFocused) {
+                                    nextEpisodeFocused = false
+                                    rootRequester.requestFocus()
+                                }
                                 true
                             }
                             // A6-P2-1：错误页显示时按返回直接退出播放页——旧实现
@@ -583,12 +630,15 @@ fun PlayScreen(
                     Key.DirectionUp -> {
                         when {
                             uiState.drawer != null -> false // 抽屉内上下交给焦点移动
-                            !rootFocused &&
-                                shouldShowPlayerControls(
-                                    controlsVisible,
-                                    uiState.error != null,
-                                    uiState.showNextEpisode,
-                                ) -> {
+                            shouldRestoreRootFocusOnUp(
+                                drawerOpen = uiState.drawer != null,
+                                rootFocused = rootFocused,
+                                controlsVisible = controlsVisible,
+                                hasError = uiState.error != null,
+                                showNextEpisode = uiState.showNextEpisode,
+                                skipIntroFocused = skipIntroFocused,
+                                nextEpisodeFocused = nextEpisodeFocused,
+                            ) -> {
                                 // 第 6 轮 P2-1：从按钮行回根部也要重置 5 秒计时器。
                                 if (shouldResetAutoHideTimer(
                                         controlsVisible,
@@ -599,6 +649,24 @@ fun PlayScreen(
                                     pokeControls()
                                 }
                                 rootRequester.requestFocus()
+                                true
+                            }
+                            !rootFocused &&
+                                shouldShowPlayerControls(
+                                    controlsVisible,
+                                    uiState.error != null,
+                                    uiState.showNextEpisode,
+                                ) -> {
+                                // A9-P1-4：焦点已落在胶囊/预告卡上，只重置 5 秒计时器
+                                //（控制条别在手底下消失），不抢回根。
+                                if (shouldResetAutoHideTimer(
+                                        controlsVisible,
+                                        uiState.drawer != null,
+                                        uiState.error != null,
+                                    )
+                                ) {
+                                    pokeControls()
+                                }
                                 true
                             }
                             else -> {
@@ -704,6 +772,7 @@ fun PlayScreen(
                 showNextEpisode = uiState.showNextEpisode,
                 skipIntroRequester = skipIntroRequester,
                 onSkipIntroFocusChanged = { skipIntroFocused = it },
+                onNextEpisodeFocusChanged = { nextEpisodeFocused = it },
                 drawerOpen = uiState.drawer != null,
                 introEndMs = uiState.markedIntroEndMs,
                 outroStartMs = uiState.outroStartMs,
@@ -719,8 +788,24 @@ fun PlayScreen(
                     pokeControls()
                 },
                 onSkipIntro = { viewModel.skipIntro(); pokeControls() },
-                onNextEpisode = { viewModel.playNextEpisode(); pokeControls() },
-                onCancelNextEpisode = { viewModel.dismissNextEpisode(); pokeControls() },
+                onNextEpisode = {
+                    viewModel.playNextEpisode()
+                    // A9-P1-4：倒计时切集时卡片卸载，焦点在“取消”上则回根。
+                    if (nextEpisodeFocused) {
+                        nextEpisodeFocused = false
+                        rootRequester.requestFocus()
+                    }
+                    pokeControls()
+                },
+                onCancelNextEpisode = {
+                    viewModel.dismissNextEpisode()
+                    // A9-P1-4：点“取消”即卸载卡片，焦点回根（与失败页重试同款）。
+                    if (nextEpisodeFocused) {
+                        nextEpisodeFocused = false
+                        rootRequester.requestFocus()
+                    }
+                    pokeControls()
+                },
                 onOpenEpisodes = { viewModel.openDrawer(PlayDrawer.EPISODES); pokeControls() },
                 onOpenSpeed = { viewModel.openDrawer(PlayDrawer.SPEED); pokeControls() },
                 onOpenSources = { viewModel.openDrawer(PlayDrawer.SOURCES); pokeControls() },

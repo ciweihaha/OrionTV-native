@@ -78,6 +78,9 @@ fun PlayerControls(
      * 胶囊是否获焦，胶囊 10 秒消失时若焦点在它上面则焦点回根）。 */
     skipIntroRequester: FocusRequester? = null,
     onSkipIntroFocusChanged: (Boolean) -> Unit = {},
+    /** A9-P1-4：下一集预告卡“取消”按钮的焦点变化回调（与胶囊同款，供
+     * PlayScreen 跟踪：上键回根与卡片消失时的焦点恢复都靠它）。 */
+    onNextEpisodeFocusChanged: (Boolean) -> Unit = {},
     onPlayPause: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
@@ -196,7 +199,11 @@ fun PlayerControls(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(text = "${countdown} 秒后自动播放", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
                 Spacer(modifier = Modifier.height(12.dp))
-                SecondaryButton(text = "取消", onClick = onCancelNextEpisode)
+                SecondaryButton(
+                    text = "取消",
+                    onClick = onCancelNextEpisode,
+                    modifier = Modifier.onFocusChanged { onNextEpisodeFocusChanged(it.isFocused) },
+                )
             }
         }
 

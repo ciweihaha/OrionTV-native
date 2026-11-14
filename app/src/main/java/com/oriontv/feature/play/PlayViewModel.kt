@@ -106,6 +106,27 @@ class PlayViewModel @Inject constructor(
     var isForeground: Boolean = true
         private set
 
+    /** A9-P1-2：页面是否在前台（onPagePaused/onPageResumed 维护；应用内导航
+     * 切走不经过 Activity 生命周期，只看 isForeground 不够）。startEpisode()
+     * 开播前复核它，后台的新开播暂缓、回前台时 onPageResumed() 补开播。 */
+    @Volatile
+    private var pageActive: Boolean = true
+    /** A9-P1-2：本页是否已开播过一次——后台继续播只允许已开播过的延续
+     *（PiP 内自动换源/下一集、开关开着的继续播）；从未开播过时后台开播即无窗口
+     * 后台音频（开关开）或违背开关语义（开关关）。 */
+    private var playbackStarted: Boolean = false
+    /** A9-P1-2：暂缓的开播（后台搜源完成/在途开播被取消时记下，回前台时补开）。 */
+    private var pendingStart: PendingStart? = null
+    /** A9-P1-2：搜源是否在离页时被取消——回前台时 current 仍为空即重跑搜源。 */
+    private var searchInterrupted: Boolean = false
+
+    /** A9-P1-2：一次待补的开播请求（结果/集号/起点）。 */
+    private data class PendingStart(
+        val result: SearchResult,
+        val episodeIndex: Int,
+        val startPositionMs: Long?,
+    )
+
     /** 前台状态变化（供 PlayScreen 的生命周期观察者调用）。 */
     fun setForeground(foreground: Boolean) {
         isForeground = foreground
@@ -166,6 +187,19 @@ class PlayViewModel @Inject constructor(
                 title = title,
             )
         }
+        startSearch()
+        startPolling()
+    }
+
+    /**
+     * 搜源（A9-P1-2：init 与回前台补搜共用；搜源回调里开播，见 launchStartEpisode）。
+     * 源/标识/标题取 init 定下的 currentKey 与 state（retry() 同款拆键），
+     * 不另存三份字段。
+     */
+    private fun startSearch() {
+        searchInterrupted = false
+        val (source, id) = MoonTvApi.splitKey(currentKey)
+        val title = _uiState.value.title
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             try {
@@ -194,12 +228,47 @@ class PlayViewModel @Inject constructor(
                 }
             }
         }
-        startPolling()
     }
 
     /** 设置页返回 / 切回前台时刷新开播设置缓存（供 PlayScreen 的 ON_RESUME 调用）。 */
     fun refreshCachedSettings() {
         viewModelScope.launch { loadCachedSettings() }
+    }
+
+    /**
+     * 离页（A9-P1-2，供 PlayScreen 的 ON_PAUSE 与 onDispose 调用）：
+     * 记下不在前台，并取消在途的搜源/开播——搜源完成、开播读数完成后再开播
+     * 会在后台出声；取消后待补的开播由 pendingStart 记着、被取消的搜源由
+     * searchInterrupted 记着，回前台时 onPageResumed() 补上。
+     * 注意：只取消在途任务，不暂停已在播的播放（后台播放开关语义与
+     * MainActivity.onUserLeaveHint 不变；应用内切走时播放本就继续）。
+     */
+    fun onPagePaused() {
+        pageActive = false
+        if (searchJob?.isActive == true) {
+            searchJob?.cancel()
+            searchInterrupted = true
+        }
+        startEpisodeJob?.cancel()
+    }
+
+    /**
+     * 回页（A9-P1-2，供 PlayScreen 的 ON_RESUME 与重进组合调用）：
+     * 记回前台、刷新开播设置缓存；有暂缓的开播先补开，没有且搜源曾被取消、
+     * 当前仍无结果时重跑搜源；其余情况（已在播/已暂停/已落错误态）不动，
+     * 不自动恢复被暂停的播放。
+     */
+    fun onPageResumed() {
+        pageActive = true
+        refreshCachedSettings()
+        pendingStart?.let { pending ->
+            pendingStart = null
+            launchStartEpisode(pending.result, pending.episodeIndex, pending.startPositionMs)
+            return
+        }
+        if (searchInterrupted && _uiState.value.current == null && searchJob?.isActive != true) {
+            startSearch()
+        }
     }
 
     /** 开播时读一次开关（autoSkipIntro / 片头时长 / 下一集预告），轮询只读缓存。 */
@@ -228,6 +297,8 @@ class PlayViewModel @Inject constructor(
         episodeIndex: Int,
         startPositionMs: Long? = null,
     ) {
+        // A9-P1-2：记下本次开播请求——后台暂缓或在途取消时，回前台凭它补开播。
+        pendingStart = PendingStart(result, episodeIndex, startPositionMs)
         startEpisodeJob?.cancel()
         startEpisodeJob = viewModelScope.launch {
             try {
@@ -235,6 +306,11 @@ class PlayViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // A9-P1-2：开播失败已落错误态，不再留待补开播（回前台不再自动重跑
+                // 失败的开播）；只清自己的那一笔，不清已被更新的开播取代的待办。
+                if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+                    pendingStart = null
+                }
                 // A8-P2-3：开播挂起读数（断点/倍速/设置）失败会让协程未捕获崩溃；
                 // 落错误态、用户可重试，不崩溃。
                 AppLog.w("PlayViewModel", "开播失败：${e.message}")
@@ -245,6 +321,11 @@ class PlayViewModel @Inject constructor(
 
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
     private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
+        // A9-P1-2：开播前复核页面仍在前台——搜源/读断点期间按 Home 后，搜源完成
+        // 仍会在后台调到这里；后台的新开播暂缓（待补开播已由 launchStartEpisode
+        // 记下），回前台时 onPageResumed() 补开播；已开播过的延续（PiP 内自动换源/
+        // 下一集、开关开着的继续播）不受影响。
+        if (!shouldStartPlayback(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
         val generation = ++startEpisodeGeneration
         // A4-P2-8：新一集开播的挂起操作（读设置/断点，服务端模式下还有网络读）
         // 期间旧的就绪超时仍挂着，可能误触自动换源；开播先取消旧超时。
@@ -265,6 +346,10 @@ class PlayViewModel @Inject constructor(
                 return
             }
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
+            // A9-P1-2：已落终态错误，不再留待补开播（回前台不自动重跑）；只清自己的那一笔。
+            if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+                pendingStart = null
+            }
             return
         }
         loadCachedSettings()
@@ -291,15 +376,19 @@ class PlayViewModel @Inject constructor(
             }
         }
         // P2-5：按集重置的状态只在集号真的变了时重置——同集换源/自动换源/重试
-        // 也走 startEpisode，之前无条件重置会让“每集一次”的胶囊在换源后再次出现、
-        // 点过“取消”的下一集预告在换源后重弹。开播首集（current == null）按换集处理。
+        // 也走 startEpisode，之前无条件重置会让“每集一次”的胶囊在换源后再次出现。
+        // 开播首集（current == null）按换集处理。
+        // A9-P2-1（第 9 轮修正）：下一集预告的“已取消”标记不属于这一组——同集重开
+        // 是新的一次播出，上一轮里点过的“取消”不能带到这一轮，否则重开的一集
+        // 播到片尾预告永远不再出现；每次开播都清（胶囊的“每集一次”不受影响，
+        // 换源后立即重弹另有 nextEpisodeShownForIndex 拦着，见 A7-P2-1）。
         val episodeChanged = _uiState.value.current == null ||
             episodeIndex != _uiState.value.episodeIndex
+        nextEpisodeDismissedForIndex = -1
         if (episodeChanged) {
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
             nextEpisodeShownForIndex = -1
-            nextEpisodeDismissedForIndex = -1
             // A7-P1-1：换集后自动换源次数与失败源集合也要重置——之前只清预告
             // 状态，上一集换源 2 次后下一集首次播错直接报错。
             _uiState.update { it.copy(autoSwitchAttempts = 0, failedSources = emptySet()) }
@@ -314,8 +403,13 @@ class PlayViewModel @Inject constructor(
         // A5-P1-5：播流前复核代际——挂起读数期间已有新开播时，旧开播不再碰播放器。
         if (generation != startEpisodeGeneration) return
         playerManager.playUrl(episodes[episodeIndex], startPosition)
+        playbackStarted = true
         // A5-P1-5：收尾写状态前再复核一次代际，旧开播不覆盖新开播的集/状态。
         if (generation != startEpisodeGeneration) return
+        // A9-P1-2：本次开播已真正播出，清除待补开播；只清自己的那一笔。
+        if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+            pendingStart = null
+        }
         _uiState.update {
             it.copy(
                 isLoading = true,
@@ -927,6 +1021,19 @@ class PlayViewModel @Inject constructor(
             dismissedForIndex: Int,
         ): Boolean =
             overlayEnabled && episodeIndex < episodeCount - 1 && dismissedForIndex != episodeIndex
+
+        /**
+         * 后台是否允许开播（可单测，A9-P1-2）：页面在前台时一律允许；
+         * 后台时只允许已开播过的延续（PiP 内自动换源/下一集、开关开着的继续播），
+         * 从未开播过的新开播一律暂缓（开关开时是无 PiP 窗口的后台音频，
+         * 开关关时违背开关语义）；暂缓的开播由 onPageResumed() 回前台时补上。
+         * 与 LiveViewModel.shouldStartPlayback 同款谓词（两页各一份，见该处注释）。
+         */
+        internal fun shouldStartPlayback(
+            pageActive: Boolean,
+            backgroundPlaybackEnabled: Boolean,
+            playbackStarted: Boolean,
+        ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
 
         /**
          * 轮询是否应推进（可单测，P2-9）：在前台、或后台播放开着时都推进；
