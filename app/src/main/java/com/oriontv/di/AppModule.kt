@@ -29,6 +29,12 @@ import javax.inject.Singleton
 /** 应用级协程作用域（D-P2-7/D-P1-6）：后台刷新 server-config、RN 首启迁移等不阻塞 UI 的一次性任务；随进程存活，不取消。 */
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
+@Target(
+    AnnotationTarget.FUNCTION,
+    AnnotationTarget.FIELD,
+    AnnotationTarget.VALUE_PARAMETER,
+    AnnotationTarget.PROPERTY,
+)
 annotation class ApplicationScope
 
 /** Hilt 单例模块：网络、序列化、数据库。 */
