@@ -131,7 +131,11 @@ jobs:
           # C6-P2-2：按最高版本 tag 取上一版，不按“最新创建的 Release”——
           # 补发旧版 hotfix Release 会比新版晚创建，旧实现会拿错上一版比对指纹。
           # C8-P2-4：--limit 50 在超 50 个 Release 时会漏掉老版本，拉全量。
-          PREV_TAG=$(gh release list --limit 1000 --json tagName --jq -r '.[].tagName' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          # C9-P2-2：排除当前 tag——重跑时当前版的 Release 已建好，不排除会拿
+          # 自己跟自己比、恒通过（与“Verify tag matches version”步骤的
+          # grep -v "^v$TAG$" 同款）。
+          TAG="${GITHUB_REF_NAME#v}"
+          PREV_TAG=$(gh release list --limit 1000 --json tagName --jq -r '.[].tagName' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | sort -V | tail -n 1)
           if [ -n "$PREV_TAG" ]; then PREV_TAG="v$PREV_TAG"; fi
           if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "null" ]; then
             echo "no previous release, skipping cert check"
@@ -143,6 +147,13 @@ jobs:
           # C8-P2-4：单 Release 多 APK 时旧实现 head -n 1 任意取一个，可能比错；
           # 按版本排序确定性取最新，多于一个时告警（仍取最新继续比对）。
           PREV_COUNT=$(ls /tmp/prev-release/*.apk 2>/dev/null | wc -l)
+          # C9-P2-3：上一版 Release 若无 APK（只有源码包或空 Release），直接跳过
+          # 指纹比对并告警——之前无保护的 ls 在零匹配时失败（Actions 默认
+          # bash -eo pipefail），整步失败、发版被堵住。
+          if [ "$PREV_COUNT" -eq 0 ]; then
+            echo "::warning::previous release $PREV_TAG has no APK, skipping cert check"
+            exit 0
+          fi
           if [ "$PREV_COUNT" -gt 1 ]; then
             echo "::warning::previous release $PREV_TAG has $PREV_COUNT APKs, using latest by version"
           fi

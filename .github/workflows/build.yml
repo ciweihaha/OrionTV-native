@@ -71,8 +71,10 @@ jobs:
           fi
 
       # C4-P2-11：lint 进 CI（之前两个工作流都没有，静态问题到真机才暴露）。
-      - name: Lint debug
-        run: ./gradlew lintDebug --stacktrace
+      # C9-P2-4：debug 与 release 两变体都跑——release 独有的问题（R8/签名/
+      # 混淆相关 lint）只跑 lintDebug 时到打 tag 才暴露（对照 release.yml:89）。
+      - name: Lint debug and release
+        run: ./gradlew lintDebug lintRelease --stacktrace
 
       - name: Upload build log on failure
         if: failure()

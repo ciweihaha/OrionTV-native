@@ -332,7 +332,13 @@ fun SearchScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         PrimaryButton(
                             text = "换个关键词",
-                            onClick = { viewModel.clearQuery() },
+                            onClick = {
+                                viewModel.clearQuery()
+                                // C9-P1-2：error 置 null 后错误态 Column 卸载，焦点随
+                                // “换个关键词”按钮一起丢；回搜索框（与删历史 chip、
+                                // 点联想 chip 的现有做法一致）。
+                                searchRequester.requestFocus()
+                            },
                             modifier = Modifier.preferredFocus(changeKeywordRequester),
                         )
                         if (error !is SearchError.Empty) {
