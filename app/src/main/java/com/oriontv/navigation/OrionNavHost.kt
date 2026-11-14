@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -27,6 +28,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.hasRoute
 import androidx.navigation.navDeepLink
 import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
@@ -62,25 +64,52 @@ fun OrionNavHost(
     updateViewModel: UpdateViewModel = hiltViewModel(),
 ) {
     val backStackEntry by navController.currentBackStackEntryAsState()
-    // C5-P2-6：路由解析失败原来被 getOrNull() 静默吞掉——导航轨无高亮、
-    // 也没有任何日志，坏路由悄悄变成“无选中项”。解析失败时记 Log.w、
-    // 导航轨兜底高亮首页（最常见的入口）。
-    // 深链 title 含 & 的说明：应用内导航走类型安全路由对象（navigate 传参，
-    // 框架编码），不受影响；只有外部直接拼原始 URI（adb/语音助手）且
-    // title 未百分号编码时，& 会把 title 截断——调用方须把 title 写成 %26，
-    // 框架侧无法从截断后的 URI 还原。
-    val currentRoute: OrionRoute? = backStackEntry?.let {
-        runCatching { it.toRoute<OrionRoute>() }.onFailure { e ->
-            Log.w("OrionNavHost", "路由解析失败，导航轨兜底高亮首页：${e.message}")
-        }.getOrNull()
+    // P1-1（第 5 轮，用户 2026-11-14 23:21 真机确认）：不要对密封父类型调
+    // toRoute<OrionRoute>()——SealedClassSerializer 反序列化要求 arguments
+    // 里带类型判别字段，而导航 arguments 里只有各具体子类型的字段（对 data
+    // object 子类型甚至是空 Bundle），调用每次都抛异常，又被 runCatching
+    // 静默吞掉，于是 currentRoute 在所有页面恒 null：播放页导航轨常驻、
+    // 全站高亮失效。
+    // 修法（修来源，不再加变通）：用 NavDestination.hasRoute<具体子类型>()
+    // 逐个匹配（这是为此设计的 API）；Detail/Play 的参数用
+    // toRoute<具体子类型>() 解（本文件 106/123 行已证明具体子类型能正常解析）。
+    // 第 4 轮应用壳修复（提交 d583cd6，PR #4）加在恒 null 来源上的 railRoute
+    // when 变通是死代码，本轮随来源修复一并去掉，改调纯函数 railRouteFor。
+    // 深链 title 含 & 的说明（C5-P2-6）：应用内导航走类型安全路由对象
+    // （navigate 传参，框架编码），不受影响；只有外部直接拼原始 URI
+    // （adb/语音助手）且 title 未百分号编码时，& 会把 title 截断——调用方
+    // 须把 title 写成 %26，框架侧无法从截断后的 URI 还原。
+    // C5-P2-6 的另一半意图也保留：解析失败记 Log.w、不静默吞掉（下面
+    // Detail/Play 两支的 onFailure），导航轨兜底高亮首页（下面 railRoute
+    // 的 ?: OrionRoute.Home）。
+    val currentRoute: OrionRoute? = backStackEntry?.let { entry ->
+        val destination = entry.destination
+        when {
+            destination.hasRoute<OrionRoute.Home>() -> OrionRoute.Home
+            destination.hasRoute<OrionRoute.Live>() -> OrionRoute.Live
+            destination.hasRoute<OrionRoute.Search>() -> OrionRoute.Search
+            destination.hasRoute<OrionRoute.Favorites>() -> OrionRoute.Favorites
+            destination.hasRoute<OrionRoute.Settings>() -> OrionRoute.Settings
+            destination.hasRoute<OrionRoute.Detail>() ->
+                runCatching { entry.toRoute<OrionRoute.Detail>() }
+                    .onFailure { e ->
+                        Log.w("OrionNavHost", "详情路由解析失败，导航轨兜底高亮首页：${e.message}")
+                    }.getOrNull()
+            destination.hasRoute<OrionRoute.Play>() ->
+                runCatching { entry.toRoute<OrionRoute.Play>() }
+                    .onFailure { e ->
+                        Log.w("OrionNavHost", "播放路由解析失败，导航轨兜底高亮首页：${e.message}")
+                    }.getOrNull()
+            else -> null
+        }
     }
-    // P2-3：详情/播放不匹配任何顶级项时，导航轨按来源高亮“首页”（最常见的入口）。
-    val railRoute: OrionRoute? = when (currentRoute) {
-        is OrionRoute.Detail, is OrionRoute.Play -> OrionRoute.Home
-        null -> OrionRoute.Home
-        else -> currentRoute
-    }
+    // 详情/播放不匹配任何顶级项时，导航轨按来源高亮“首页”。
+    // currentRoute 为 null（未知路由/解析失败）时同样兜底首页（C5-P2-6）。
+    val railRoute = railRouteFor(currentRoute) ?: OrionRoute.Home
     val showRail = currentRoute !is OrionRoute.Play
+    // 全局弹窗关闭后的焦点归宿（P1-2）：导航轨首项“首页”，各页的触发点恢复
+    // 由各页自己管（设置页见 SettingsScreen，搜索页扫码弹窗见 SearchScreen）。
+    val railFirstItemRequester = remember { FocusRequester() }
     val showLoginModal by authViewModel.showLoginModal.collectAsState()
     val loginError by authViewModel.loginError.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
@@ -144,6 +173,7 @@ fun OrionNavHost(
             if (showRail) {
                 NavRail(
                     currentRoute = railRoute,
+                    firstItemRequester = railFirstItemRequester,
                     onNavigate = { route ->
                         // C4-P1-5：已在当前页时不导航——popUpTo(Home) 会销毁顶级页
                         //（点已选中直播项重开播放、搜索切走再回丢结果）。

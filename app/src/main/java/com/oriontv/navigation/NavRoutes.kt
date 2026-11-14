@@ -32,3 +32,15 @@ sealed interface OrionRoute {
     @Serializable
     data object Settings : OrionRoute
 }
+
+/**
+ * 导航轨高亮映射（纯函数，可单测）：
+ * 详情/播放不匹配任何顶级项时，导航轨按来源高亮“首页”（最常见的入口）。
+ *
+ * 注意：这个 when 只有在 currentRoute 能正确解析时才可达。第 5 轮之前
+ * currentRoute 恒 null（见 OrionNavHost 的 P1-1 说明），它是一段死代码。
+ */
+fun railRouteFor(currentRoute: OrionRoute?): OrionRoute? = when (currentRoute) {
+    is OrionRoute.Detail, is OrionRoute.Play -> OrionRoute.Home
+    else -> currentRoute
+}

@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.onKeyUp
+import com.oriontv.core.focus.preferredFocus
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -64,6 +66,8 @@ fun NavRail(
     currentRoute: OrionRoute?,
     onNavigate: (OrionRoute) -> Unit,
     modifier: Modifier = Modifier,
+    /** 首项的焦点锚点（全局弹窗关闭后焦点归宿，见 OrionNavHost；null = 不挂）。 */
+    firstItemRequester: FocusRequester? = null,
 ) {
     val requesters = remember { List(NavRailItems.size) { FocusRequester() } }
     // C4-P2-7：左键回导航轨的显式焦点交接——刚从内容区进来（整轨 hasFocus
@@ -92,6 +96,11 @@ fun NavRail(
                 selected = currentRoute == item.route,
                 onClick = { onNavigate(item.route) },
                 focusRequester = requesters[index],
+                modifier = if (index == 0 && firstItemRequester != null) {
+                    Modifier.preferredFocus(firstItemRequester)
+                } else {
+                    Modifier
+                },
             )
         }
         Spacer(modifier = Modifier.weight(1f))
@@ -104,10 +113,11 @@ private fun NavRailEntry(
     selected: Boolean,
     onClick: () -> Unit,
     focusRequester: FocusRequester,
+    modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .width(72.dp)
             .focusable()
             .focusRequester(focusRequester)
