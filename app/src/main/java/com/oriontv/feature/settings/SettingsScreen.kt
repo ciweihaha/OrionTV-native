@@ -1,6 +1,7 @@
 package com.oriontv.feature.settings
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -121,6 +122,14 @@ fun SettingsScreen(
             qrModalWasOpen = false
             qrTriggerRequester.requestFocus()
         }
+    }
+
+    // P2-5（第 5 轮）：返回键先关更新卡片/二维码弹窗，不直接退出设置页。
+    // 注意：卡片只由 NavHost 全局渲染（P1-2 已删设置页那份），但关闭状态
+    // 是同一个 ViewModel，这里照样能拦住；二维码弹窗是设置页自己的。
+    BackHandler(enabled = updateState.showUpdateCard || showQrModal) {
+        if (updateState.showUpdateCard) updateViewModel.dismissCard()
+        else showQrModal = false
     }
 
     Box(

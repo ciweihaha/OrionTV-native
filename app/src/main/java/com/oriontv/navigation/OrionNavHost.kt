@@ -147,6 +147,8 @@ fun OrionNavHost(
     }
     // 返回键优先级（同一时刻最多一个生效）：登录弹窗 > 更新卡片 > 首页双按确认。
     // 注册顺序：后注册的先触发，故按优先级倒序写。
+    // P2-5 的 NavHost 部分已被下面两处覆盖（同行为：卡片在上先关卡片，
+    // 否则关登录弹窗；卡片/登录互斥，不会同时生效）。
     BackHandler(enabled = currentRoute is OrionRoute.Home && !showLoginModal && !showUpdateCard) {
         val now = System.currentTimeMillis()
         if (now - lastHomeBackMs < 2000L) {

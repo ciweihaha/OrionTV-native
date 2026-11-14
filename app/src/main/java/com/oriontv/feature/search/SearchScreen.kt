@@ -122,6 +122,11 @@ fun SearchScreen(
         }
     }
 
+    // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
+    // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
+    // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
+    BackHandler(enabled = showRemoteInputModal) { showRemoteInputModal = false }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
