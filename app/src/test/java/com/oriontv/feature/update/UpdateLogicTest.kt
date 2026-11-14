@@ -27,6 +27,15 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `strip version prefix removes leading v`() {
+        assertEquals("2.0.1", stripVersionPrefix("v2.0.1"))
+        assertEquals("2.0.1", stripVersionPrefix("V2.0.1"))
+        assertEquals("2.0.1", stripVersionPrefix("2.0.1"))
+        assertEquals("2.0.1", stripVersionPrefix("  v2.0.1 "))
+        assertEquals("", stripVersionPrefix("v"))
+    }
+
+    @Test
     fun `verify sha256 matches file content`() {
         val downloader = UpdateDownloader(OkHttpClient())
         val dir = Files.createTempDirectory("oriontv-update-test").toFile()

@@ -8,10 +8,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
+import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.play.PlayerManager
+import com.oriontv.feature.remoteinput.RemoteInputManager
 import com.oriontv.navigation.OrionNavHost
 import com.oriontv.ui.theme.OrionTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** 切到后台时的动作（纯决策，可单测；见 MainActivityLeaveHintTest）。 */
@@ -32,6 +37,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var playerManager: PlayerManager
 
+    @Inject
+    lateinit var settingsRepository: SettingsRepository
+
+    @Inject
+    lateinit var remoteInputManager: RemoteInputManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -39,6 +50,31 @@ class MainActivity : ComponentActivity() {
                 OrionNavHost(modifier = Modifier.fillMaxSize())
             }
         }
+    }
+
+    /**
+     * P1-7/P2-23：远程输入跟随应用生命周期——
+     * 进前台时如果设置里开着，把服务拉起来（冷启动恢复，不再只靠进设置页触发）；
+     * 切后台时停服，不随进程常驻后台占着 12346 端口。
+     */
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch {
+            if (settingsRepository.remoteInputEnabled.first()) {
+                remoteInputManager.start()
+            }
+        }
+    }
+
+    override fun onStop() {
+        remoteInputManager.stop()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        // 真退出（非配置变更重建）时释放管理器；否则单例 scope 被 cancel 后无法再启动。
+        if (isFinishing) remoteInputManager.release()
+        super.onDestroy()
     }
 
     /**

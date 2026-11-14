@@ -3,6 +3,7 @@ package com.oriontv.feature.detail
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.Favorite
+import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.repo.DetailRepository
 import com.oriontv.data.repo.FavoritesRepository
@@ -35,19 +36,27 @@ class DetailViewModel @Inject constructor(
     private var currentTitle: String = ""
     private var currentId: String = ""
 
+    /** P1-4/P2-2：首进后才置 true；换源、返回重组都不再抢焦点到“播放”按钮。 */
+    var focusAnchored: Boolean = false
+
     fun init(source: String, id: String, title: String) {
         // 同一视频重复 init 不重新搜（返回后重组不丢状态）。
-        if (currentKey == "$source+$id" && _uiState.value.results.isNotEmpty()) return
-        currentKey = "$source+$id"
+        val key = MoonTvApi.generateKey(source, id)
+        if (currentKey == key && _uiState.value.results.isNotEmpty()) return
+        currentKey = key
         currentTitle = title
         currentId = id
         searchJob?.cancel()
         _uiState.value = DetailUiState(isLoading = true, selectedEpisode = 0)
         searchJob = viewModelScope.launch {
-            // 断点：有播放记录时默认选中记录里的集。
+            // 断点：有播放记录时默认选中记录里的集，并记下断点秒数（P1-2）。
             val record = playRecordsRepository.getByKey(currentKey)
             val startEpisode = record?.index ?: 0
-            _uiState.value = _uiState.value.copy(selectedEpisode = startEpisode)
+            _uiState.value = _uiState.value.copy(
+                selectedEpisode = startEpisode,
+                resumeEpisode = record?.index,
+                resumePositionSeconds = record?.play_time,
+            )
             // douban 项没有真实源，不走单源搜索，直接全量按标题搜。
             val preferredSource = if (source == "douban") null else source.ifBlank { null }
             try {
@@ -105,7 +114,9 @@ class DetailViewModel @Inject constructor(
                 search_title = currentTitle,
                 year = current.year,
             )
-            val nowFavorite = favoritesRepository.toggle(currentKey, favorite)
+            // P2-16：收藏键以当前源为准（切源后再收藏，不再存进入时的源）。
+            val key = MoonTvApi.generateKey(current.source, current.id.orEmpty())
+            val nowFavorite = favoritesRepository.toggle(key, favorite)
             _uiState.value = _uiState.value.copy(isFavorite = nowFavorite)
         }
     }
@@ -120,8 +131,24 @@ class DetailViewModel @Inject constructor(
     private fun friendlyError(e: Exception): String = when {
         e.message?.contains("未配置服务器地址") == true -> "还没有配置源地址，先去设置里添加吧"
         e.message?.contains("登录已过期") == true -> "登录已过期，请重新登录"
-        else -> "加载失败：${e.message ?: "网络错误"}"
+        // P2-17：不把原始异常拼给用户，固定文案。
+        else -> "加载失败，请检查网络后重试"
     }
+}
+
+/**
+ * P1-2：详情页“播放”应带的位置（毫秒）。
+ * 只有当前选中集等于断点记录集时才续播；换集后断点失效，从 0 开始。
+ * 纯逻辑，可单测。
+ */
+fun resumePositionMs(
+    selectedEpisode: Int,
+    resumeEpisode: Int?,
+    resumePositionSeconds: Long?,
+): Long {
+    if (resumeEpisode == null || resumePositionSeconds == null) return 0L
+    if (selectedEpisode != resumeEpisode) return 0L
+    return (resumePositionSeconds * 1000).coerceAtLeast(0L)
 }
 
 data class DetailUiState(
@@ -136,4 +163,8 @@ data class DetailUiState(
     val selectedEpisode: Int = 0,
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
+    /** P1-2：断点记录的集号（null = 无断点）；只有选中它时“播放”才带位置。 */
+    val resumeEpisode: Int? = null,
+    /** P1-2：断点记录的已播秒数（null = 无断点）。 */
+    val resumePositionSeconds: Long? = null,
 )

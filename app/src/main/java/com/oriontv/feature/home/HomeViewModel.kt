@@ -36,6 +36,11 @@ class HomeViewModel @Inject constructor(
     private val cache = HomeCache()
     private var generation = 0
 
+    /** P1-4：首进才落默认焦点锚点；返回时恢复 savedFocusRow/Card。 */
+    var initialFocusDone: Boolean = false
+    var savedFocusRow: Int = -1
+    var savedFocusCard: Int = -1
+
     init {
         refresh()
     }
@@ -43,7 +48,8 @@ class HomeViewModel @Inject constructor(
     fun refresh() {
         val gen = ++generation
         viewModelScope.launch {
-            _uiState.value = HomeUiState(isLoading = true)
+            // P2-8：刷新保留旧行，只置 loading，不闪回“正在加载…”空屏。
+            _uiState.value = _uiState.value.copy(isLoading = true)
             val serverConfigured = settingsRepository.isServerConfigured()
             if (!serverConfigured) {
                 _uiState.value = HomeUiState(serverConfigured = false)
@@ -75,14 +81,14 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    /** 各行并发加载；单行失败只丢该行，不影响其他行。 */
+    /** 各行并发加载；单行失败留占位行（P2-9），不静默消失。 */
     private suspend fun loadRows(baseUrl: String): List<HomeRow> = coroutineScope {
         val deferred = HomeCategory.entries.map { category ->
             async {
                 try {
                     loadCategory(category, baseUrl)
                 } catch (_: Exception) {
-                    null
+                    HomeRow(category.title, emptyList(), error = "该分类加载失败")
                 }
             }
         }

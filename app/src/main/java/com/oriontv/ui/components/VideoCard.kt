@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -49,13 +50,18 @@ fun VideoCard(
     isLive: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    /** 焦点落到本卡时回调（供各页做返回焦点恢复；不接时行为不变）。 */
+    onFocused: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
             .focusable()
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused?.invoke()
+            }
             .onKeyUp {
                 when (it.key) {
                     Key.DirectionCenter, Key.Enter -> {
@@ -107,10 +113,12 @@ fun VideoCard(
                 )
             }
             if (progressFraction != null) {
+                // P1-1：进度条必须有高度，否则无内容的 Box 高度为 0、不可见。
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
+                        .height(4.dp)
                         .background(OrionColors.Brand),
                 )
             }

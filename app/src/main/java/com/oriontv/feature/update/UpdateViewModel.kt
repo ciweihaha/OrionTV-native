@@ -43,7 +43,7 @@ class UpdateViewModel @Inject constructor(
 
     /** 当前版本是否低于目标版本。 */
     fun needsUpdate(currentVersion: String, latestVersion: String): Boolean =
-        VersionUtils.isOlderThan(currentVersion, latestVersion)
+        VersionUtils.isOlderThan(currentVersion, stripVersionPrefix(latestVersion))
 
     /**
      * 检查更新。silent=true 时只在距上次检查 >= 12 小时才发请求
@@ -62,7 +62,7 @@ class UpdateViewModel @Inject constructor(
                         return@launch
                     }
                 }
-                val latest = aggApi.version()
+                val latest = stripVersionPrefix(aggApi.version())
                 settingsRepository.setUpdateLastCheckTime(System.currentTimeMillis())
                 val skipVersion = settingsRepository.currentUpdateSkipVersion()
                 val current = _uiState.value.currentVersion
@@ -207,6 +207,15 @@ class UpdateViewModel @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 }
+
+/**
+ * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
+ * 注意：AggApi.version() 内部仍会对带 v 的版本直接抛错（正则在数据层），
+ * 这里的 strip 只是防御层，服务端一旦真带 v 返回，根治还得在 AggApi 里 strip。
+ * 纯逻辑，可单测。
+ */
+fun stripVersionPrefix(version: String): String =
+    version.trim().removePrefix("v").removePrefix("V")
 
 data class UpdateUiState(
     val currentVersion: String = "",

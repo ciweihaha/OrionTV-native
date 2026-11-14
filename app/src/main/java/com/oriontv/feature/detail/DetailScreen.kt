@@ -2,7 +2,6 @@ package com.oriontv.feature.detail
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -15,6 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -89,18 +91,25 @@ private fun DetailScreenContent(
     LaunchedEffect(source, id) {
         viewModel.init(source, id, title.ifBlank { id })
     }
-    // 详情加载完后焦点落在“播放”主按钮上（首选焦点锚点）。
+    // P1-4/P2-2：只在首次加载完成时把焦点落到“播放”按钮；换源不抢焦点。
     LaunchedEffect(uiState.current) {
-        if (uiState.current != null) playRequester.requestFocus()
+        if (uiState.current != null && !viewModel.focusAnchored) {
+            playRequester.requestFocus()
+            viewModel.focusAnchored = true
+        }
+    }
+    // P1-4：从播放页返回时重组，焦点已随旧组合处置而丢失，把焦点还给“播放”按钮。
+    LaunchedEffect(Unit) {
+        if (viewModel.focusAnchored) playRequester.requestFocus()
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val gridCellWidth =
-            (maxWidth - 96.dp - 12.dp * 7f) / OrionDimens.EpisodeGridColumns.toFloat()
-        LazyColumn(
-            contentPadding = OrionDimens.ContentPadding,
-            verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
-        ) {
+    // P2-7：选集已改 LazyVerticalGrid（按列数均分），不再手动算卡宽；
+    // 旧公式里的 96.dp 只是左右边距之和（48×2）的巧合值，与导航轨宽同值，删掉。
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = OrionDimens.ContentPadding,
+        verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
+    ) {
             if (uiState.isLoading && uiState.current == null) {
                 item {
                     Text(
@@ -113,7 +122,10 @@ private fun DetailScreenContent(
             if (uiState.error != null && uiState.current == null) {
                 val errorMessage = uiState.error
                 item {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                         Spacer(modifier = Modifier.height(24.dp))
                         SecondaryButton(
@@ -172,8 +184,14 @@ private fun DetailScreenContent(
                                 Spacer(modifier = Modifier.height(24.dp))
                             }
                             Row {
+                                // P1-2：选中集是断点集时带断点位置续播，否则从 0 开始。
+                                val resumeMs = resumePositionMs(
+                                    uiState.selectedEpisode,
+                                    uiState.resumeEpisode,
+                                    uiState.resumePositionSeconds,
+                                )
                                 PrimaryButton(
-                                    text = "播放",
+                                    text = if (resumeMs > 0) "继续播放" else "播放",
                                     onClick = {
                                         onNavigate(
                                             OrionRoute.Play(
@@ -181,6 +199,7 @@ private fun DetailScreenContent(
                                                 id = current.id.orEmpty(),
                                                 title = current.title,
                                                 episodeIndex = uiState.selectedEpisode,
+                                                positionMs = resumeMs,
                                             ),
                                         )
                                     },
@@ -255,11 +274,25 @@ private fun DetailScreenContent(
                                 color = OrionColors.TextSecondary,
                             )
                         } else {
-                            FlowRow(
+                            // P2-1：选集改 LazyVerticalGrid（每行 8 个，带复用）；
+                            // 在 LazyColumn 里需固定高度：行数按组内集数算，每行约 44dp + 12dp 间距。
+                            val episodeCount = groupEnd - groupStart + 1
+                            val gridRows =
+                                (episodeCount + OrionDimens.EpisodeGridColumns - 1) /
+                                    OrionDimens.EpisodeGridColumns
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(OrionDimens.EpisodeGridColumns),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(
+                                        (gridRows * 44).dp +
+                                            ((gridRows - 1).coerceAtLeast(0) * 12).dp,
+                                    ),
                             ) {
-                                for (ep in groupStart..groupEnd) {
+                                items(episodeCount) { offset ->
+                                    val ep = groupStart + offset
                                     val epIndex = ep - 1
                                     CategoryChip(
                                         text = "第 $ep 集",
@@ -272,10 +305,15 @@ private fun DetailScreenContent(
                                                     id = current.id.orEmpty(),
                                                     title = current.title,
                                                     episodeIndex = epIndex,
+                                                    // 选集直接播：只有断点集带断点位置。
+                                                    positionMs = resumePositionMs(
+                                                        epIndex,
+                                                        uiState.resumeEpisode,
+                                                        uiState.resumePositionSeconds,
+                                                    ),
                                                 ),
                                             )
                                         },
-                                        modifier = Modifier.width(gridCellWidth),
                                     )
                                 }
                             }
@@ -284,5 +322,4 @@ private fun DetailScreenContent(
                 }
             }
         }
-    }
 }

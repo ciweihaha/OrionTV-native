@@ -17,16 +17,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -40,6 +44,7 @@ import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -50,6 +55,8 @@ import kotlinx.coroutines.launch
  * → “热门剧集”行 → 各分类行（每行 6 张卡片，横向滚动）；
  * 未配置服务器时空态：一行提示 + “去设置”按钮。
  * 点分类 chip 滚动到对应行；返回首页时只刷新“最近播放”行。
+ * 焦点：首进落分类栏锚点；从详情/播放返回时恢复上次所在的卡片（行 + 卡片 index），
+ * 不拉回顶部（P1-4）。
  */
 @Composable
 fun HomeScreen(
@@ -57,10 +64,14 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    var selectedCategory by remember { mutableStateOf(HomeCategory.RECENT.title) }
+    // 回栈后分类选择不重置（原 remember 会丢）。
+    var selectedCategory by rememberSaveable { mutableStateOf(HomeCategory.RECENT.title) }
     val firstChipRequester = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // 每行横向滚动状态 + 每张卡片的焦点锚点（返回恢复用；键为 "行:卡片"）。
+    val rowListStates = remember { mutableMapOf<String, LazyListState>() }
+    val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
     // 返回首页时刷新“最近播放”行（刚看完的断点要立刻出现）。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -87,12 +98,37 @@ fun HomeScreen(
         return
     }
 
-    // 焦点默认落在分类栏“最近播放”上。
-    LaunchedEffect(Unit) { firstChipRequester.requestFocus() }
+    // P1-4：焦点默认只在首次进入时落在分类栏“最近播放”上；
+    // 返回时恢复保存的焦点目标（行 index + 卡片 index），滚动到位后再请求焦点。
+    LaunchedEffect(Unit) {
+        if (!viewModel.initialFocusDone) {
+            firstChipRequester.requestFocus()
+            viewModel.initialFocusDone = true
+        } else {
+            val row = viewModel.savedFocusRow
+            val card = viewModel.savedFocusCard
+            val rows = uiState.rows
+            if (row in rows.indices && card in 0 until rows[row].items.size) {
+                listState.scrollToItem(row + 1)
+                delay(120)
+                rowListStates[rows[row].title]?.scrollToItem(card)
+                delay(120)
+                cardRequesters["$row:$card"]?.requestFocus()
+            } else {
+                firstChipRequester.requestFocus()
+            }
+        }
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // P2-7：减的是内容区左右边距之和（48dp×2），不是导航轨宽；
+        // 旧公式里的 96.dp 与导航轨宽同值纯属巧合，改一处就错位。
+        val layoutDirection = LocalLayoutDirection.current
+        val horizontalPadding =
+            OrionDimens.ContentPadding.calculateLeftPadding(layoutDirection) +
+                OrionDimens.ContentPadding.calculateRightPadding(layoutDirection)
         val cardWidth =
-            (maxWidth - 96.dp - OrionDimens.CardSpacing * 5f) / OrionDimens.HomeRowCards.toFloat()
+            (maxWidth - horizontalPadding - OrionDimens.CardSpacing * 5f) / OrionDimens.HomeRowCards.toFloat()
         LazyColumn(
             state = listState,
             contentPadding = OrionDimens.ContentPadding,
@@ -133,20 +169,35 @@ fun HomeScreen(
             if (uiState.error != null && uiState.rows.isEmpty()) {
                 val errorMessage = uiState.error
                 item {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // P2-10：错误态居中需占满宽，否则在 LazyColumn item 里是窄列、视觉左偏。
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                         Spacer(modifier = Modifier.height(24.dp))
                         SecondaryButton(text = "重试", onClick = { viewModel.refresh() })
                     }
                 }
             }
-            items(uiState.rows) { row ->
+            itemsIndexed(uiState.rows) { rowIndex, row ->
                 val isRecent = row.title == HomeCategory.RECENT.title
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(text = row.title, style = OrionTextStyles.SectionTitle)
                     Spacer(modifier = Modifier.height(12.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing)) {
-                        items(row.items) { item ->
+                    // P2-9：单行失败留占位行，用户能看到哪一行挂了。
+                    if (row.error != null && row.items.isEmpty()) {
+                        Text(
+                            text = row.error,
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.TextSecondary,
+                        )
+                    }
+                    LazyRow(
+                        state = rowListStates.getOrPut(row.title) { LazyListState() },
+                        horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
+                    ) {
+                        itemsIndexed(row.items) { cardIndex, item ->
                             VideoCard(
                                 title = item.title,
                                 posterUrl = item.poster,
@@ -186,7 +237,17 @@ fun HomeScreen(
                                         )
                                     }
                                 },
-                                modifier = Modifier.width(cardWidth),
+                                onFocused = {
+                                    viewModel.savedFocusRow = rowIndex
+                                    viewModel.savedFocusCard = cardIndex
+                                },
+                                modifier = Modifier
+                                    .width(cardWidth)
+                                    .preferredFocus(
+                                        cardRequesters.getOrPut("$rowIndex:$cardIndex") {
+                                            FocusRequester()
+                                        },
+                                    ),
                             )
                         }
                     }

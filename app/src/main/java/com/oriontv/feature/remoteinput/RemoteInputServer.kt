@@ -32,6 +32,12 @@ class RemoteInputServer(
                 result.contentType,
                 result.body,
             )
+        } catch (e: BodyTooLargeException) {
+            newFixedLengthResponse(
+                Response.Status.PAYLOAD_TOO_LARGE,
+                "application/json",
+                """{"error":"Request body too large"}""",
+            )
         } catch (_: Exception) {
             newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR,
@@ -43,18 +49,34 @@ class RemoteInputServer(
 
     /**
      * 读 POST 体：NanoHTTPD 的 parseBody 把非表单体放进 "postData"。
+     * P1-11：读体前先用 Content-Length 预检，超 16KB 直接 413，不读整包体
+     * （鉴权在路由层，读体发生在鉴权前，所以上限必须卡在读体之前）；
+     * 无 Content-Length（chunked）时读完再按长度兜底 413。
      * parseBody 失败时（体过大/格式异常）返回空串，由路由报 400。
      */
     private fun readBody(session: IHTTPSession): String {
         if (session.method != Method.POST) return ""
+        val declaredLength = session.headers["content-length"]?.toLongOrNull()
+        if (declaredLength != null && declaredLength > RemoteInputLogic.MAX_REQUEST_BODY_BYTES) {
+            throw BodyTooLargeException()
+        }
         return try {
             val files = mutableMapOf<String, String>()
             session.parseBody(files)
-            files["postData"].orEmpty()
+            val body = files["postData"].orEmpty()
+            if (body.length > RemoteInputLogic.MAX_REQUEST_BODY_BYTES) {
+                throw BodyTooLargeException()
+            }
+            body
+        } catch (e: BodyTooLargeException) {
+            throw e
         } catch (_: Exception) {
             ""
         }
     }
+
+    /** 请求体超限（只做控制流用，不带任何敏感信息）。 */
+    private class BodyTooLargeException : Exception()
 
     companion object {
         /** 本机局域网 IPv4（优先站点本地地址）；拿不到时返回 null。 */
