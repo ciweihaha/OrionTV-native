@@ -1,5 +1,6 @@
 package com.oriontv.feature.live
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
@@ -53,6 +54,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.core.util.TimeUtils
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.BrandProgressBar
@@ -65,7 +67,6 @@ import com.oriontv.ui.components.orionFocus
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
-import kotlinx.coroutines.delay
 
 /** 菜单键（遥控器 Menu）：用原生 KEYCODE_MENU 判断，不依赖 Key.Menu 是否存在。 */
 private fun isMenuKey(event: KeyEvent): Boolean =
@@ -110,6 +111,17 @@ fun LiveScreen(
     val uiState by viewModel.uiState.collectAsState()
     val rootRequester = remember { FocusRequester() }
 
+    // C5-P1-2：焦点在导航轨上时按返回，根 Box 的 onKeyUp 收不到（焦点不在
+    // 本页组合内），旧实现直接走 Activity 默认返回、白白退出直播页。
+    // 面板/弹窗/确认框均关闭时才由 BackHandler 接返回、开退出确认；
+    // 有一层打开时 BackHandler 让位，返回键仍走根 Box 的层级处理。
+    BackHandler(
+        enabled = !uiState.panelOpen && uiState.epgDialogChannel == null &&
+            !uiState.exitConfirmOpen,
+    ) {
+        viewModel.openExitConfirm()
+    }
+
     LaunchedEffect(Unit) {
         viewModel.init()
         rootRequester.requestFocus()
@@ -118,10 +130,13 @@ fun LiveScreen(
     // 关闭面板/弹窗/退出确认、或空态加载出频道后，焦点回根
     //（与 ChannelPanel 面板打开时落焦点的做法一致；面板打开时面板自己管焦点）。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑。
+    // A5-P1-3：失败页消失（playbackFailed 由真变假）也重跑——断流失败页上
+    // 按上下键/数字键换台后失败页卸载，焦点曾留在已卸载的“重试”按钮上。
     LaunchedEffect(
         uiState.panelOpen,
         uiState.epgDialogChannel,
         uiState.exitConfirmOpen,
+        uiState.playbackFailed,
         uiState.channels.isEmpty(),
         focusRestoreTick,
     ) {
@@ -550,19 +565,20 @@ private fun ChannelPanel(
 
     // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）；
     // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
+    // C5-P2-1/A5-P2-8：目标行尚未组合完成时单次 requestFocus 静默失败，
+    // 改 requestFocusWithRetry；仍失败回退到根（根的 onKeyUp 知道面板开着，
+    // 返回键仍能关面板），不再靠固定 delay(100) 猜时序。
     LaunchedEffect(uiState.panelOpen, uiState.selectedGroup) {
         if (uiState.panelOpen) {
             val idx = resolvePanelFocusIndex(filtered, currentChannel)
             listState.scrollToItem(idx)
-            delay(100)
-            currentRequester.requestFocus()
+            currentRequester.requestFocusWithRetry()
         }
     }
     // EPG 弹窗关闭后焦点回落到面板当前台。
     LaunchedEffect(uiState.epgDialogChannel) {
         if (uiState.epgDialogChannel == null && uiState.panelOpen) {
-            delay(100)
-            currentRequester.requestFocus()
+            currentRequester.requestFocusWithRetry()
         }
     }
 
@@ -846,15 +862,19 @@ private fun EpgDialog(
 
     // 打开 / 切台时滚到正在播的节目并落焦点；无正在播节目时落第一行（plan §3.3 第 2 条）。
     // 无节目单时落“关闭”按钮：否则弹窗无可聚焦行，焦点留在面板行上，OK 会误切台。
-    LaunchedEffect(channel.url) {
+    // A5-P2-3：effect 键加上 programmes.isEmpty()——节目单晚到（打开时为空、
+    // EPG 随后才到）时重跑落点，不再停在“暂无节目单”的关闭按钮上。
+    // C5-P2-1/A5-P2-8：固定 delay(100)+单次请求改 requestFocusWithRetry；
+    // 正在播行抢不到时回退到“关闭”按钮。
+    LaunchedEffect(channel.url, programmes.isEmpty()) {
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)
-            delay(100)
-            currentRequester.requestFocus()
+            if (!currentRequester.requestFocusWithRetry()) {
+                closeRequester.requestFocusWithRetry()
+            }
         } else {
-            delay(100)
-            closeRequester.requestFocus()
+            closeRequester.requestFocusWithRetry()
         }
     }
 

@@ -1,5 +1,6 @@
 package com.oriontv.feature.detail
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.Favorite
@@ -30,6 +31,7 @@ class DetailViewModel @Inject constructor(
     private val detailRepository: DetailRepository,
     private val favoritesRepository: FavoritesRepository,
     private val playRecordsRepository: PlayRecordsRepository,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(DetailUiState(isLoading = true))
     val uiState: StateFlow<DetailUiState> = _uiState.asStateFlow()
@@ -42,8 +44,22 @@ class DetailViewModel @Inject constructor(
     /** B4-P2-2：轻量代次——init 时 +1，迟到的搜索回调/收藏读取复核后才写回。 */
     private var generation = 0
 
-    /** P1-4/P2-2：首进后才置 true；换源、返回重组都不再抢焦点到“播放”按钮。 */
-    var focusAnchored: Boolean = false
+    /**
+     * C5-P2-4：P1-4/P2-2 的焦点锚点原来是普通变量。详情页被 popUpTo 弹掉
+     * 后 ViewModel 被清，返回重建时 focusAnchored 回 false，会抢焦点到
+     * “播放”按钮（首页/收藏页同款问题，见 HomeViewModel）。改成
+     * SavedStateHandle 承载，照 FavoritesViewModel 的做法。
+     */
+    var focusAnchored: Boolean
+        get() = savedStateHandle[SAVED_FOCUS_ANCHORED] ?: false
+        set(value) {
+            savedStateHandle[SAVED_FOCUS_ANCHORED] = value
+        }
+
+    companion object {
+        /** SavedStateHandle 键：是否已落过“播放”按钮焦点锚点。 */
+        const val SAVED_FOCUS_ANCHORED = "detail_focus_anchored"
+    }
 
     fun init(source: String, id: String, title: String) {
         // 同一视频重复 init 不重新搜（返回后重组不丢状态）。

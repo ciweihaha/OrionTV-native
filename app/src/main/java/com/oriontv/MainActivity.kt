@@ -82,7 +82,11 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // 热启动深链（adb/语音助手在应用已在前台/后台时发 oriontv://…）：
         // 无此回调时 singleTask 会直接丢弃新 Intent，详情/播放深链永远到不了。
-        navController?.handleDeepLink(intent)
+        // C5-P2-6：匹配失败时记日志——之前 handleDeepLink 返回 false 也静默丢弃。
+        val handled = navController?.handleDeepLink(intent) == true
+        if (!handled) {
+            android.util.Log.w("MainActivity", "深链未匹配任何路由，已丢弃：$intent")
+        }
     }
 
     /**

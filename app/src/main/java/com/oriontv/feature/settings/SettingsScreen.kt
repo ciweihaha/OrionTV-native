@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +79,10 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
-    var selectedMenu by remember { mutableStateOf(0) }
+    // C5-P2-5：selectedMenu 原来是 remember——进程重建/切走再回后回到 0，
+    // 与焦点恢复（focusRestoreTick 用 menuRequesters[selectedMenu]）对不上；
+    // 改 rememberSaveable，首进焦点也落 menuRequesters[selectedMenu]。
+    var selectedMenu by rememberSaveable { mutableStateOf(0) }
     var showQrModal by remember { mutableStateOf(false) }
     val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
     val rightRequester = remember { FocusRequester() }
@@ -87,7 +91,7 @@ fun SettingsScreen(
     var qrModalWasOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        menuRequesters[0].requestFocus()
+        menuRequesters[selectedMenu].requestFocus()
         viewModel.restoreRemoteInputIfEnabled()
     }
     // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。

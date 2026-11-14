@@ -1,5 +1,6 @@
 package com.oriontv.feature.home
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.AggApi
@@ -30,6 +31,7 @@ class HomeViewModel @Inject constructor(
     private val moonTvApi: MoonTvApi,
     private val settingsRepository: SettingsRepository,
     private val playRecordsRepository: PlayRecordsRepository,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState(isLoading = true))
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -37,10 +39,41 @@ class HomeViewModel @Inject constructor(
     private val cache = HomeCache()
     private var generation = 0
 
-    /** P1-4：首进才落默认焦点锚点；返回时恢复 savedFocusRow/Card。 */
-    var initialFocusDone: Boolean = false
-    var savedFocusRow: Int = -1
-    var savedFocusCard: Int = -1
+    /**
+     * C5-P2-4：P1-4 的焦点锚点原来是 ViewModel 里的普通变量。导航轨切走
+     * （popUpTo(Home) 弹掉首页）后 ViewModel 被清，只靠内存留不住；
+     * 再切回来新建的 ViewModel 从头开始，焦点回到分类栏顶部（收藏页
+     * 0ed23ab、搜索页 C4-P1-5 同款问题）。改成 SavedStateHandle 承载，
+     * 照 FavoritesViewModel 的做法。
+     */
+    var initialFocusDone: Boolean
+        get() = savedStateHandle[SAVED_INITIAL_FOCUS_DONE] ?: false
+        set(value) {
+            savedStateHandle[SAVED_INITIAL_FOCUS_DONE] = value
+        }
+
+    var savedFocusRow: Int
+        get() = savedStateHandle[SAVED_FOCUS_ROW] ?: -1
+        set(value) {
+            savedStateHandle[SAVED_FOCUS_ROW] = value
+        }
+
+    var savedFocusCard: Int
+        get() = savedStateHandle[SAVED_FOCUS_CARD] ?: -1
+        set(value) {
+            savedStateHandle[SAVED_FOCUS_CARD] = value
+        }
+
+    companion object {
+        /** SavedStateHandle 键：是否已落过默认锚点。 */
+        const val SAVED_INITIAL_FOCUS_DONE = "home_initial_focus_done"
+
+        /** SavedStateHandle 键：上次所在的行下标（-1 = 未记录）。 */
+        const val SAVED_FOCUS_ROW = "home_saved_focus_row"
+
+        /** SavedStateHandle 键：上次所在的卡片下标（-1 = 未记录）。 */
+        const val SAVED_FOCUS_CARD = "home_saved_focus_card"
+    }
 
     init {
         refresh()

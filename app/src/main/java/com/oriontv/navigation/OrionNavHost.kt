@@ -1,6 +1,7 @@
 package com.oriontv.navigation
 
 import android.app.Activity
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -61,12 +62,22 @@ fun OrionNavHost(
     updateViewModel: UpdateViewModel = hiltViewModel(),
 ) {
     val backStackEntry by navController.currentBackStackEntryAsState()
+    // C5-P2-6：路由解析失败原来被 getOrNull() 静默吞掉——导航轨无高亮、
+    // 也没有任何日志，坏路由悄悄变成“无选中项”。解析失败时记 Log.w、
+    // 导航轨兜底高亮首页（最常见的入口）。
+    // 深链 title 含 & 的说明：应用内导航走类型安全路由对象（navigate 传参，
+    // 框架编码），不受影响；只有外部直接拼原始 URI（adb/语音助手）且
+    // title 未百分号编码时，& 会把 title 截断——调用方须把 title 写成 %26，
+    // 框架侧无法从截断后的 URI 还原。
     val currentRoute: OrionRoute? = backStackEntry?.let {
-        runCatching { it.toRoute<OrionRoute>() }.getOrNull()
+        runCatching { it.toRoute<OrionRoute>() }.onFailure { e ->
+            Log.w("OrionNavHost", "路由解析失败，导航轨兜底高亮首页：${e.message}")
+        }.getOrNull()
     }
     // P2-3：详情/播放不匹配任何顶级项时，导航轨按来源高亮“首页”（最常见的入口）。
     val railRoute: OrionRoute? = when (currentRoute) {
         is OrionRoute.Detail, is OrionRoute.Play -> OrionRoute.Home
+        null -> OrionRoute.Home
         else -> currentRoute
     }
     val showRail = currentRoute !is OrionRoute.Play

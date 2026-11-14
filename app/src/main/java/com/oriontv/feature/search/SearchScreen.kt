@@ -77,6 +77,18 @@ fun SearchScreen(
         showKeyboard = false
     }
 
+    // C5-P1-1：屏上键盘由开变关时焦点回搜索框——之前键盘关闭后焦点留在已
+    // 卸载的键盘按键上，遥控器数秒内按什么都没反应。
+    var keyboardWasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(showKeyboard) {
+        if (showKeyboard) {
+            keyboardWasOpen = true
+        } else if (keyboardWasOpen) {
+            keyboardWasOpen = false
+            searchRequester.requestFocus()
+        }
+    }
+
     // P1-4：首进落搜索框；返回时恢复上次的结果卡片。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
     LaunchedEffect(focusRestoreTick) {

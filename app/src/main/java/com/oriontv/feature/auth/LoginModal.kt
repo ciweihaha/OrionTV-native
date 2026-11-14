@@ -23,6 +23,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -51,7 +53,10 @@ fun LoginModal(
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var localError by remember { mutableStateOf<String?>(null) }
+    val usernameRequester = remember { FocusRequester() }
+    val passwordRequester = remember { FocusRequester() }
     val loginRequester = remember { FocusRequester() }
+    val cancelRequester = remember { FocusRequester() }
 
     // 焦点默认落在主按钮上（ui-design.md §5.8）。
     LaunchedEffect(Unit) { loginRequester.requestFocus() }
@@ -73,12 +78,21 @@ fun LoginModal(
         ) {
             Text(text = "登录", style = OrionTextStyles.SectionTitle)
             Spacer(modifier = Modifier.height(16.dp))
+            // C5-P1-3：焦点陷阱（照 UpdateCard 的做法）——账号 → 密码 →
+            // 登录 → 取消 → 账号循环，不出弹窗。输入框只接 up/down：
+            // 左右键留给光标移动，不抢。
             LoginField(
                 label = "账号",
                 value = username,
                 onValueChange = { username = it },
                 keyboardType = KeyboardType.Text,
                 masked = false,
+                modifier = Modifier
+                    .focusRequester(usernameRequester)
+                    .focusProperties {
+                        up = cancelRequester
+                        down = passwordRequester
+                    },
             )
             Spacer(modifier = Modifier.height(12.dp))
             LoginField(
@@ -87,6 +101,12 @@ fun LoginModal(
                 onValueChange = { password = it },
                 keyboardType = KeyboardType.Password,
                 masked = true,
+                modifier = Modifier
+                    .focusRequester(passwordRequester)
+                    .focusProperties {
+                        up = usernameRequester
+                        down = loginRequester
+                    },
             )
             if (shownError != null) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -104,10 +124,28 @@ fun LoginModal(
                             onLogin(username, password)
                         }
                     },
-                    modifier = Modifier.preferredFocus(loginRequester),
+                    modifier = Modifier
+                        .preferredFocus(loginRequester)
+                        .focusProperties {
+                            left = cancelRequester
+                            right = cancelRequester
+                            up = passwordRequester
+                            down = cancelRequester
+                        },
                 )
                 Spacer(modifier = Modifier.width(16.dp))
-                SecondaryButton(text = "取消", onClick = onDismiss)
+                SecondaryButton(
+                    text = "取消",
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .focusRequester(cancelRequester)
+                        .focusProperties {
+                            left = loginRequester
+                            right = loginRequester
+                            up = passwordRequester
+                            down = usernameRequester
+                        },
+                )
             }
         }
     }
@@ -120,6 +158,7 @@ private fun LoginField(
     onValueChange: (String) -> Unit,
     keyboardType: KeyboardType,
     masked: Boolean,
+    modifier: Modifier = Modifier,
 ) {
     // C4-P1-7：输入框也要有焦点态（品牌色 2dp 描边 + 背景提亮，与 orionFocus 同款），
     // 否则遥控器移上去看不出落在哪个框。
@@ -145,7 +184,7 @@ private fun LoginField(
                 textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                 keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
                 visualTransformation = if (masked) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-                modifier = Modifier
+                modifier = modifier
                     .fillMaxWidth()
                     .onFocusChanged { focused = it.isFocused },
                 decorationBox = { innerTextField ->

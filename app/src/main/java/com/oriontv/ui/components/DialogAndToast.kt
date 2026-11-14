@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
@@ -39,6 +40,7 @@ fun ConfirmDialog(
     modifier: Modifier = Modifier,
 ) {
     val confirmRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val cancelRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     androidx.compose.runtime.LaunchedEffect(Unit) { confirmRequester.requestFocus() }
     androidx.compose.animation.AnimatedVisibility(
         visible = true,
@@ -72,13 +74,33 @@ fun ConfirmDialog(
             Text(text = message, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
             Spacer(modifier = Modifier.height(24.dp))
             Row {
+                // C5-P1-4：焦点陷阱（照 UpdateCard 的做法）——确认/取消两按钮
+                // 左右循环、上下回主按钮，不出弹窗；之前焦点能移出弹窗落到背后页面。
                 PrimaryButton(
                     text = confirmText,
                     onClick = onConfirm,
-                    modifier = Modifier.focusRequester(confirmRequester),
+                    modifier = Modifier
+                        .focusRequester(confirmRequester)
+                        .focusProperties {
+                            left = cancelRequester
+                            right = cancelRequester
+                            up = confirmRequester
+                            down = confirmRequester
+                        },
                 )
                 Spacer(modifier = Modifier.width(16.dp))
-                SecondaryButton(text = cancelText, onClick = onCancel)
+                SecondaryButton(
+                    text = cancelText,
+                    onClick = onCancel,
+                    modifier = Modifier
+                        .focusRequester(cancelRequester)
+                        .focusProperties {
+                            left = confirmRequester
+                            right = confirmRequester
+                            up = confirmRequester
+                            down = confirmRequester
+                        },
+                )
             }
         }
     }
