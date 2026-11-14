@@ -19,6 +19,10 @@ class FavoritesViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(FavoritesUiState(isLoading = true))
     val uiState: StateFlow<FavoritesUiState> = _uiState.asStateFlow()
 
+    /** P1-3/P1-4：首进才落默认锚点；返回时恢复 savedFocusIndex。 */
+    var initialFocusDone: Boolean = false
+    var savedFocusIndex: Int = -1
+
     init {
         refresh()
     }
