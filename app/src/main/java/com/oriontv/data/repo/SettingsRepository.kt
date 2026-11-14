@@ -33,6 +33,10 @@ class SettingsRepository @Inject constructor(
 
     suspend fun currentApiBaseUrl(): String = apiBaseUrl.first()
     suspend fun currentM3uUrl(): String = m3uUrl.first()
+    suspend fun currentLiveLastChannelJson(): String = settingsDataStore.liveLastChannel.first()
+    suspend fun currentLiveFavChannelsJson(): String = settingsDataStore.liveFavChannels.first()
+    suspend fun setLiveLastChannelJson(value: String) = settingsDataStore.setLiveLastChannel(value)
+    suspend fun setLiveFavChannelsJson(value: String) = settingsDataStore.setLiveFavChannels(value)
     suspend fun currentStorageType(): String = storageType.first()
     suspend fun currentAuthCookies(): String = authCookies.first()
 

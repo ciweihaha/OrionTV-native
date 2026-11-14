@@ -72,13 +72,19 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideM3uRepository(client: OkHttpClient): M3uRepository =
-        M3uRepository(client, Dispatchers.IO)
+    fun provideM3uRepository(
+        client: OkHttpClient,
+        cacheStore: com.oriontv.feature.live.LiveCacheStore,
+    ): M3uRepository =
+        M3uRepository(client, cacheStore, Dispatchers.IO)
 
     @Provides
     @Singleton
-    fun provideEpgRepository(client: OkHttpClient): EpgRepository =
-        EpgRepository(client, Dispatchers.IO)
+    fun provideEpgRepository(
+        client: OkHttpClient,
+        cacheStore: com.oriontv.feature.live.LiveCacheStore,
+    ): EpgRepository =
+        EpgRepository(client, cacheStore, Dispatchers.IO)
 
     @Provides
     @Singleton

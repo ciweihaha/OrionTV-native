@@ -1,6 +1,7 @@
 package com.oriontv.feature.live
 
 import com.oriontv.core.util.TimeUtils
+import kotlinx.serialization.Serializable
 import java.io.StringReader
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
@@ -19,6 +20,7 @@ import org.xml.sax.InputSource
  */
 object EpgParser {
 
+    @Serializable
     data class Programme(
         val channelId: String,
         val title: String,
@@ -26,6 +28,7 @@ object EpgParser {
         val endAt: Long,
     )
 
+    @Serializable
     data class EpgData(
         /** channel id → 节目列表（按开始时间排序）。 */
         val programmesByChannel: Map<String, List<Programme>>,
@@ -97,6 +100,17 @@ object EpgParser {
             }?.value
             ?: return null
         return list.firstOrNull { it.startAt > nowMs }
+    }
+
+    /** 某台全天节目单（EPG 弹窗用，按开始时间排序；先 tvg-id 精确，对不上按归一化名字匹配）。 */
+    fun programmesFor(data: EpgData, tvgId: String?, channelName: String): List<Programme> {
+        val byId = tvgId?.let { data.programmesByChannel[it] }
+        if (byId != null) return byId
+        return data.programmesByChannel.entries
+            .firstOrNull { (channelId, _) ->
+                val name = data.channelNames[channelId]
+                name != null && normalizeName(name) == normalizeName(channelName)
+            }?.value.orEmpty()
     }
 
     /**

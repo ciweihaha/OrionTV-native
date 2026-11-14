@@ -79,6 +79,18 @@ class EpgParserTest {
     }
 
     @Test
+    fun `programmesFor returns full-day list sorted by start`() {
+        val data = EpgParser.parse(sample)
+        val list = EpgParser.programmesFor(data, "cctv1", "CCTV1")
+        assertEquals(listOf("新闻联播", "天气预报"), list.map { it.title })
+        // 归一化名字兜底也能拿到全天列表
+        val byName = EpgParser.programmesFor(data, "no-such-id", "广东 卫视")
+        assertEquals(listOf("广东新闻"), byName.map { it.title })
+        // 对不上的台返回空列表（弹窗显示“暂无节目单”，不崩）
+        assertTrue(EpgParser.programmesFor(data, "no-such-id", "不存在的台").isEmpty())
+    }
+
+    @Test
     fun `normalizeName strips spaces hyphens underscores and lowercases`() {
         assertEquals("cctv1", EpgParser.normalizeName("CCTV-1"))
         assertEquals("广东卫视", EpgParser.normalizeName("广东 卫视"))

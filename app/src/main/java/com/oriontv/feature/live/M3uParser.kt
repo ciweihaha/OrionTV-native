@@ -1,5 +1,7 @@
 package com.oriontv.feature.live
 
+import kotlinx.serialization.Serializable
+
 /**
  * M3U 解析（plan §5.3）：
  * - 逐行解析 `#EXTINF:`，取第一个不在双引号内的逗号之后为台名；
@@ -11,6 +13,7 @@ package com.oriontv.feature.live
  */
 object M3uParser {
 
+    @Serializable
     data class Channel(
         val id: String,
         val name: String,

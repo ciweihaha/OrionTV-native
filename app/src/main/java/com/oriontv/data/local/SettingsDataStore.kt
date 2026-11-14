@@ -44,6 +44,11 @@ class SettingsDataStore @Inject constructor(
         val AUTH_COOKIES = stringPreferencesKey(StorageKeys.AUTH_COOKIES)
         /** server-config 的 StorageType 缓存："localstorage" | "redis"。 */
         val STORAGE_TYPE = stringPreferencesKey("storageType")
+        /** 上次直播频道 JSON（plan §5.4：mytv_live_last_channel，{url, name}）。 */
+        val LIVE_LAST_CHANNEL = stringPreferencesKey(StorageKeys.LIVE_LAST_CHANNEL)
+
+        /** 收藏直播频道 JSON（plan §5.4：mytv_live_fav_channels，List<LiveFavChannel>）。 */
+        val LIVE_FAV_CHANNELS = stringPreferencesKey(StorageKeys.LIVE_FAV_CHANNELS)
     }
 
     val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL].orEmpty() }
@@ -58,6 +63,8 @@ class SettingsDataStore @Inject constructor(
     val updateSkipVersion: Flow<String> = context.settingsDataStore.data.map { it[Keys.UPDATE_SKIP_VERSION].orEmpty() }
     val authCookies: Flow<String> = context.settingsDataStore.data.map { it[Keys.AUTH_COOKIES].orEmpty() }
     val storageType: Flow<String> = context.settingsDataStore.data.map { it[Keys.STORAGE_TYPE].orEmpty() }
+    val liveLastChannel: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_LAST_CHANNEL].orEmpty() }
+    val liveFavChannels: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_FAV_CHANNELS].orEmpty() }
 
     suspend fun setAuthCookies(value: String) {
         context.settingsDataStore.edit { it[Keys.AUTH_COOKIES] = value }
@@ -105,5 +112,13 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setUpdateSkipVersion(value: String) {
         context.settingsDataStore.edit { it[Keys.UPDATE_SKIP_VERSION] = value }
+    }
+
+    suspend fun setLiveLastChannel(value: String) {
+        context.settingsDataStore.edit { it[Keys.LIVE_LAST_CHANNEL] = value }
+    }
+
+    suspend fun setLiveFavChannels(value: String) {
+        context.settingsDataStore.edit { it[Keys.LIVE_FAV_CHANNELS] = value }
     }
 }
