@@ -8,7 +8,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.play.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +54,8 @@ class LiveViewModel @Inject constructor(
     private var digitCommitJob: Job? = null
     private var tickerJob: Job? = null
     private var epgRefreshJob: Job? = null
+    /** 退出时读设置用：onCleared 时 viewModelScope 已取消，不能用它读库。 */
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
@@ -85,6 +90,11 @@ class LiveViewModel @Inject constructor(
     fun init() {
         if (initialised) return
         initialised = true
+        // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画；
+        // 之前只有点播页读这个开关，直播页按 Home 从不进 PiP、回首页必停播。
+        viewModelScope.launch {
+            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
+        }
         viewModelScope.launch {
             val favJson = runCatching { settingsRepository.currentLiveFavChannelsJson() }.getOrDefault("")
             val favorites = runCatching {
@@ -466,8 +476,18 @@ class LiveViewModel @Inject constructor(
         panelTimerJob?.cancel()
         digitCommitJob?.cancel()
         playerManager.removeListener(playerListener)
-        playerManager.pause()
-        playerManager.stop()
+        // 后台播放开着：退出直播页后继续播（画中画/后台音频），不 pause、不 stop；
+        // 关着：沿用旧行为，退出即停播。与 PlayViewModel.onCleared 同款逻辑。
+        cleanupScope.launch {
+            if (settingsRepository.currentBackgroundPlayback()) {
+                playerManager.backgroundPlaybackEnabled = true
+            } else {
+                playerManager.backgroundPlaybackEnabled = false
+                playerManager.pause()
+                playerManager.stop()
+            }
+        }
+        // cleanupScope 不在这里 cancel：后台判断协程要在 onCleared 之后跑完。
         super.onCleared()
     }
 
