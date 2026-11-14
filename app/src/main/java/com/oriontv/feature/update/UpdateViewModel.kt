@@ -11,6 +11,7 @@ import com.oriontv.data.api.AggApi
 import com.oriontv.data.repo.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,6 +126,16 @@ class UpdateViewModel @Inject constructor(
                             )
                         }
                     }
+                }
+            } catch (e: TimeoutCancellationException) {
+                // B5-P1-1：AggApi.version() 的 60 秒总超时是 TimeoutCancellationException
+                //（CancellationException 的子类），按普通失败落错误态、清 isChecking；
+                // 只有真取消（JobCancellationException）才重抛。
+                _uiState.update {
+                    it.copy(
+                        isChecking = false,
+                        error = "检查更新超时，请检查网络后重试",
+                    )
                 }
             } catch (e: CancellationException) {
                 // D-P2-2：取消原样抛出，不转成 error 状态（ViewModel 清掉时本应直接取消）。

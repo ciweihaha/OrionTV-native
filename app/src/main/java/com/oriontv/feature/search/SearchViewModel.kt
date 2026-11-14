@@ -12,6 +12,7 @@ import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.remoteinput.RemoteInputManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -195,6 +196,15 @@ class SearchViewModel @Inject constructor(
                 history = searchHistoryRepository.getLatest20(),
             )
             saveSearchState()
+        } catch (e: TimeoutCancellationException) {
+            // B5-P1-2：MoonTvApi.searchVideos 的 150 秒总超时是
+            // TimeoutCancellationException（CE 子类），按 SearchError.Timeout
+            // 落错误态并清 isLoading；真取消（JobCancellationException）才重抛。
+            if (gen != generation) return
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                error = SearchError.Timeout,
+            )
         } catch (e: CancellationException) {
             // B-P1-9：取消必须原样抛出；否则旧搜索被取消后仍置错误态，覆盖新搜索。
             throw e

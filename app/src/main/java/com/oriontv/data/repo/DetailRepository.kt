@@ -6,11 +6,13 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -57,7 +59,18 @@ class DetailRepository @Inject constructor(
             onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), false)
         }
         // 全量搜索：资源列表 → 逐源单搜（并发 5）→ 精确标题匹配 → 按源去重 → 合并。
-        val merged = fullSearch(baseUrl, q, preferredResults)
+        // B5-P1-3：fullSearch 的 120 秒总超时是 TimeoutCancellationException
+        //（CE 子类），不是用户取消——有首选源结果时保留并标记加载完成，
+        // 无结果时转普通 IOException，让 DetailViewModel 落可重试的 error 态。
+        val merged = try {
+            fullSearch(baseUrl, q, preferredResults)
+        } catch (e: TimeoutCancellationException) {
+            if (preferredResults.isNotEmpty()) {
+                onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
+                return@withContext
+            }
+            throw IOException("详情搜索超时，请重试")
+        }
         if (merged.isNotEmpty()) {
             onUpdate(merged, true)
         } else if (preferredResults.isEmpty()) {

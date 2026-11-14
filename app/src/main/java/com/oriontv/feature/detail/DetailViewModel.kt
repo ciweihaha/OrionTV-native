@@ -12,11 +12,13 @@ import com.oriontv.data.repo.FavoritesRepository
 import com.oriontv.data.repo.PlayRecordsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
@@ -111,6 +113,14 @@ class DetailViewModel @Inject constructor(
                         error = null,
                     )
                 }
+            } catch (e: TimeoutCancellationException) {
+                // B5-P1-3 兜底：仓库已把全量搜索超时转成普通失败；这里再拦一次，
+                // 防首选源搜索等其它 withTimeout 路径的超时也被当取消重抛
+                //（真取消是 JobCancellationException，不走这条分支）。
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = friendlyError(IOException("详情搜索超时，请重试")),
+                )
             } catch (e: CancellationException) {
                 // B-P1-9：取消必须原样抛出；否则旧搜索任务被取消后仍会把错误态
                 // 写回，覆盖新搜索的状态（B-P2-23② 亦由此解决）。
@@ -194,6 +204,8 @@ class DetailViewModel @Inject constructor(
     private fun friendlyError(e: Exception): String = when {
         e.message?.contains("未配置服务器地址") == true -> "还没有配置源地址，先去设置里添加吧"
         e.message?.contains("登录已过期") == true -> "登录已过期，请重新登录"
+        // B5-P1-3：超时单独提示，用户知道是等太久而不是网络断了，可直接重试。
+        e.message?.contains("超时") == true -> "搜索超时，请重试"
         // P2-17：不把原始异常拼给用户，固定文案。
         else -> "加载失败，请检查网络后重试"
     }

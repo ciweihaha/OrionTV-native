@@ -147,6 +147,10 @@ class RemoteInputManager @Inject constructor() {
                     stopRequestedDuringStart = true
                     return@withLock
                 }
+                // B5-P1-5：停服协程排队期间用户可能已重新打开（desiredRunning
+                // 又为 true）；进锁后按最新意图复核，已重开就不再停服，
+                // 否则服务停在关态、开关却显示开。
+                if (desiredRunning) return@withLock
                 stopLocked()
             }
         }

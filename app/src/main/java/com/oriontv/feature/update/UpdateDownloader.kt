@@ -278,12 +278,15 @@ class UpdateDownloader @Inject constructor(
         return destFile
     }
 
-    /** 清理旧 APK，只保留最新 [KEEP_LATEST_APKS] 个（按文件名时间戳倒序）。 */
+    /** 清理旧 APK，只保留最新 [KEEP_LATEST_APKS] 个（按最后修改时间倒序）。 */
     fun cleanOldApkFiles(dir: File, keep: Int = KEEP_LATEST_APKS) {
         try {
             val files = dir.listFiles { f ->
                 f.isFile && f.name.startsWith("OrionTV_v") && f.name.endsWith(".apk")
-            }?.sortedByDescending { it.name }.orEmpty()
+                // B5-P1-4：按文件名排序会把 v2.0.10 排在 v2.0.9 之前（字典序
+                // "1" < "9"），刚下好的新包反被当旧包删掉；改按最后修改时间倒序，
+                // 与“只保留最新 N 个”的注释一致。
+            }?.sortedByDescending { it.lastModified() }.orEmpty()
             if (files.size <= keep) return
             files.drop(keep).forEach { runCatching { it.delete() } }
         } catch (_: Exception) {

@@ -56,7 +56,7 @@ class UpdateLogicTest {
     }
 
     @Test
-    fun `clean old apks keeps latest two by name`() {
+    fun `clean old apks keeps latest two by modification time`() {
         val downloader = UpdateDownloader(OkHttpClient())
         val dir = Files.createTempDirectory("oriontv-apk-test").toFile()
         try {
@@ -69,6 +69,29 @@ class UpdateLogicTest {
             // 只有 2 个时不删。
             downloader.cleanOldApkFiles(dir)
             assertEquals(setOf("OrionTV_v4.apk", "OrionTV_v3.apk", "other.txt"), dir.listFiles()?.map { it.name }?.toSet())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `clean old apks keeps freshly downloaded v2_0_10 over older v2_0_9`() {
+        // B5-P1-4：按文件名排序时 "OrionTV_v2.0.10.apk" < "OrionTV_v2.0.9.apk"
+        //（字典序 "1" < "9"），刚下好的 v2.0.10 会被当旧包删掉；
+        // 改按最后修改时间倒序后，最新下好的包一定保留。
+        val downloader = UpdateDownloader(OkHttpClient())
+        val dir = Files.createTempDirectory("oriontv-apk-version-test").toFile()
+        try {
+            val old = File(dir, "OrionTV_v2.0.9.apk").apply { writeText("x") }
+            val mid = File(dir, "OrionTV_v2.0.8.apk").apply { writeText("x") }
+            val fresh = File(dir, "OrionTV_v2.0.10.apk").apply { writeText("x") }
+            val now = System.currentTimeMillis()
+            mid.setLastModified(now - 20_000L)
+            old.setLastModified(now - 10_000L)
+            fresh.setLastModified(now)
+            downloader.cleanOldApkFiles(dir)
+            val remaining = dir.listFiles()?.map { it.name }?.toSet().orEmpty()
+            assertEquals(setOf("OrionTV_v2.0.10.apk", "OrionTV_v2.0.9.apk"), remaining)
         } finally {
             dir.deleteRecursively()
         }
