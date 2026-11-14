@@ -21,11 +21,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
+import com.oriontv.core.focus.preferredFocus
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.posterImageRequest
@@ -61,6 +63,8 @@ fun PlayerControls(
     showNextEpisode: Boolean,
     introEndMs: Long? = null,
     outroStartMs: Long? = null,
+    /** 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。 */
+    firstButtonRequester: FocusRequester? = null,
     onPlayPause: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
@@ -190,7 +194,11 @@ fun PlayerControls(
             }
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SecondaryButton(text = if (isPlaying) "暂停" else "播放", onClick = onPlayPause)
+                SecondaryButton(
+                    text = if (isPlaying) "暂停" else "播放",
+                    onClick = onPlayPause,
+                    modifier = firstButtonRequester?.let { Modifier.preferredFocus(it) } ?: Modifier,
+                )
                 SecondaryButton(text = "-10 秒", onClick = onSeekBack)
                 SecondaryButton(text = "+10 秒", onClick = onSeekForward)
                 // 手动标记片头/片尾（阶段 4）：再点一次清除标记；已标记显示时间。

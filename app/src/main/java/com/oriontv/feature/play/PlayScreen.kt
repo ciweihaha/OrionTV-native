@@ -51,6 +51,13 @@ import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionTextStyles
 import kotlinx.coroutines.delay
 
+/** 控制条是否显示（可单测）：下一集预告为真时强制显示，不被 5 秒自动隐藏门控。 */
+internal fun shouldShowPlayerControls(
+    controlsVisible: Boolean,
+    hasError: Boolean,
+    showNextEpisode: Boolean,
+): Boolean = (controlsVisible || showNextEpisode) && !hasError
+
 /**
  * 播放页（ui-design.md §5.3）：
  * 全屏视频（Media3 PlayerView）；OK/方向键唤出控制条，5 秒无操作自动隐藏；
@@ -80,6 +87,9 @@ fun PlayScreen(
     var previewTargetMs by remember { mutableLongStateOf(-1L) }
     var previewThumbnail by remember { mutableStateOf<Bitmap?>(null) }
     val rootRequester = remember { FocusRequester() }
+    // 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。
+    val controlsFirstButtonRequester = remember { FocusRequester() }
+    var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
 
     LaunchedEffect(source, id) {
         viewModel.init(source, id, title, episodeIndex, positionMs)
@@ -109,11 +119,36 @@ fun PlayScreen(
         controlsTick++
     }
 
-    // 控制条 5 秒无操作自动隐藏（抽屉打开或有待定落点时不隐藏）。
-    LaunchedEffect(controlsTick, uiState.drawer) {
-        if (controlsVisible && uiState.drawer == null && previewTargetMs < 0) {
+    // 控制器随 durationMs 重建时，同步清掉旧落点（P2-6）：
+    // 落点曾双份存放，控制器重建丢落点但 previewTargetMs 仍 >=0 会一直残留预览气泡。
+    LaunchedEffect(previewController) {
+        previewTargetMs = -1L
+        previewThumbnail = null
+    }
+
+    // 下一集预告出时强制唤出控制条（P1-3）：播完时控制条可能已 5 秒自动隐藏，
+    // 预告卡挂在控制条里，不唤出就播完无任何卡片/倒计时。
+    LaunchedEffect(uiState.showNextEpisode) {
+        if (uiState.showNextEpisode) controlsVisible = true
+    }
+
+    // 抽屉关闭后焦点落回控制条首选按钮（P1-9）；只在“从打开变关闭”时触发，不抢初始焦点。
+    LaunchedEffect(uiState.drawer) {
+        val wasOpen = previousDrawer != null
+        previousDrawer = uiState.drawer
+        if (uiState.drawer == null && wasOpen) {
+            delay(100)
+            controlsFirstButtonRequester.requestFocus()
+        }
+    }
+
+    // 控制条 5 秒无操作自动隐藏（抽屉打开、有待定落点或下一集预告时不隐藏）；
+    // 隐藏后焦点回根，方向键/OK 才能继续唤出控制条（P1-9）。
+    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode) {
+        if (controlsVisible && uiState.drawer == null && previewTargetMs < 0 && !uiState.showNextEpisode) {
             delay(5000)
             controlsVisible = false
+            rootRequester.requestFocus()
         }
     }
     // 落点预览 2 秒无操作自动提交（T6/T7）。
@@ -253,11 +288,12 @@ fun PlayScreen(
             }
         }
 
-        if (controlsVisible && uiState.error == null) {
+        if (shouldShowPlayerControls(controlsVisible, uiState.error != null, uiState.showNextEpisode)) {
             PlayerControls(
                 title = uiState.title,
                 episodeLabel = "第 ${uiState.episodeIndex + 1} 集",
                 sourceName = uiState.current?.source_name ?: source,
+                firstButtonRequester = controlsFirstButtonRequester,
                 positionMs = if (previewTargetMs >= 0) previewTargetMs else uiState.positionMs,
                 durationMs = uiState.durationMs,
                 bufferedMs = uiState.bufferedMs,
