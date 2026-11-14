@@ -23,18 +23,6 @@ import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * 登录会话口（D-P1-4）：AuthRepository 只依赖登录/登出/401 续期三个成员，
- * 单测可用内存假实现，不用 MockK、不用真网。
- * getFavorites 供 B-P2-16 冷启动轻量会话校验用（只判 401/网络错，不读内容）。
- */
-interface AuthApi {
-    var onUnauthorized: (suspend () -> Boolean)?
-    suspend fun login(baseUrl: String, username: String?, password: String?): Boolean
-    suspend fun logout(baseUrl: String)
-    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite>
-}
-
-/**
  * 用户 MoonTV 服务（{baseURL}，设置里填，默认空串）。接口路径与 plan §5.2 原样一致。
  * 除注明外 GET、15 秒超时、响应体 2MB 上限；401 时用已保存凭据重登后仅对幂等请求
  * （GET/DELETE/HEAD）重试一次，POST 不自动重试；超时/网络错/5xx 最多重试 3 次，退避 1 秒。
@@ -49,12 +37,12 @@ class MoonTvApi @Inject constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /** 重试退避（毫秒），默认 1 秒固定；单测可注入 0 以免真睡。 */
     private val retryBackoffMs: Long = ApiClient.RETRY_BACKOFF_MS,
-) : AuthApi {
+) {
     /**
      * 401 续期回调：由 Auth 层注入（用已保存凭据重登）。
      * 返回 true 表示续期成功，可对幂等请求重试一次。
      */
-    override var onUnauthorized: (suspend () -> Boolean)? = null
+    var onUnauthorized: (suspend () -> Boolean)? = null
 
     // 播放记录/收藏键的转义只在 [generateKey] 里按段做；整键转义 escapeKey
     // 已删除（D-P2-12）：零调用方，留着只会让后来人误用、把 P1-1
@@ -62,7 +50,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 登录 / 配置 ----
 
-    override suspend fun login(baseUrl: String, username: String?, password: String?): Boolean =
+    suspend fun login(baseUrl: String, username: String?, password: String?): Boolean =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/login"
             val body = buildJsonObject {
@@ -78,7 +66,7 @@ class MoonTvApi @Inject constructor(
             }
         }
 
-    override suspend fun logout(baseUrl: String) {
+    suspend fun logout(baseUrl: String) {
         withContext(ioDispatcher) {
             val request = Request.Builder()
                 .url("${baseUrl.trimEnd('/')}/api/logout")
@@ -164,7 +152,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 收藏（服务端模式） ----
 
-    override suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
+    suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
@@ -288,6 +276,8 @@ class MoonTvApi @Inject constructor(
      * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
      * 4xx 不重试；401 时调 onUnauthorized 重登，成功且请求幂等则重试一次；
      * 响应体超 2MB 拒绝。
+     * [maxRetries] 供 getResources 的外层重试用（D-P2-1）：外层第 2 次调内层时传 0，
+     * 不让内层 3 次重试被重复执行一遍。
      *
      * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
      * 两者都由专用 catch 原样抛出，不会被下面的 `catch (e: IOException)` 接住重跑
@@ -297,6 +287,7 @@ class MoonTvApi @Inject constructor(
     private suspend fun execute(
         request: Request,
         timeoutSeconds: Long = ApiClient.DEFAULT_TIMEOUT_SECONDS,
+        maxRetries: Int = ApiClient.MAX_RETRIES,
     ): String {
         val client = okHttpClient.newBuilder()
             .connectTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
@@ -305,7 +296,7 @@ class MoonTvApi @Inject constructor(
             .build()
         var lastError: Exception? = null
         var refreshAttempted = false
-        repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
+        repeat(maxRetries + 1) { attempt ->
             try {
                 client.newCall(request).executeCancellable().use { response ->
                     if (response.code == 401) {
@@ -340,7 +331,7 @@ class MoonTvApi @Inject constructor(
             } catch (e: IOException) {
                 lastError = e
                 // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
-                if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
+                if (attempt < maxRetries) delay(retryBackoffMs)
             }
         }
         throw lastError ?: IOException("请求失败")
