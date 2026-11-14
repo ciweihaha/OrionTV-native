@@ -1,7 +1,9 @@
 package com.oriontv.feature.live
 
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.BodyTooLargeException
 import com.oriontv.data.api.executeCancellable
+import com.oriontv.data.api.readStreamCapped
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -109,6 +111,12 @@ data class M3uLoadDecision(
     val loadFailed: Boolean,
 )
 
+/** 第 7 轮 D7-P2-2：[EpgRepository.decideLoad] 的判定结果（与 M3uLoadDecision 同款）。 */
+data class EpgLoadDecision(
+    val data: EpgParser.EpgData?,
+    val loadFailed: Boolean,
+)
+
 /**
  * EPG 仓库（plan §5.3）：
  * 地址硬编码 https://ysp.ciweihaha.win/epg.xml；拉取 15 秒超时；
@@ -128,6 +136,17 @@ class EpgRepository @Inject constructor(
             .build()
     }
 
+    /**
+     * 第 7 轮 D7-P2-2：最近一次加载是否拉网失败（与 [M3uRepository.loadFailed]
+     * 同款，D6-P2-13 的 EPG 孪生项）：拉网失败/解析出空表时置 true（即使回落
+     * 了旧缓存），成功或缓存新鲜时置 false；由 [loadEpg] 同步置位，调用方
+     * 读到信号时本次刷新已结束，无竞态。注意：本信号目前只有数据层一侧，
+     * LiveViewModel 的接线（10 分钟 ticker 刷新失败时轻提示）不在本轮做，
+     * 由总协调在播放器分支基线具备信号后另行接线。
+     */
+    private val _loadFailed = MutableStateFlow(false)
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
     companion object {
         const val EPG_URL = "https://ysp.ciweihaha.win/epg.xml"
 
@@ -137,6 +156,21 @@ class EpgRepository @Inject constructor(
          */
         fun shouldSaveFreshEpg(fresh: EpgParser.EpgData?): Boolean =
             fresh != null && fresh.programmesByChannel.isNotEmpty()
+
+        /**
+         * 第 7 轮 D7-P2-2：EPG 加载结果判定（纯函数，可单测；与
+         * [M3uRepository.decideLoad] 同款）——fresh 非空即用 fresh、失败
+         * 标记 false；fresh 为空（拉网失败或解析出空表）则回落旧缓存并标记失败。
+         */
+        fun decideLoad(
+            cachedData: EpgParser.EpgData?,
+            freshData: EpgParser.EpgData?,
+        ): EpgLoadDecision =
+            if (freshData != null && shouldSaveFreshEpg(freshData)) {
+                EpgLoadDecision(freshData, loadFailed = false)
+            } else {
+                EpgLoadDecision(cachedData, loadFailed = true)
+            }
     }
 
     /**
@@ -147,15 +181,17 @@ class EpgRepository @Inject constructor(
         withContext(ioDispatcher) {
             val cached = cacheStore.readEpgCache()
             if (cached != null && EpgParser.isCacheFresh(cached.data, cached.ts, nowMs)) {
+                _loadFailed.value = false
                 return@withContext cached.data
             }
             val fresh = fetchEpg()
+            val decision = decideLoad(cached?.data, fresh)
+            _loadFailed.value = decision.loadFailed
             // 空 EPG 不覆盖好缓存：服务端偶尔吐空表时，旧缓存比“无节目单”强（P1-5；M3U 早有同款守卫）。
             if (fresh != null && shouldSaveFreshEpg(fresh)) {
                 cacheStore.saveEpgCache(fresh)
-                return@withContext fresh
             }
-            cached?.data
+            decision.data
         }
 
     /** 纯拉网（15 秒超时、3MB 上限，失败返回 null，不抛错；协程取消原样抛出）。 */
@@ -180,22 +216,22 @@ class EpgRepository @Inject constructor(
 /**
  * 流式限量读响应体（A4-P2-2）：Content-Length 先行拒绝，之后按 64KB 块流式读，
  * 累计超上限即停并返回 null，不把超大体整读进内存再判。
+ * 第 7 轮 D7-P2-4：改 suspend + 可取消读（与 ApiClient.readBodyBytesLimited
+ * 同款，取消时关响应体、中断阻塞的 socket 读）；超限时 readStreamCapped
+ * 抛 BodyTooLargeException，这里按旧语义返回 null。
  */
-internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String? {
+internal suspend fun readBodyCapped(response: okhttp3.Response, maxBytes: Long): String? {
     val declared = response.header("Content-Length")?.toLongOrNull()
     if (declared != null && declared > maxBytes) return null
     val body = response.body ?: return null
-    val out = java.io.ByteArrayOutputStream()
-    val buffer = ByteArray(64 * 1024)
-    body.byteStream().use { input ->
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            if (out.size() + read > maxBytes) return null
-            out.write(buffer, 0, read)
+    val bytes = try {
+        body.byteStream().use { input ->
+            readStreamCapped(input, maxBytes) { runCatching { body.close() } }
         }
+    } catch (e: BodyTooLargeException) {
+        return null
     }
-    return decodeBodyBytes(out.toByteArray(), response.header("Content-Type"))
+    return decodeBodyBytes(bytes, response.header("Content-Type"))
 }
 
 /**

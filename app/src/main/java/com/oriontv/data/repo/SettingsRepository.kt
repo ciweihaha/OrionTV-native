@@ -1,5 +1,6 @@
 package com.oriontv.data.repo
 
+import com.oriontv.core.util.AppLog
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.ServerConfig
 import com.oriontv.data.local.SettingsDataStore
@@ -86,10 +87,9 @@ class SettingsRepository @Inject constructor(
     }
 
     // D-P2-16：失败缓存的读写加 @Volatile，跨线程可见（之前最坏多跑一次拉取）。
-    @Volatile
-    private var lastConfigFailureAtMs: Long = 0L
-    @Volatile
-    private var lastConfigFailureUrl: String = ""
+    // 第 7 轮 D7-P2-9：失败缓存只记网络失败（见 ServerConfigFailureCache）——
+    // DataStore 写失败没有记录入口，归因错误不可能再发生。
+    private val configFailureCache = ServerConfigFailureCache()
 
     /** B4-P2-7：refreshServerConfig 的互斥锁——并发换地址时两次拉取不再交错写 StorageType。 */
     private val refreshMutex = Mutex()
@@ -104,26 +104,44 @@ class SettingsRepository @Inject constructor(
         // B6-P2-7：锁内复核已知态——并发的两路都通过 ensureServerConfig 的
         // 未知检查后，先拿到锁的那路已拉取成功，后进锁的不再重复发请求。
         if (!isServerConfigUnknown()) return null
-        if (baseUrl == lastConfigFailureUrl &&
-            System.currentTimeMillis() - lastConfigFailureAtMs < 30_000L
-        ) {
+        if (configFailureCache.isCached(baseUrl)) {
             return null
         }
-        return try {
-            val config = moonTvApi.getServerConfig(baseUrl)
-            if (currentApiBaseUrl() != baseUrl) return null // 地址已变，丢弃旧结果
-            lastConfigFailureAtMs = 0L
-            config.StorageType?.let { settingsDataStore.setStorageType(it) }
-            // B6-P1-2：拉取成功即记“已拉取过”，无论服务端是否返回 StorageType。
-            settingsDataStore.setServerConfigFetched(true)
-            config
+        // D7-P2-9：try 只包网络拉取——旧实现把 DataStore 写失败也落进同一个
+        // catch、记成一次网络失败，30 秒内同地址不再拉取，调用方看到的 null
+        // 与“服务端不可达”无法区分；现在写失败只记日志、不记缓存。
+        val config = try {
+            moonTvApi.getServerConfig(baseUrl)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            lastConfigFailureAtMs = System.currentTimeMillis()
-            lastConfigFailureUrl = baseUrl
-            null
+            configFailureCache.recordNetworkFailure(baseUrl)
+            return null
         }
+        // 地址已变，丢弃旧结果；DataStore 读失败按丢弃处理（不是网络失败，不记缓存）。
+        val currentBaseUrl = try {
+            currentApiBaseUrl()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return null
+        }
+        if (currentBaseUrl != baseUrl) return null
+        configFailureCache.clear()
+        try {
+            config.StorageType?.let { settingsDataStore.setStorageType(it) }
+            // B6-P1-2：拉取成功即记“已拉取过”，无论服务端是否返回 StorageType。
+            settingsDataStore.setServerConfigFetched(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // D7-P2-9：网络拉取已成功，写失败不是网络失败——不记 30 秒失败
+            // 缓存，只记日志、返回 null；fetched 标记未置位（或写到一半），
+            // 下次访问会重拉重试持久化，不会被当成 30 秒网络不可达。
+            AppLog.w("SettingsRepository", "server-config 拉取成功但本地保存失败，下次访问重拉：${e.message}")
+            return null
+        }
+        config
     }
 
     /**
@@ -132,8 +150,7 @@ class SettingsRepository @Inject constructor(
      * 不应把它报成配置失败。
      */
     suspend fun isConfigFailureCachedFor(url: String): Boolean =
-        url.isNotBlank() && url == lastConfigFailureUrl &&
-            System.currentTimeMillis() - lastConfigFailureAtMs < 30_000L
+        configFailureCache.isCached(url)
 
     override suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
@@ -163,4 +180,36 @@ class SettingsRepository @Inject constructor(
     suspend fun currentUpdateSkipVersion(): String = settingsDataStore.updateSkipVersion.first()
     suspend fun setUpdateLastCheckTime(value: Long) = settingsDataStore.setUpdateLastCheckTime(value)
     suspend fun setUpdateSkipVersion(value: String) = settingsDataStore.setUpdateSkipVersion(value)
+}
+
+/**
+ * 第 7 轮 D7-P2-9：server-config 拉取失败的 30 秒缓存（纯逻辑，可单测；
+ * 时间由调用方注入，便于测试）——只有网络拉取失败才记缓存；DataStore
+ * 写失败没有记录入口（refreshServerConfig 的写失败分支只记日志、不调
+ * 这里），归因错误不可能再发生。成功拉取后调 [clear]，下次失败重新计时。
+ * 读写加 @Volatile，跨线程可见（D-P2-16 的约定保留）。
+ */
+internal class ServerConfigFailureCache(
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+) {
+    @Volatile
+    private var failedAtMs: Long = 0L
+
+    @Volatile
+    private var failedUrl: String = ""
+
+    fun recordNetworkFailure(url: String) {
+        failedAtMs = nowMs()
+        failedUrl = url
+    }
+
+    fun clear() {
+        // D7-P2-9：只清时间不清 URL 会留 bug——failedAtMs 归 0 后
+        // nowMs() - 0 < 30 秒恒成立，旧 URL 仍命中缓存；两者一起复位。
+        failedAtMs = 0L
+        failedUrl = ""
+    }
+
+    fun isCached(url: String): Boolean =
+        url.isNotBlank() && url == failedUrl && nowMs() - failedAtMs < 30_000L
 }

@@ -1,5 +1,6 @@
 package com.oriontv.feature.live
 
+import com.oriontv.core.util.AppLog
 import kotlinx.serialization.Serializable
 
 /**
@@ -16,6 +17,14 @@ import kotlinx.serialization.Serializable
  * `getPlayableUrl` 是恒等函数，流地址直接播放；没有任何 302 特殊处理。
  */
 object M3uParser {
+
+    /**
+     * 第 7 轮 D7-P2-8：解析出的频道数上限——之前只有 5MB 体上限兜底，极端源
+     * （5MB 全是短行频道）可产出数万条 Channel，进内存列表、缓存编解码与
+     * UI；与体上限双保险。5MB 体约数千台已是极端，20000 条只拦异常源，
+     * 真实源远达不到；超限截断并记日志，不静默丢数据。
+     */
+    const val MAX_CHANNELS = 20_000
 
     @Serializable
     data class Channel(
@@ -112,6 +121,14 @@ object M3uParser {
                 merged[index] = mergedChannel
                 byName[mergeKey] = mergedChannel
             }
+        }
+        // D7-P2-8：频道数上限——超限截断并记日志（与 5MB 体上限双保险）。
+        if (merged.size > MAX_CHANNELS) {
+            AppLog.w(
+                "M3uParser",
+                "M3U 频道数 ${merged.size} 超上限 $MAX_CHANNELS，只保留前 $MAX_CHANNELS 条",
+            )
+            return merged.take(MAX_CHANNELS)
         }
         return merged
     }

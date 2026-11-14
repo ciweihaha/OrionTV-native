@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -27,6 +28,8 @@ class AuthRepositoryRestoreTest {
         var loginResults: ArrayDeque<MoonTvApi.LoginResult> = ArrayDeque(),
         var loginGate: CompletableDeferred<MoonTvApi.LoginResult>? = null,
         var favoritesBehavior: (suspend () -> Map<String, Favorite>)? = null,
+        /** 登录返回前调用（第 7 轮 D7-P1-2：模拟 OkHttp 在登录响应到达时向 Jar 写 cookie）。 */
+        var onLogin: (() -> Unit)? = null,
     ) : AuthApi {
         var loginCalls = 0
         var loginStarted = CompletableDeferred<Unit>()
@@ -36,8 +39,10 @@ class AuthRepositoryRestoreTest {
         override suspend fun login(baseUrl: String, username: String?, password: String?): MoonTvApi.LoginResult {
             loginCalls++
             if (!loginStarted.isCompleted) loginStarted.complete(Unit)
-            loginGate?.let { return it.await() }
-            return loginResults.removeFirstOrNull() ?: MoonTvApi.LoginResult.Success
+            val result = loginGate?.let { it.await() }
+                ?: (loginResults.removeFirstOrNull() ?: MoonTvApi.LoginResult.Success)
+            onLogin?.invoke()
+            return result
         }
 
         override suspend fun logout(baseUrl: String) {
@@ -173,6 +178,152 @@ class AuthRepositoryRestoreTest {
         assertEquals(1, api.loginCalls)
         assertTrue(repo.isLoggedIn.value)
         assertFalse(repo.showLoginModal.value)
+    }
+
+    @Test
+    fun `logout before restore starts prevents silent re-login`() {
+        // D7-P1-1 路径 1/2：退出发生在任务开始前——冷启动恢复与 31 秒延迟重试
+        // 采样到的世代已是退出后的，世代守卫恒通过；已退出标志必须拦住，连
+        // 登录 POST 都不发（无密码服务上空登录本会成功）。
+        val api = FakeAuthApi()
+        val settings = FakeAuthSettings()
+        val repo = repository(api, settings)
+        repo.configRetryDelayMs = 100L
+        runBlocking {
+            repo.logout()
+            repo.checkLoginStatus()
+            assertEquals(0, api.loginCalls)
+            assertEquals(1, settings.refreshCalls)
+            assertFalse(repo.isLoggedIn.value)
+            assertTrue(repo.showLoginModal.value)
+            // 延迟重试若被排队，100ms 后 loginCalls 会变成 1。
+            delay(400)
+            assertEquals(0, api.loginCalls)
+            assertFalse(repo.isLoggedIn.value)
+        }
+    }
+
+    @Test
+    fun `401 callback after logout does not restore session`() {
+        // D7-P1-1 路径 3：退出后任意一次服务端调用 401 都会调 onUnauthorized；
+        // 已退出标志必须让回调直接回 false，不跑恢复。
+        val api = FakeAuthApi()
+        val repo = repository(api)
+        runBlocking {
+            repo.logout()
+            val restored = api.onUnauthorized?.invoke()
+            assertFalse(restored!!)
+            assertEquals(0, api.loginCalls)
+            assertFalse(repo.isLoggedIn.value)
+        }
+    }
+
+    @Test
+    fun `explicit login after logout clears logged-out flag`() {
+        // D7-P1-1 的反向：退出后用户手动重登成功，标志清掉，后续恢复不再被拦。
+        val api = FakeAuthApi()
+        val repo = repository(api)
+        runBlocking {
+            repo.logout()
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            assertTrue(repo.restoreSession())
+            // login() 一次 + restoreSession() 的静默登录一次。
+            assertEquals(2, api.loginCalls)
+            assertTrue(repo.isLoggedIn.value)
+        }
+    }
+
+    @Test
+    fun `in-flight restore completing after logout leaves no session cookie`() {
+        // D7-P1-2：在途恢复的登录响应落在 logout 清 Jar 之后——OkHttp 在响应
+        // 到达时把会话 cookie 写回 Jar；世代不匹配返回时必须清掉它，否则
+        // 退出后进程内仍持有效会话 cookie。
+        val gate = CompletableDeferred<MoonTvApi.LoginResult>()
+        val api = FakeAuthApi(loginGate = gate)
+        val settings = FakeAuthSettings(marker = "")
+        val jar = InMemoryCookieJar()
+        val repo = repository(api, settings, jar = jar)
+        val url = "https://example.com/".toHttpUrl()
+        api.onLogin = {
+            jar.saveFromResponse(
+                url,
+                listOf(
+                    okhttp3.Cookie.Builder().name("session").value("v").domain("example.com")
+                        .expiresAt(System.currentTimeMillis() + 3_600_000).build(),
+                ),
+            )
+        }
+        runBlocking {
+            val restoreJob = async { repo.restoreSession() }
+            api.loginStarted.await()
+            repo.logout()
+            assertTrue(jar.loadForRequest(url).isEmpty())
+            gate.complete(MoonTvApi.LoginResult.Success)
+            assertFalse(restoreJob.await())
+            assertFalse(repo.isLoggedIn.value)
+            // 登录响应种下的 cookie 已被 scrub 掉。
+            assertTrue(jar.loadForRequest(url).isEmpty())
+            assertEquals("", settings.marker)
+        }
+    }
+
+    @Test
+    fun `scrub after logout does not delete a fresh manual login session`() {
+        // D7-P1-2 的守卫条件：退出后手动重登的新会话 cookie 不得被旧恢复的
+        // scrub 误删——以 _isLoggedIn 为条件，手动登录成功后不再清 Jar。
+        val gate = CompletableDeferred<MoonTvApi.LoginResult>()
+        val api = FakeAuthApi(loginGate = gate)
+        val settings = FakeAuthSettings(marker = "")
+        val jar = InMemoryCookieJar()
+        val repo = repository(api, settings, jar = jar)
+        val url = "https://example.com/".toHttpUrl()
+        api.onLogin = {
+            jar.saveFromResponse(
+                url,
+                listOf(
+                    okhttp3.Cookie.Builder().name("session").value("v").domain("example.com")
+                        .expiresAt(System.currentTimeMillis() + 3_600_000).build(),
+                ),
+            )
+        }
+        runBlocking {
+            val restoreJob = async { repo.restoreSession() }
+            api.loginStarted.await()
+            repo.logout()
+            api.loginGate = null
+            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.Success))
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            assertEquals(1, jar.loadForRequest(url).size)
+            gate.complete(MoonTvApi.LoginResult.WrongCredentials)
+            assertFalse(restoreJob.await())
+            assertTrue(repo.isLoggedIn.value)
+            assertEquals(1, jar.loadForRequest(url).size)
+            assertEquals("1", settings.marker)
+        }
+    }
+
+    @Test
+    fun `failed restore does not clear a concurrent manual login`() {
+        // D7-P2-1：后台恢复启动后用户手动登录成功，旧恢复因旧凭据失败走到
+        // else 分支时不得把刚登进去的会话标成未登录。
+        val gate = CompletableDeferred<MoonTvApi.LoginResult>()
+        val api = FakeAuthApi(loginGate = gate)
+        val settings = FakeAuthSettings(marker = "")
+        val repo = repository(api, settings)
+        runBlocking {
+            val restoreJob = async { repo.restoreSession() }
+            api.loginStarted.await()
+            api.loginGate = null
+            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.Success))
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            gate.complete(MoonTvApi.LoginResult.WrongCredentials)
+            assertFalse(restoreJob.await())
+            assertTrue(repo.isLoggedIn.value)
+            assertEquals("1", settings.marker)
+        }
     }
 
     @Test

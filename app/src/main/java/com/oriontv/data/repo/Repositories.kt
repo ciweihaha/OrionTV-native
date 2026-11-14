@@ -75,6 +75,47 @@ internal suspend fun toggleServerFavorite(
 }
 
 /**
+ * 第 7 轮 D7-P2-10：收藏态三态——服务端失败且从未查过时是 UNKNOWN（未知），
+ * 调用方不得把它画成“未收藏”；本地模式下 Room 即实态，无 UNKNOWN。
+ */
+enum class FavoriteState { FAVORITE, NOT_FAVORITE, UNKNOWN }
+
+/**
+ * 第 7 轮 D7-P2-10：服务端失败时的收藏态判定（纯函数，可单测）——
+ * 上次已知态照用；从未查过（lastKnown==null）时返回 UNKNOWN，不再默认
+ * false 误显示“未收藏”（lastKnown 只活在进程内存，冷启动 + 离线时表是空的）。
+ */
+internal fun decideFavoriteState(lastKnown: Boolean?): FavoriteState =
+    when (lastKnown) {
+        true -> FavoriteState.FAVORITE
+        false -> FavoriteState.NOT_FAVORITE
+        null -> FavoriteState.UNKNOWN
+    }
+
+/**
+ * 第 7 轮 D-P2-13：服务端 toggle 写后校验（纯逻辑，可单测）——
+ * 写成功后同 key 再 GET 核对最终态；verified==null（校验 GET 本身失败）
+ * 不推翻已成功的写，返回预期态（toggle 是翻转操作，校验失败就报失败、
+ * 用户一点重试就会把刚写好的状态翻回去，比静默成功更坏）；一致返回
+ * 预期态；不一致时先按服务端实态更新 lastKnown，再抛错——调用方提示
+ * 失败并重读 isFavorite()，让 UI 显示服务端实态而非旧态。
+ * 只做到“发现分叉并展示实态”，消灭不了竞态窗口本身（根治仍需服务端
+ * 原子 toggle 接口：存在才删 / 不存在才加）。
+ */
+internal fun applyToggleVerification(
+    expected: Boolean,
+    verified: Boolean?,
+    updateKnown: (Boolean) -> Unit,
+): Boolean {
+    if (verified == null) return expected
+    updateKnown(verified)
+    if (verified != expected) {
+        throw IOException("服务端收藏状态与预期不一致（期望=$expected，实际=$verified），已按服务端实态显示")
+    }
+    return expected
+}
+
+/**
  * 写串行化（plan §4.3）：RN 用 promise 链防读-改-写互相覆盖，
  * 原生版用 Mutex + 单线程写通道实现同等语义；
  * 收藏 toggle 连续点两次不能读到同一旧快照。
@@ -125,21 +166,37 @@ class FavoritesRepository @Inject constructor(
     suspend fun getAll(): List<Favorite> = getAllWithKeys().map { it.second }
 
     suspend fun isFavorite(key: String): Boolean {
+        // D7-P2-10：isFavorite 保持旧的 Boolean 契约供现有调用方用
+        // （UNKNOWN 按 false 计）；需要区分“未知”的调用方用 favoriteState()。
+        return favoriteState(key) == FavoriteState.FAVORITE
+    }
+
+    /**
+     * 第 7 轮 D7-P2-10：三态收藏查询——服务端成功时以服务端为准；失败时
+     * 用上次已知态；从未查过时返回 UNKNOWN（未知），调用方应展示未知态
+     * （如按钮置灰）而非“未收藏”。本地模式以 Room 实态为准，无 UNKNOWN。
+     */
+    suspend fun favoriteState(key: String): FavoriteState {
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
             // B4-P2-19：服务端失败时返回上次已知态，不误显示“未收藏”；
-            // 从未查过才默认 false。
+            // 从未查过才返回 UNKNOWN（见 decideFavoriteState）。
             return try {
-                moonTvApi.getFavorites(baseUrl, key).isNotEmpty().also {
+                val favorite = moonTvApi.getFavorites(baseUrl, key).isNotEmpty().also {
                     lastKnownFavorites[key] = it
                 }
+                if (favorite) FavoriteState.FAVORITE else FavoriteState.NOT_FAVORITE
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                lastKnownFavorites[key] ?: false
+                decideFavoriteState(lastKnownFavorites[key])
             }
         }
-        return db.favoriteDao().getByKey(key) != null
+        return if (db.favoriteDao().getByKey(key) != null) {
+            FavoriteState.FAVORITE
+        } else {
+            FavoriteState.NOT_FAVORITE
+        }
     }
 
     /**
@@ -160,10 +217,12 @@ class FavoritesRepository @Inject constructor(
 
     suspend fun toggle(key: String, favorite: Favorite): Boolean = writeMutex.withLock {
         if (settingsRepository.useServerStorage()) {
-            // D-P2-13（延期，客户端修不了）：服务端 toggle 是“先 GET 判存在、
+            // D-P2-13（第 7 轮客户端部分已做）：服务端 toggle 仍是“先 GET 判存在、
             // 再 POST/DELETE”的非原子操作；writeMutex 只串行化本进程内调用，
             // 双端或跨进程并发点两次仍可能互相覆盖。根治需服务端提供原子
             // toggle 接口（存在才删 / 不存在才加），客户端侧无法凭空造出。
+            // 客户端只做写后校验（见下）：发现分叉时以服务端实态为准并抛错，
+            // 调用方提示失败后重读 isFavorite() 展示实态。
             val baseUrl = settingsRepository.currentApiBaseUrl()
             // D6-P1-2：读失败直接抛错（见 toggleServerFavorite），不再默认
             // 按“不存在”走添加分支——否则取消收藏会在 GET 失败时静默变已收藏。
@@ -173,6 +232,17 @@ class FavoritesRepository @Inject constructor(
                 deleteFavorite = { moonTvApi.deleteFavorite(baseUrl, key) },
             )
             lastKnownFavorites[key] = nowFavorite
+            // D-P2-13：写后校验——同 key 再 GET 一次核对最终态（每次服务端
+            // toggle 多一次 GET 往返）；校验 GET 本身失败不推翻已成功的写。
+            val verified: Boolean? = try {
+                moonTvApi.getFavorites(baseUrl, key).isNotEmpty()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("FavoritesRepository", "收藏写后校验拉取失败，沿用写结果：${e.message}")
+                null
+            }
+            applyToggleVerification(nowFavorite, verified) { lastKnownFavorites[key] = it }
             nowFavorite
         } else {
             val dao = db.favoriteDao()
@@ -253,8 +323,12 @@ class PlayRecordsRepository @Inject constructor(
         if (settingsRepository.useServerStorage()) {
             val baseUrl = settingsRepository.currentApiBaseUrl()
             return try {
-                moonTvApi.getPlayRecords(baseUrl).also {
-                    lastGoodRecords = it
+                // D7-P2-7：单条查询（?key=，与 getFavorites 同款），不再为查
+                // 一条记录全表拉取；服务端忽略参数回整表时按 key 取值仍正确。
+                // 注意：单条回表不得整体覆盖 lastGoodRecords（会把全表缓存
+                // 冲成一条），只做合并；失败时仍用旧缓存里的断点兜底。
+                moonTvApi.getPlayRecords(baseUrl, key).also {
+                    lastGoodRecords = lastGoodRecords?.plus(it) ?: it
                     _loadFailed.value = false
                 }[key]
             } catch (e: CancellationException) {

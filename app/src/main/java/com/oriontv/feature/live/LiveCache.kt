@@ -105,6 +105,10 @@ class LiveCacheStore @Inject constructor(
         ) ?: return // 超 3MB 不落盘
         // D6-P2-10：原子写（临时文件 + 重命名），写一半被杀也不留撕裂缓存。
         runCatching { writeTextAtomically(epgFile(), encoded) }
+        // D7-P2-6：EPG 保存时也跑 prune——writeTextAtomically 在写 tmp 与
+        // 重命名之间被杀会留 epg_cache.json.tmp-* 孤儿，之前只在 M3U 保存时
+        // 跑 prune 且只认 m3u_cache_ 前缀，EPG 的孤儿永无清理路径。
+        runCatching { pruneStaleEpgCacheFiles(context.filesDir) }
     }
 }
 
@@ -137,5 +141,17 @@ internal fun pruneStaleM3uCacheFiles(dir: File, keepFileName: String) {
     dir.listFiles { f ->
         f.isFile && f.name.startsWith("m3u_cache_") && f.name != keepFileName &&
             (f.name.endsWith(".json") || ".tmp-" in f.name)
+    }?.forEach { runCatching { it.delete() } }
+}
+
+/**
+ * 删掉原子写崩溃后残留的 `epg_cache.json.tmp-*` 临时文件（第 7 轮 D7-P2-6；
+ * 与 [pruneStaleM3uCacheFiles] 同款，EPG 保存成功后跑）。当前 EPG 缓存
+ * 文件本身（`epg_cache.json`）不在匹配范围内，不会被误删。
+ * 纯函数逻辑，可单测；其他文件不动。
+ */
+internal fun pruneStaleEpgCacheFiles(dir: File) {
+    dir.listFiles { f ->
+        f.isFile && f.name.startsWith("epg_cache.json.tmp-")
     }?.forEach { runCatching { it.delete() } }
 }

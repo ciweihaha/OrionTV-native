@@ -61,6 +61,17 @@ class AuthRepository @Inject constructor(
      */
     private val logoutEpoch = AtomicInteger(0)
     /**
+     * 第 7 轮 D7-P1-1：会话生命期内的“已明确退出”标志（内存布尔即可）。
+     * 世代号只能拦“任务开始后才退出”，拦不住“退出后才启动的任务”——
+     * 退出后才采样的世代恒等于退出后的世代，守卫恒通过。logout() 置 true；
+     * 显式 login() 成功时清掉；performRestore 入口、scheduleConfigRetry
+     * 排队/触发、401 回调三处先查标志，为 true 直接不跑恢复。
+     * 进程重启后标志归 false，但标记位/凭据已随 logout 清掉，冷启动
+     * 本来就不会恢复，无需持久化。
+     */
+    @Volatile
+    private var loggedOut = false
+    /**
      * 第 6 轮 D6-P2-5：401 续期回调触发次数——verifySession 藉此判断本次 401
      * 是否已试过静默重登，试过且失败就不再由 checkLoginStatus 重跑第二遍。
      */
@@ -73,9 +84,15 @@ class AuthRepository @Inject constructor(
 
     init {
         // MoonTvApi 的 401 续期回调：静默重登。
+        // D7-P1-1 路径 3：logout() 不摘回调，退出后任意一次服务端调用 401
+        // 都会经这里复登——先查已退出标志，为 true 直接回 false，不跑恢复。
         moonTvApi.onUnauthorized = {
-            unauthorizedRefreshCount.incrementAndGet()
-            restoreSession()
+            if (loggedOut) {
+                false
+            } else {
+                unauthorizedRefreshCount.incrementAndGet()
+                restoreSession()
+            }
         }
     }
 
@@ -99,6 +116,9 @@ class AuthRepository @Inject constructor(
                     runCatching { settingsRepository.setAuthCookies("1") }.onFailure { e ->
                         AppLog.w("AuthRepository", "登录成功但登录标记保存失败，下次冷启动需重新登录：${e.message}")
                     }
+                    // D7-P1-1：显式登录成功清掉已退出标志——退出后重登不受影响，
+                    // 在途旧恢复的世代复核仍以 logoutEpoch 为准，不被本标志误拦。
+                    loggedOut = false
                     _isLoggedIn.value = true
                     _showLoginModal.value = false
                     Result.success(Unit)
@@ -133,6 +153,9 @@ class AuthRepository @Inject constructor(
         // D6-P1-1/D6-P2-4：退出即作废一切在途/待跑的恢复——先取消配置重试任务、
         // 推进退出世代号（performRestore 成功落盘前复核），再走远程登出；
         // 否则 31 秒内退出会被冷启动配置重试悄悄复登，或被在途恢复置回 true。
+        // D7-P1-1：先置已退出标志——退出后才启动的恢复（立即恢复 / 31 秒延迟
+        // 重试 / 401 回调）采样到的世代已是退出后的，世代守卫拦不住，只能靠标志。
+        loggedOut = true
         configRetryJob?.cancel()
         configRetryJob = null
         logoutEpoch.incrementAndGet()
@@ -217,6 +240,9 @@ class AuthRepository @Inject constructor(
 
     /** B-P1-8：冷启动配置失败后的一次延迟重试（31 秒，越过 30 秒失败缓存）。 */
     private fun scheduleConfigRetry() {
+        // D7-P1-1 路径 2：退出后才排队——排队时世代已是退出后的，世代守卫
+        // 恒通过；已退出时根本不排队。
+        if (loggedOut) return
         if (configRetryJob?.isActive == true) return
         // D6-P1-1：记下排队时的退出世代；重试触发时世代变了（期间已退出登录，
         // 甚至退出后重登），不再重跑恢复——logout() 也会直接取消本任务，这里是
@@ -224,12 +250,15 @@ class AuthRepository @Inject constructor(
         val epochAtSchedule = logoutEpoch.get()
         configRetryJob = restoreScope.launch {
             delay(configRetryDelayMs)
+            // D7-P1-1：触发时再查一次已退出标志——logout() 取消任务与世代
+            // 复核之间仍有窗口，标志是最后一道门。
+            if (loggedOut) return@launch
             if (logoutEpoch.get() != epochAtSchedule) return@launch
             // B4-P2-17：31 秒后配置重拉成功时重跑登录恢复——否则冷启动时
             // 配置未到、restoreSession 已失败，登录弹窗一直滞留；
             // 重跑成功时 performRestore 会把弹窗关掉，失败则弹窗继续留着。
             val refreshed = runCatching { settingsRepository.refreshServerConfig() }.getOrNull()
-            if (refreshed != null && logoutEpoch.get() == epochAtSchedule) {
+            if (refreshed != null && !loggedOut && logoutEpoch.get() == epochAtSchedule) {
                 restoreSession()
             }
         }
@@ -283,6 +312,10 @@ class AuthRepository @Inject constructor(
     private suspend fun performRestore(): Boolean {
         // D6-P2-4：记下恢复开始时的退出世代；成功落盘前复核，世代变了说明
         // 期间已退出登录（或退出后重登），一律不碰登录态，直接返回未恢复。
+        // D7-P1-1 路径 1：退出后才启动的恢复——采到的世代已是退出后的，
+        // 世代复核恒通过；入口先查已退出标志，为 true 直接返回，连登录
+        // POST 都不发（无密码服务上空登录本会成功）。
+        if (loggedOut) return false
         val epochAtStart = logoutEpoch.get()
         // B5-P2-3：同 checkLoginStatus，DataStore 读失败按未恢复处理。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
@@ -296,7 +329,13 @@ class AuthRepository @Inject constructor(
         } catch (_: Exception) {
             false
         }
-        if (logoutEpoch.get() != epochAtStart) return false
+        if (logoutEpoch.get() != epochAtStart || loggedOut) {
+            // D7-P1-2：登录响应到达时 OkHttp 已把新 Set-Cookie 写回 Jar——
+            // 世代不匹配只拦住了状态写，Jar 里仍留着活的会话 cookie；
+            // 仍是已退出态时清掉本次登录种下的 cookie（见 scrubStaleRestoreSession）。
+            scrubStaleRestoreSession()
+            return false
+        }
         return if (ok) {
             // B5-P2-3：标记写失败不推翻已建好的会话（本次登录成功），只记日志；
             // 下次冷启动静默重登会失败、再提示登录。
@@ -310,13 +349,45 @@ class AuthRepository @Inject constructor(
             // B8-P1-1：写标记后、置位前再复核一次世代——登出若插在上面
             // 的检查与写态之间，旧实现会把已退出的会话悄悄复活（置
             // _isLoggedIn=true、关登录弹窗）；世代变了即不碰登录态。
-            if (logoutEpoch.get() != epochAtStart) return false
+            if (logoutEpoch.get() != epochAtStart || loggedOut) {
+                // D7-P1-2：同上——标记位刚被本次恢复写回 "1"，仍是已退出态
+                // 时一并复位，否则下次冷启动见标记又去静默重登。
+                scrubStaleRestoreSession()
+                return false
+            }
             _isLoggedIn.value = true
             _showLoginModal.value = false
             true
         } else {
-            _isLoggedIn.value = false
+            // D7-P2-1：失败分支只在仍是未登录态时才写 false——并发手动登录
+            // 成功后（_isLoggedIn 已为 true），本次旧恢复的失败不得把它清掉。
+            if (!_isLoggedIn.value) {
+                _isLoggedIn.value = false
+            }
             false
+        }
+    }
+
+    /**
+     * D7-P1-2：过期世代的恢复不得留下会话残留——登录响应到达时 OkHttp 已把
+     * 新 Set-Cookie 写进 Jar（logout() 的 finally 清 Jar 在响应到达之前），
+     * 成功分支还可能已把登录标记写回 "1"；仍是已退出态时清 Jar 并把标记
+     * 复位，退出保持干净。
+     * 以 [_isLoggedIn] 为条件：退出后手动重登的新会话 cookie/标记不得误删
+     * （手动登录不推进世代，世代复核拦不住这一种，只能靠登录态判断）。
+     * 不取消在途的 restoreDeferred：取消会让 restoreSession() 的等待方
+     * （checkLoginStatus / execute 的 401 分支）收到 CancellationException
+     * 而非 false，改的是恢复的等待契约；清 Jar 已足以堵住污染。
+     */
+    private suspend fun scrubStaleRestoreSession() {
+        if (_isLoggedIn.value) return
+        runCatching { cookieJar.clear() }
+        try {
+            settingsRepository.setAuthCookies("")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 标记复位失败也不拦收尾：下次冷启动凭据已清，恢复仍会失败、弹登录框。
         }
     }
 

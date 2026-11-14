@@ -1,9 +1,17 @@
 package com.oriontv.data.api
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 
 class CircuitBreakerTest {
 
@@ -128,5 +136,96 @@ class ApiClientRulesTest {
         assertTrue(ApiClient.isIdempotent("DELETE"))
         assertTrue(ApiClient.isIdempotent("HEAD"))
         assertFalse(ApiClient.isIdempotent("POST"))
+    }
+}
+
+/** 可取消限量读体测试（第 7 轮 D7-P2-4）：阻塞式体读必须响应协程取消。 */
+class ReadStreamCappedTest {
+
+    /** 读时阻塞在门闩上、关流才放行的输入流（模拟体停顿的 socket 读）。 */
+    private class GatedInputStream : java.io.InputStream() {
+        private val gate = java.util.concurrent.CountDownLatch(1)
+
+        @Volatile
+        var closed = false
+
+        override fun read(): Int {
+            gate.await()
+            throw java.io.IOException("stream closed")
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            gate.await()
+            throw java.io.IOException("stream closed")
+        }
+
+        override fun close() {
+            closed = true
+            gate.countDown()
+        }
+    }
+
+    private fun responseWithBody(body: String): okhttp3.Response {
+        val request = okhttp3.Request.Builder().url("https://example.com/").build()
+        return okhttp3.Response.Builder()
+            .request(request)
+            .protocol(okhttp3.Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(body.toResponseBody("application/json".toMediaTypeOrNull()))
+            .build()
+    }
+
+    @Test
+    fun `normal read returns all bytes`() {
+        val bytes = kotlinx.coroutines.runBlocking {
+            readStreamCapped(java.io.ByteArrayInputStream("hello".toByteArray()), 1024L) {}
+        }
+        assertEquals("hello", bytes.toString(Charsets.UTF_8))
+    }
+
+    @Test
+    fun `over-limit read throws BodyTooLargeException`() {
+        org.junit.Assert.assertThrows(BodyTooLargeException::class.java) {
+            kotlinx.coroutines.runBlocking {
+                readStreamCapped(java.io.ByteArrayInputStream("0123456789".toByteArray()), 5L) {}
+            }
+        }
+    }
+
+    @Test
+    fun `readBodyBytesLimited returns body and rejects oversize declared length`() {
+        val bytes = kotlinx.coroutines.runBlocking {
+            readBodyBytesLimited(responseWithBody("hello"), 1024L)
+        }
+        assertEquals("hello", bytes.toString(Charsets.UTF_8))
+        org.junit.Assert.assertThrows(BodyTooLargeException::class.java) {
+            kotlinx.coroutines.runBlocking {
+                readBodyBytesLimited(responseWithBody("0123456789"), 5L)
+            }
+        }
+    }
+
+    @Test
+    fun `cancelling body read closes stream and throws CancellationException promptly`() {
+        // D7-P2-4 的核心：取消到达时关流、中断阻塞的 read()，不再等满
+        // OkHttp 读超时；5 秒 withTimeout 是护栏——若取消递送不到，
+        // await 挂住、超时抛错且流仍未关，测试失败。
+        val stream = GatedInputStream()
+        runBlocking {
+            val deferred = async(Dispatchers.IO) {
+                readStreamCapped(stream, 1024L) { stream.close() }
+            }
+            delay(100)
+            deferred.cancel()
+            val thrown: CancellationException? = try {
+                withTimeout(5_000) { deferred.await() }
+                null
+            } catch (e: CancellationException) {
+                e
+            }
+            org.junit.Assert.assertNotNull("取消的体读应抛 CancellationException", thrown)
+            assertTrue(stream.closed)
+        }
     }
 }

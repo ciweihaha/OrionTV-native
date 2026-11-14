@@ -189,4 +189,22 @@ class M3uParserTest {
         assertTrue(M3uParser.parse("#EXTM3U\n").isEmpty())
         assertTrue(M3uParser.parse("").isEmpty())
     }
+
+    @Test
+    fun `channel count is capped at MAX_CHANNELS`() {
+        // D7-P2-8：5MB 体上限之外再加频道数上限，超限截断（不静默丢数据，
+        // 截断记 AppLog.w）；真实源远达不到该量级，正常解析不受影响。
+        val count = M3uParser.MAX_CHANNELS + 1
+        val content = buildString {
+            append("#EXTM3U\n")
+            repeat(count) { i ->
+                append("#EXTINF:-1 tvg-id=\"ch$i\",Channel$i\n")
+                append("http://example.com/ch$i.m3u8\n")
+            }
+        }
+        val channels = M3uParser.parse(content)
+        assertEquals(M3uParser.MAX_CHANNELS, channels.size)
+        assertEquals("Channel0", channels.first().name)
+        assertEquals("Channel${M3uParser.MAX_CHANNELS - 1}", channels.last().name)
+    }
 }

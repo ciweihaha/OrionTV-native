@@ -301,9 +301,17 @@ class MoonTvApi @Inject constructor(
 
     // ---- 播放记录（服务端模式） ----
 
-    suspend fun getPlayRecords(baseUrl: String): Map<String, PlayRecord> =
+    /**
+     * 第 7 轮 D7-P2-7：单条查询（`?key=`，与 [getFavorites] 同款）——
+     * 断点续播查一条记录不再全表拉取；服务端若不支持该参数会忽略它回整表，
+     * 客户端按 key 取值结果仍正确（只是省不下流量）；服务端若直接回单条
+     * PlayRecord 对象（与 getFavorites 的单条兜底同款），按 key 包成单条表。
+     * 整表查询（key==null）保持 B8-P2-8 行为：对象体逐条解出空仍按空表。
+     */
+    suspend fun getPlayRecords(baseUrl: String, key: String? = null): Map<String, PlayRecord> =
         withContext(ioDispatcher) {
-            val url = "${baseUrl.trimEnd('/')}/api/playrecords"
+            val url = "${baseUrl.trimEnd('/')}/api/playrecords" +
+                (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).get().build())
             if (body.isBlank()) return@withContext emptyMap()
             // 整表解码失败时保留可解析条目（P1-8），而不是整个变空。
@@ -316,7 +324,14 @@ class MoonTvApi @Inject constructor(
                     AppLog.w("MoonTvApi", "getPlayRecords 收到非对象体，抛错保留旧表")
                     throw IOException("播放记录返回格式异常：期望对象表：${e.message}")
                 }
-                LenientDecode.decodeMap(json, raw, PlayRecord.serializer())
+                if (key != null && raw.keys.any { it in PLAY_RECORD_KEYS }) {
+                    val single = runCatching { json.decodeFromString<PlayRecord>(body) }.getOrElse { decodeError ->
+                        throw IOException("播放记录返回格式异常：无法解析：${decodeError.message}")
+                    }
+                    mapOf(key to single)
+                } else {
+                    LenientDecode.decodeMap(json, raw, PlayRecord.serializer())
+                }
             }
         }
 
@@ -477,8 +492,8 @@ class MoonTvApi @Inject constructor(
         return LenientDecode.decodeList(json, results, SearchResult.serializer())
     }
 
-    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。 */
-    private fun readBodyLimited(response: okhttp3.Response): String {
+    /** 读响应体并做 2MB 上限校验（流式限量读，见 [readBodyBytesLimited]，D-P2-9）。第 7 轮 D7-P2-4：改 suspend，体读可取消（取消时关体中断 socket 读）。 */
+    private suspend fun readBodyLimited(response: okhttp3.Response): String {
         val bytes = try {
             readBodyBytesLimited(response, ApiClient.MAX_BODY_BYTES)
         } catch (e: BodyTooLargeException) {
@@ -491,6 +506,10 @@ class MoonTvApi @Inject constructor(
         /** 单条 Favorite 的字段名（整表单条兜底时用来认形状）。 */
         private val FAVORITE_KEYS =
             setOf("cover", "title", "source_name", "total_episodes", "search_title")
+
+        /** 单条 PlayRecord 的字段名（第 7 轮 D7-P2-7：单条查询的单对象兜底认形状，同款）。 */
+        private val PLAY_RECORD_KEYS =
+            setOf("title", "source_name", "cover", "index", "total_episodes", "play_time", "total_time", "save_time")
 
         /** 标题归一化：去空白、小写（搜索子串过滤与精确标题匹配共用）。 */
         fun normalizeTitle(title: String): String =

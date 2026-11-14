@@ -76,8 +76,8 @@ interface FavoriteDao {
     @Query("DELETE FROM favorites WHERE `key` = :key")
     suspend fun deleteByKey(key: String)
 
-    /** 第 6 轮 D6-P2-15：收藏上限 200 条，超限按 saveTime 淘汰最旧（与其余三表一致）。 */
-    @Query("DELETE FROM favorites WHERE `key` NOT IN (SELECT `key` FROM favorites ORDER BY saveTime DESC LIMIT 200)")
+    /** 第 6 轮 D6-P2-15：收藏上限 200 条，超限按 saveTime 淘汰最旧（与其余三表一致）。第 7 轮 D7-P2-5：加 key 作平局决胜——saveTime 打平时保留哪 200 条须确定，否则 SQLite 未定义顺序会任意淘汰。 */
+    @Query("DELETE FROM favorites WHERE `key` NOT IN (SELECT `key` FROM favorites ORDER BY saveTime DESC, `key` ASC LIMIT 200)")
     suspend fun trimToLatest200()
 }
 
@@ -95,8 +95,8 @@ interface PlayRecordDao {
     @Query("DELETE FROM play_records WHERE `key` = :key")
     suspend fun deleteByKey(key: String)
 
-    /** 播放记录上限 200 条，超限按 save_time 淘汰最旧。 */
-    @Query("DELETE FROM play_records WHERE `key` NOT IN (SELECT `key` FROM play_records ORDER BY saveTime DESC LIMIT 200)")
+    /** 播放记录上限 200 条，超限按 save_time 淘汰最旧。第 7 轮 D7-P2-5：加 key 作平局决胜（同 favorites）。 */
+    @Query("DELETE FROM play_records WHERE `key` NOT IN (SELECT `key` FROM play_records ORDER BY saveTime DESC, `key` ASC LIMIT 200)")
     suspend fun trimToLatest200()
 }
 
@@ -114,8 +114,8 @@ interface SearchHistoryDao {
     @Query("DELETE FROM search_history")
     suspend fun clearAll()
 
-    /** 搜索历史写侧上限 20 条：只留最新 20 条（P2-7；之前只读侧 LIMIT 20，表会无限长）。 */
-    @Query("DELETE FROM search_history WHERE keyword NOT IN (SELECT keyword FROM search_history ORDER BY saveTime DESC LIMIT 20)")
+    /** 搜索历史写侧上限 20 条：只留最新 20 条（P2-7；之前只读侧 LIMIT 20，表会无限长）。第 7 轮 D7-P2-5：加 keyword 作平局决胜（同 trimToLatest200）。 */
+    @Query("DELETE FROM search_history WHERE keyword NOT IN (SELECT keyword FROM search_history ORDER BY saveTime DESC, keyword ASC LIMIT 20)")
     suspend fun trimToLatest20()
 }
 
@@ -130,7 +130,7 @@ interface PlayerSettingDao {
     @Query("DELETE FROM player_settings WHERE `key` = :key")
     suspend fun deleteByKey(key: String)
 
-    /** 播放器设置上限 200 条，超限按插入顺序淘汰最旧。 */
-    @Query("DELETE FROM player_settings WHERE `key` NOT IN (SELECT `key` FROM player_settings ORDER BY saveTime DESC LIMIT 200)")
+    /** 播放器设置上限 200 条，超限按插入顺序淘汰最旧。第 7 轮 D7-P2-5：加 key 作平局决胜（同 favorites）。 */
+    @Query("DELETE FROM player_settings WHERE `key` NOT IN (SELECT `key` FROM player_settings ORDER BY saveTime DESC, `key` ASC LIMIT 200)")
     suspend fun trimToLatest200()
 }

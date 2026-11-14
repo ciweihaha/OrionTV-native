@@ -50,4 +50,17 @@ class LiveCacheAtomicWriteTest {
         assertFalse(staleTmp.exists())
         assertTrue(other.exists())
     }
+
+    @Test
+    fun `prune removes stale epg tmp files but keeps epg cache`() {
+        // D7-P2-6：EPG 原子写崩溃残留的 epg_cache.json.tmp-* 由 EPG 保存时清理。
+        val dir = tempDir()
+        val current = File(dir, "epg_cache.json").apply { writeText("{}") }
+        val staleTmp = File(dir, "epg_cache.json.tmp-456").apply { writeText("x") }
+        val other = File(dir, "other.txt").apply { writeText("keep") }
+        pruneStaleEpgCacheFiles(dir)
+        assertTrue(current.exists())
+        assertFalse(staleTmp.exists())
+        assertTrue(other.exists())
+    }
 }
