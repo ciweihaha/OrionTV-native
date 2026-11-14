@@ -132,4 +132,103 @@ class RemoteInputLogicTest {
         val notFound = router.handle("GET", "/nope", emptyMap(), "", "1.2.3.4")
         assertEquals(404, notFound.statusCode)
     }
+
+    @Test
+    fun `pairing code expires after ttl`() {
+        var now = 1_000_000L
+        val router = RemoteInputRouter(nowMs = { now })
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        assertTrue(router.isPairingCodeUsable())
+        // TTL 内握手成功。
+        val ok = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(200, ok.statusCode)
+        // 过期后数字正确的码也被拒绝。
+        now += RemoteInputLogic.PAIRING_CODE_TTL_MS + 1
+        assertFalse(router.isPairingCodeUsable())
+        val expired = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(403, expired.statusCode)
+        // 轮换后新码可用。
+        router.rotatePairingCode()
+        assertTrue(router.isPairingCodeUsable())
+        val fresh = router.handle(
+            "POST", "/handshake",
+            mapOf("X-Pairing-Code" to router.pairingCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, fresh.statusCode)
+    }
+
+    @Test
+    fun `handshake issues session token accepted for messages`() {
+        var now = 1_000_000L
+        val router = RemoteInputRouter(nowMs = { now })
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        val handshake = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(200, handshake.statusCode)
+        // 响应里带 32 位十六进制 token。
+        val token = handshake.body.substringAfter("\"token\":\"").substringBefore("\"")
+        assertEquals(32, token.length)
+        assertTrue(token.all { it.isDigit() || it in 'a'..'f' })
+        // 凭 token 发消息，不用再带码；错 token 拒绝。
+        val viaToken = router.handle(
+            "POST", "/message", mapOf("X-Session-Token" to token),
+            """{"message":"你好"}""", "9.9.9.9",
+        )
+        assertEquals(200, viaToken.statusCode)
+        val badToken = router.handle(
+            "POST", "/message", mapOf("X-Session-Token" to "0".repeat(32)),
+            """{"message":"你好"}""", "9.9.9.9",
+        )
+        assertEquals(403, badToken.statusCode)
+        // token 过期后拒绝。
+        now += RemoteInputLogic.SESSION_TOKEN_TTL_MS + 1
+        assertFalse(router.isSessionTokenValid(token))
+        val expiredToken = router.handle(
+            "POST", "/message", mapOf("X-Session-Token" to token),
+            """{"message":"你好"}""", "9.9.9.9",
+        )
+        assertEquals(403, expiredToken.statusCode)
+    }
+
+    @Test
+    fun `oversized post body rejected with 413 before routing`() {
+        val router = RemoteInputRouter()
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        val huge = """{"message":"${"x".repeat(20 * 1024)}"}"""
+        assertTrue(huge.length > RemoteInputLogic.MAX_REQUEST_BODY_BYTES)
+        val result = router.handle(
+            "POST", "/message", mapOf("X-Pairing-Code" to code), huge, "1.2.3.4",
+        )
+        assertEquals(413, result.statusCode)
+    }
+
+    @Test
+    fun `pairing gate evicts oldest ip over limit`() {
+        var now = 1_000_000L
+        val gate = PairingGate(nowMs = { now })
+        // 150 个不同 IP 各失败 1 次（时间递增，最旧的是 10.0.0.1）。
+        for (i in 1..150) {
+            now += 1_000L
+            assertFalse(gate.check("10.0.0.$i", "0000", "1234"))
+        }
+        assertEquals(RemoteInputLogic.MAX_TRACKED_IPS, gate.trackedIpCount())
+    }
+
+    @Test
+    fun `session token is 32 hex chars and varies`() {
+        val tokens = (1..10).map { RemoteInputLogic.generateSessionToken() }.toSet()
+        assertEquals(10, tokens.size)
+        tokens.forEach { token ->
+            assertEquals(32, token.length)
+            assertTrue(token.all { it.isDigit() || it in 'a'..'f' })
+        }
+    }
 }
