@@ -130,7 +130,9 @@ fun PlayScreen(
     val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
 
-    LaunchedEffect(source, id) {
+    // A6-P2-9（加固）：key 含集号与起点——同一回栈项复用换集时 effect 重跑，
+    // init() 的同键分支按新集号开播，不丢参数。
+    LaunchedEffect(source, id, episodeIndex, positionMs) {
         viewModel.init(source, id, title, episodeIndex, positionMs)
     }
     LaunchedEffect(Unit) { rootRequester.requestFocus() }
@@ -233,11 +235,15 @@ fun PlayScreen(
 
     // 控制条 5 秒无操作自动隐藏（抽屉打开、有待定落点或下一集预告时不隐藏）；
     // 隐藏后焦点回根，方向键/OK 才能继续唤出控制条（P1-9）。
-    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode) {
-        if (controlsVisible && uiState.drawer == null && previewTargetMs < 0 && !uiState.showNextEpisode) {
+    // A6-P1-4：key 加 error——错误页出现后若定时器已在跑，旧协程会被取消，
+    // 不会在 5 秒到点时把焦点从“重试”按钮抢回根；到点后也再复核 error==null。
+    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error) {
+        if (controlsVisible && uiState.drawer == null && previewTargetMs < 0 && !uiState.showNextEpisode && uiState.error == null) {
             delay(5000)
-            controlsVisible = false
-            rootRequester.requestFocus()
+            if (uiState.error == null) {
+                controlsVisible = false
+                rootRequester.requestFocus()
+            }
         }
     }
     // 落点预览 2 秒无操作自动提交（T6/T7）。
@@ -343,6 +349,13 @@ fun PlayScreen(
                             // 只隐藏控制条、无可见变化，第二次直接退出）。
                             uiState.showNextEpisode -> {
                                 viewModel.dismissNextEpisode()
+                                true
+                            }
+                            // A6-P2-1：错误页显示时按返回直接退出播放页——旧实现
+                            // 落到 controlsVisible 分支只隐藏控制条（错误页下
+                            // 控制条本来就不显示），第一次按返回无可见变化。
+                            uiState.error != null -> {
+                                onBack()
                                 true
                             }
                             controlsVisible -> {
@@ -491,6 +504,7 @@ fun PlayScreen(
                 bufferedMs = uiState.bufferedMs,
                 breakpointMs = uiState.breakpointMs,
                 isPlaying = uiState.isPlaying,
+                isEnded = uiState.isEnded,
                 playbackRate = uiState.playbackRate,
                 seekPreviewMs = previewTargetMs,
                 seekPreviewDirection = previewDirection,
@@ -571,37 +585,26 @@ private fun PlayDrawerPanel(
     title: String,
     content: @Composable () -> Unit,
 ) {
-    androidx.compose.animation.AnimatedVisibility(
-        visible = true,
-        enter = androidx.compose.animation.slideInHorizontally(
-            initialOffsetX = { it },
-            animationSpec = androidx.compose.animation.core.tween(180),
-        ) + androidx.compose.animation.fadeIn(
-            animationSpec = androidx.compose.animation.core.tween(180),
-        ),
-        exit = androidx.compose.animation.slideOutHorizontally(
-            targetOffsetX = { it },
-            animationSpec = androidx.compose.animation.core.tween(180),
-        ),
+    // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——抽屉由调用方
+    // `if (drawer != null)` 条件组合，卸载时整棵子树直接移除，exit 动画
+    // 永远跑不到；留着只是死代码（enter 滑入也随挂载直接出现）。
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(OrionColors.Background.copy(alpha = 0.5f)),
+        contentAlignment = Alignment.CenterEnd,
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .fillMaxSize()
-                .background(OrionColors.Background.copy(alpha = 0.5f)),
-            contentAlignment = Alignment.CenterEnd,
+                .fillMaxHeight()
+                .width(480.dp)
+                .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                .background(OrionColors.Overlay)
+                .padding(24.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(480.dp)
-                    .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
-                    .background(OrionColors.Overlay)
-                    .padding(24.dp),
-            ) {
-                Text(text = title, style = OrionTextStyles.SectionTitle)
-                Spacer(modifier = Modifier.height(16.dp))
-                content()
-            }
+            Text(text = title, style = OrionTextStyles.SectionTitle)
+            Spacer(modifier = Modifier.height(16.dp))
+            content()
         }
     }
 }

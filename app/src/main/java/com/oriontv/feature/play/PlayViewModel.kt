@@ -74,7 +74,6 @@ class PlayViewModel @Inject constructor(
     /** 退出时保存断点用：onCleared 时 viewModelScope 已取消，不能用它写库。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var lastSavedPositionMs: Long = -1L
-    private var lastSavedAtMs: Long = 0L
     private var introSkippedThisEpisode = false
     /** 跳过片头胶囊的轮询状态机（P0-1）：“已出现过”与“当前可见”分开管。 */
     private val skipIntroCapsule = SkipIntroCapsule()
@@ -123,7 +122,23 @@ class PlayViewModel @Inject constructor(
 
     fun init(source: String, id: String, title: String, episodeIndex: Int, positionMs: Long) {
         // B4-P1-1：统一键——与 DetailViewModel.init 同源（recordKey，空 id 用标题兜底）。
-        if (initialised && currentKey == MoonTvApi.recordKey(source, id, title)) return
+        if (initialised && currentKey == MoonTvApi.recordKey(source, id, title)) {
+            // A6-P2-9（加固）：同一 Play 回栈项被复用、换集参数又进来时（正常导航
+            // 每次都是新回栈项+新 ViewModel，走不到这里；深链重发可能复用），
+            // 集号/起点变了就开新集，不丢参数；只变了起点且本集还在搜源，
+            // 更新 state 里的集号/位置，让挂起的搜源回调用新值开播。
+            if (episodeIndex != _uiState.value.episodeIndex) {
+                val current = _uiState.value.current
+                if (current != null) {
+                    _uiState.update { it.copy(isLoading = true, error = null) }
+                    launchStartEpisode(current, episodeIndex, positionMs.takeIf { it > 0 })
+                } else {
+                    _uiState.update { it.copy(episodeIndex = episodeIndex, positionMs = positionMs) }
+                    routePositionMs = positionMs
+                }
+            }
+            return
+        }
         initialised = true
         playbackToken = playerManager.claimPlayback()
         currentKey = MoonTvApi.recordKey(source, id, title)
@@ -274,6 +289,8 @@ class PlayViewModel @Inject constructor(
                 outroStartMs = settings?.outroStartTime?.takeIf { it > 0 },
                 showNextEpisode = false,
                 drawer = null,
+                // A6-P1-1：新集开播清播完态，倒计时条件回到“正在播”。
+                isEnded = false,
                 // P2-3：集次版本号，每次开播（换集/换源/重试/自动换源）都 +1，
                 // 播放页据此清掉旧落点预览——只看 durationMs 不够，新集时长与旧集
                 // 相同时控制器不重建，待定落点会带到新集、2 秒后对新集 seek 旧落点。
@@ -344,7 +361,14 @@ class PlayViewModel @Inject constructor(
         val state = _uiState.value
         val current = state.current ?: return
         saveRecordNow()
+        // A6-P1-2：看完一集删旧断点——saveRecordNow 只做到“临近片尾不新存”，
+        // 之前轮询存下的旧断点（片尾前 10 秒外）还在，重开会从片尾前续播；
+        // 播完即删，重开从 0 播（resolveRecordStartMs 的看完钳制是第二道防线）。
+        // A6-P1-1：记 isEnded，下一集倒计时按“正在播或已播完”走（播完态
+        // isPlaying=false，旧条件会让倒计时永久冻结）。
+        _uiState.update { it.copy(isEnded = true) }
         viewModelScope.launch {
+            runCatching { playRecordsRepository.delete(currentKey) }
             if (shouldShowNextEpisode(
                     cachedNextEpisodeOverlayEnabled,
                     state.episodeIndex,
@@ -570,9 +594,16 @@ class PlayViewModel @Inject constructor(
     fun selectSource(source: String) {
         val state = _uiState.value
         val next = state.results.firstOrNull { it.source == source } ?: return
-        val episode = state.episodeIndex.coerceAtMost((next.episodes.size - 1).coerceAtLeast(0))
+        // A6-P1-3：新源集数不足时不静默换集（旧实现 coerceAtMost 到新源末集，
+        // 还传原进度，用户无感知就换了集）——Toast 提示并拒绝换源，抽屉保持打开。
+        if (state.episodeIndex >= next.episodes.size) {
+            _uiState.update {
+                it.copy(toast = nextToastEvent("该源只有 ${next.episodes.size} 集，无法切换"))
+            }
+            return
+        }
         _uiState.update { it.copy(drawer = null) }
-        launchStartEpisode(next, episode, playerManager.currentPositionMs)
+        launchStartEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
     }
 
     fun setPlaybackSpeed(rate: Float) {
@@ -624,10 +655,15 @@ class PlayViewModel @Inject constructor(
     fun retry() {
         val state = _uiState.value
         val current = state.current
-        _uiState.update { it.copy(error = null, autoSwitchAttempts = 0, isLoading = true) }
+        // A6-P2-2：手动重试保进度（旧实现不传起点，10 秒内断流时断点还没存过，
+        // 从 0 重播）并重置 failedSources（只清 autoSwitchAttempts 不清
+        // failedSources，重试后自动换源会一直跳过之前失败过的源）。
+        _uiState.update {
+            it.copy(error = null, autoSwitchAttempts = 0, failedSources = emptySet(), isLoading = true)
+        }
         viewModelScope.launch {
             if (current != null) {
-                launchStartEpisode(current, state.episodeIndex)
+                launchStartEpisode(current, state.episodeIndex, state.positionMs.takeIf { it > 0 })
             } else {
                 initialised = false
                 // B5-P2-1：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
@@ -655,7 +691,6 @@ class PlayViewModel @Inject constructor(
         // 看完一集不存断点：否则下次打开 position==duration，立即“播完”。
         if (isNearEnd(position, duration)) return
         lastSavedPositionMs = position
-        lastSavedAtMs = System.currentTimeMillis()
         scope.launch {
             if (settingsRepository.incognitoMode.first()) return@launch
             playRecordsRepository.save(
@@ -775,6 +810,9 @@ data class PlayUiState(
     val bufferedMs: Long = 0L,
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
+    /** A6-P1-1：是否已播完（STATE_ENDED）——下一集倒计时在播完态也要走，
+     * 不能只看 isPlaying（播完时 isPlaying=false，倒计时永久冻结）。 */
+    val isEnded: Boolean = false,
     val playbackRate: Float = 1f,
     val showNextEpisode: Boolean = false,
     /** 手动标记的片头结束时间（毫秒）；null 表示没标过（显示“标记片头”）。 */

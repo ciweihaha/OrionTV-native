@@ -23,4 +23,16 @@ class PlayerControlsTest {
         assertFalse(shouldTickNextEpisodeCountdown(isPlaying = true, drawerOpen = true))
         assertFalse(shouldTickNextEpisodeCountdown(isPlaying = false, drawerOpen = true))
     }
+
+    @Test
+    fun `next episode countdown ticks when ended even though not playing`() {
+        // A6-P1-1：播完态 STATE_ENDED 时 isPlaying=false，倒计时按“正在播或
+        // 已播完”走，否则预告卡永久冻结在“3 秒后自动播放”
+        assertTrue(shouldTickNextEpisodeCountdown(isPlaying = false, isEnded = true, drawerOpen = false))
+        assertTrue(shouldTickNextEpisodeCountdown(isPlaying = true, isEnded = true, drawerOpen = false))
+        // 播完但抽屉打开（正在挑集）仍冻结
+        assertFalse(shouldTickNextEpisodeCountdown(isPlaying = false, isEnded = true, drawerOpen = true))
+        // 暂停且未播完仍冻结
+        assertFalse(shouldTickNextEpisodeCountdown(isPlaying = false, isEnded = false, drawerOpen = false))
+    }
 }

@@ -64,6 +64,9 @@ fun PlayerControls(
     posterUrl: String = "",
     showSkipIntro: Boolean,
     showNextEpisode: Boolean,
+    /** A6-P1-1：是否已播完——播完态 isPlaying=false，倒计时条件是
+     * “正在播或已播完”，否则预告卡 3 秒倒计时永久冻结。 */
+    isEnded: Boolean = false,
     /** 抽屉是否打开（P2-1）：抽屉打开时下一集倒计时暂停，不在用户挑集时强制切集。 */
     drawerOpen: Boolean = false,
     introEndMs: Long? = null,
@@ -92,11 +95,13 @@ fun PlayerControls(
     // 暂停期间 / 用户在抽屉里挑集时不强制切集。LaunchedEffect 的 key 含 isPlaying
     // 与 drawerOpen：状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
     // 保留当前值，不会重置回 3；预告关闭（showNextEpisode 变 false）时直接返回。
-    LaunchedEffect(showNextEpisode, isPlaying, drawerOpen) {
+    // A6-P1-1：播完态（STATE_ENDED，isPlaying=false）倒计时也要走，否则预告卡
+    // 永远停在“3 秒后自动播放”——条件是“正在播或已播完”。
+    LaunchedEffect(showNextEpisode, isPlaying, isEnded, drawerOpen) {
         if (showNextEpisode) {
             while (countdown > 0) {
                 delay(1000)
-                if (shouldTickNextEpisodeCountdown(isPlaying, drawerOpen)) countdown--
+                if (shouldTickNextEpisodeCountdown(isPlaying, isEnded, drawerOpen)) countdown--
             }
             onNextEpisode()
         }
@@ -173,11 +178,14 @@ fun PlayerControls(
         }
 
         // 下一集预告卡：3 秒倒计时，可取消。
+        // A6-P2-3：与跳过片头胶囊错开锚点——胶囊在右下 bottom=180dp，预告卡
+        // 抬到 bottom=300dp（卡片约 180dp 高，两者不再重叠；同屏共存时
+        // 焦点移动也不会在同一位置上撞到两张卡）。
         if (showNextEpisode) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 48.dp, bottom = 180.dp)
+                    .padding(end = 48.dp, bottom = 300.dp)
                     .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
                     .background(OrionColors.Overlay)
                     .padding(20.dp),
@@ -298,9 +306,21 @@ private fun SeekableProgressBar(
  * 下一集倒计时是否应走一秒（可单测，P2-1）：正在播且抽屉关闭时才减；
  * 暂停期间（用户可能正在看预告文案）或抽屉打开（正在挑集）时冻结，
  * 到点不强制切集。
+ * A6-P1-1：调用方传 isPlaying || isEnded——播完态（STATE_ENDED）下
+ * isPlaying=false，但倒计时也要走，否则预告卡永久冻结。
  */
 internal fun shouldTickNextEpisodeCountdown(isPlaying: Boolean, drawerOpen: Boolean): Boolean =
-    isPlaying && !drawerOpen
+    shouldTickNextEpisodeCountdown(isPlaying = isPlaying, isEnded = false, drawerOpen = drawerOpen)
+
+/**
+ * 下一集倒计时是否应走一秒（三参版，可单测，A6-P1-1）：正在播或已播完、
+ * 且抽屉关闭时才减；暂停（未播完）或抽屉打开时冻结。
+ */
+internal fun shouldTickNextEpisodeCountdown(
+    isPlaying: Boolean,
+    isEnded: Boolean,
+    drawerOpen: Boolean,
+): Boolean = (isPlaying || isEnded) && !drawerOpen
 
 /**
  * 快进预览气泡文案（可单测，P2-1）：方向 + 目标时间。
