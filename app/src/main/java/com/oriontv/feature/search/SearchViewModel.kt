@@ -3,6 +3,7 @@ package com.oriontv.feature.search
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oriontv.data.api.MoonTvApi
+import com.oriontv.data.api.SearchResponseException
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.api.UnauthorizedException
 import com.oriontv.data.repo.SearchHistoryRepository
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.SocketTimeoutException
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /**
@@ -57,6 +59,13 @@ class SearchViewModel @Inject constructor(
             )
         }
         // 远程输入：手机扫码发来的文本直接填入搜索框并搜索（阶段 4 接通）。
+        // B-P2-22：_messages 是 replay=0 的 SharedFlow，进搜索页前发来的文本
+        // 会被 tryEmit 丢弃；这里订阅前先读一次 state.lastMessage（5 分钟内
+        // 才认，防旧消息误触发），丢掉的文本能找回来。
+        val lastRemote = remoteInputManager.state.value
+        if (lastRemote.lastMessage != null && isFreshRemoteMessage(lastRemote.lastMessageAt)) {
+            searchNow(lastRemote.lastMessage)
+        }
         viewModelScope.launch {
             remoteInputManager.messages.collect { message ->
                 searchNow(message)
@@ -80,7 +89,7 @@ class SearchViewModel @Inject constructor(
         searchJob = viewModelScope.launch {
             delay(DEBOUNCE_MS)
             if (gen != generation) return@launch
-            executeSearch(trimmed)
+            executeSearch(trimmed, gen)
         }
     }
 
@@ -93,11 +102,13 @@ class SearchViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(query = trimmed)
         searchJob = viewModelScope.launch {
             if (gen != generation) return@launch
-            executeSearch(trimmed)
+            executeSearch(trimmed, gen)
         }
     }
 
-    private suspend fun executeSearch(query: String) {
+    private suspend fun executeSearch(query: String, gen: Int = generation) {
+        // B-P1-6：进入搜索即记下本次词；失败分支也已赋值，重试按钮不再是死按钮。
+        _uiState.value = _uiState.value.copy(searchedQuery = query)
         cache.get(query)?.let { cached ->
             _uiState.value = _uiState.value.copy(
                 results = cached,
@@ -118,6 +129,10 @@ class SearchViewModel @Inject constructor(
         }
         try {
             val results = moonTvApi.searchVideos(baseUrl, query)
+            // B-P2-23①：网络返回后复核 generation；迟到结果不得覆盖更新的搜索。
+            //（旧任务被取消时，OkHttp 同步调用不响应取消，返回后本应由 CE 拦截，
+            // 但取消恰好发生在无挂起点的窗口时仍需这道防线。）
+            if (gen != generation) return
             // P2-11：空结果不缓存（服务端刚上新内容时用户不再持续看到空结果）。
             if (shouldCacheSearchResults(results)) cache.put(query, results)
             // 无痕模式不写搜索历史（阶段 4）。
@@ -131,7 +146,11 @@ class SearchViewModel @Inject constructor(
                 searchedQuery = query,
                 history = searchHistoryRepository.getLatest20(),
             )
+        } catch (e: CancellationException) {
+            // B-P1-9：取消必须原样抛出；否则旧搜索被取消后仍置错误态，覆盖新搜索。
+            throw e
         } catch (e: Exception) {
+            if (gen != generation) return
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 error = SearchError.classify(e),
@@ -155,9 +174,12 @@ class SearchViewModel @Inject constructor(
     fun deleteHistory(keyword: String) {
         viewModelScope.launch {
             searchHistoryRepository.delete(keyword)
+            // B-P2-7：先取新 history 再算联想；用删除前的旧 history 算，
+            // 删后联想 chips 仍含已删词，直到下次输入才刷新。
+            val newHistory = searchHistoryRepository.getLatest20()
             _uiState.value = _uiState.value.copy(
-                history = searchHistoryRepository.getLatest20(),
-                suggestions = suggest(_uiState.value.query, _uiState.value.history),
+                history = newHistory,
+                suggestions = suggest(_uiState.value.query, newHistory),
             )
         }
     }
@@ -210,6 +232,11 @@ sealed interface SearchError {
         override val message = "登录已过期，请重新登录"
     }
 
+    /** 服务端返回的搜索 JSON 已损坏（与“无结果”区分）。 */
+    data object DataError : SearchError {
+        override val message = "搜索数据异常，请重试"
+    }
+
     /** 超时。 */
     data object Timeout : SearchError {
         override val message = "搜索超时，请检查网络后重试"
@@ -223,6 +250,7 @@ sealed interface SearchError {
 
     companion object {
         fun classify(e: Exception): SearchError = when (e) {
+            is SearchResponseException -> DataError
             is UnauthorizedException -> Unauthorized
             is SocketTimeoutException -> Timeout
             is IOException -> {
@@ -236,6 +264,23 @@ sealed interface SearchError {
         }
     }
 }
+
+/**
+ * 第 3 轮收尾 B-P2-22：远程文本是否新鲜（[windowMs] 内才认，防旧消息误触发）。
+ * 纯逻辑，可单测。
+ */
+fun isFreshRemoteMessage(
+    lastMessageAt: Long?,
+    nowMs: Long = System.currentTimeMillis(),
+    windowMs: Long = REMOTE_MESSAGE_FRESH_MS,
+): Boolean {
+    if (lastMessageAt == null) return false
+    val ageMs = nowMs - lastMessageAt
+    return ageMs in 0..windowMs
+}
+
+/** 远程文本新鲜窗口：5 分钟（与配对码有效期同长）。 */
+const val REMOTE_MESSAGE_FRESH_MS = 5 * 60 * 1000L
 
 data class SearchUiState(
     val query: String = "",
