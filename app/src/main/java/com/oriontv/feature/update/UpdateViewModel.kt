@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /**
@@ -75,6 +76,8 @@ class UpdateViewModel @Inject constructor(
                                 isLatest = true,
                                 updateAvailable = false,
                                 showUpdateCard = false,
+                                // B-P1-4：旧版下好的包已失效（当前已是最新），不清会残留“立即安装”。
+                                downloadedFilePath = null,
                                 toast = if (silent) null else "已是最新版本 v$current",
                             )
                         }
@@ -86,6 +89,8 @@ class UpdateViewModel @Inject constructor(
                                 latestVersion = latest,
                                 updateAvailable = true,
                                 showUpdateCard = false,
+                                // B-P1-4：同上，跳过的新版不是已下载的旧包。
+                                downloadedFilePath = null,
                                 toast = if (silent) null else "已跳过 v$latest，可在设置里重新检查",
                             )
                         }
@@ -101,10 +106,14 @@ class UpdateViewModel @Inject constructor(
                                 // 静默检查发现新版也要弹卡（RN 教训：静默恒不弹等于自动更新无效）。
                                 showUpdateCard = true,
                                 isLatest = false,
+                                // B-P1-4：新版≠已下载的旧包，清掉旧路径，防卡片“立即安装”装旧包。
+                                downloadedFilePath = null,
                             )
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -138,13 +147,20 @@ class UpdateViewModel @Inject constructor(
                         toast = "下载完成，校验通过，可以安装了",
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: UpdateDownloadException) {
                 _uiState.update {
-                    it.copy(downloading = false, error = e.message ?: "下载失败")
+                    // B-P1-4：下载失败的半截包不可留“已下载”态，下次重下。
+                    it.copy(downloading = false, downloadedFilePath = null, error = e.message ?: "下载失败")
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(downloading = false, error = "下载失败：${e.message ?: "网络错误"}")
+                    it.copy(
+                        downloading = false,
+                        downloadedFilePath = null,
+                        error = "下载失败：${e.message ?: "网络错误"}",
+                    )
                 }
             }
         }
