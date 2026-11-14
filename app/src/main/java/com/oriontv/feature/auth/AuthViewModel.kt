@@ -1,21 +1,34 @@
 package com.oriontv.feature.auth
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.oriontv.data.repo.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 登录 ViewModel 骨架。M1 补：登录弹窗 + 自动续期 + 退出登录（finally 里无条件清登录标记）。 */
+/** 登录 ViewModel：登录弹窗 + 自动续期 + 退出登录（逻辑在 AuthRepository）。 */
 @HiltViewModel
-class AuthViewModel @Inject constructor() : ViewModel() {
-    private val _uiState = MutableStateFlow(AuthUiState())
-    val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
-}
+class AuthViewModel @Inject constructor(
+    private val authRepository: AuthRepository,
+) : ViewModel() {
+    val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
+    val showLoginModal: StateFlow<Boolean> = authRepository.showLoginModal
+    val loginError: StateFlow<String?> = authRepository.loginError
 
-data class AuthUiState(
-    val isLoggedIn: Boolean = false,
-    val isLoading: Boolean = false,
-    val error: String? = null,
-)
+    fun checkLoginStatus() {
+        viewModelScope.launch { authRepository.checkLoginStatus() }
+    }
+
+    fun login(username: String, password: String) {
+        viewModelScope.launch { authRepository.login(username, password) }
+    }
+
+    fun logout() {
+        viewModelScope.launch { authRepository.logout() }
+    }
+
+    fun showLogin() = authRepository.showLogin()
+    fun hideLogin() = authRepository.hideLogin()
+}

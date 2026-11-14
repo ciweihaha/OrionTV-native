@@ -14,16 +14,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
+import com.oriontv.core.focus.preferredFocus
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -40,11 +43,18 @@ import com.oriontv.ui.theme.OrionTextStyles
 fun LoginModal(
     onLogin: (username: String, password: String) -> Unit,
     onDismiss: () -> Unit,
+    error: String? = null,
     modifier: Modifier = Modifier,
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+    var localError by remember { mutableStateOf<String?>(null) }
+    val loginRequester = remember { FocusRequester() }
+
+    // 焦点默认落在主按钮上（ui-design.md §5.8）。
+    LaunchedEffect(Unit) { loginRequester.requestFocus() }
+
+    val shownError = error ?: localError
 
     Box(
         modifier = modifier
@@ -76,9 +86,9 @@ fun LoginModal(
                 keyboardType = KeyboardType.Password,
                 masked = true,
             )
-            if (error != null) {
+            if (shownError != null) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text(text = error!!, style = OrionTextStyles.Body, color = OrionColors.Error)
+                Text(text = shownError, style = OrionTextStyles.Body, color = OrionColors.Error)
             }
             Spacer(modifier = Modifier.height(24.dp))
             Row {
@@ -86,12 +96,13 @@ fun LoginModal(
                     text = "登录",
                     onClick = {
                         if (username.isBlank() || password.isBlank()) {
-                            error = "账号或密码不能为空"
+                            localError = "账号或密码不能为空"
                         } else {
-                            error = null
+                            localError = null
                             onLogin(username, password)
                         }
                     },
+                    modifier = Modifier.preferredFocus(loginRequester),
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 SecondaryButton(text = "取消", onClick = onDismiss)
