@@ -49,11 +49,11 @@ class AggApiTest {
     }
 
     @Test
-    fun `4xx is not retried and throws NonRetryableException`() {
+    fun `4xx is not retried and throws IOException`() {
         val (client, calls) = countingClient { request, _ ->
             responseFor(request, 404, "")
         }
-        val thrown = assertThrows(NonRetryableException::class.java) {
+        val thrown = assertThrows(IOException::class.java) {
             runBlocking { api(client).videoList(1, 1) }
         }
         assertTrue(thrown.message!!.contains("404"))
