@@ -1,9 +1,8 @@
 package com.oriontv.data.api
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -20,7 +19,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -327,19 +325,15 @@ class AggApiTest {
             videoListCircuitBreaker = breaker,
         )
         runBlocking {
-            val job = launch { aggSlow.videoList(1, 1) }
-            delay(100)
-            job.cancel()
-            try {
-                job.join()
-                fail("expected CancellationException")
-            } catch (_: CancellationException) {
-                // 取消原样抛出，符合约定。
+            // 确定性取消：100ms 后取消在途请求（此时必在 5 秒退避 delay 里），
+            // 不用 launch + join 的手工时序——join 的取消语义在竞态下易误判。
+            assertThrows(CancellationException::class.java) {
+                withTimeout(100) { aggSlow.videoList(1, 1) }
             }
         }
         // 租约已释放：下一次 isOpen 能重新拿到试探资格（返回 false），
         // 而不是继续以“探针在途”拒绝到 120 秒租约过期。
-        assertFalse(breaker.isOpen())
+        assertFalse("probe lease should be released after cancel", breaker.isOpen())
     }
 
 }
