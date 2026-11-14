@@ -77,4 +77,17 @@ class LiveScreenLogicTest {
         assertTrue(shouldTrapEpgFocusKey(Key.DirectionDown, focusedIndex = 0, programmeCount = 0))
         assertTrue(shouldTrapEpgFocusKey(Key.DirectionUp, focusedIndex = 0, programmeCount = 0))
     }
+
+    @Test
+    fun `live focus containment traps panel and epg keys`() {
+        // C7-P1-1/A7-P2-5：面板开着时左键消费、右键放行；EPG 开着时左右都消费；
+        // 都关着时不拦；上下键从不拦（面板内上下是焦点移动/换台）。
+        assertTrue(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = false, Key.DirectionLeft))
+        assertFalse(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = false, Key.DirectionRight))
+        assertTrue(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = true, Key.DirectionLeft))
+        assertTrue(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = true, Key.DirectionRight))
+        assertFalse(shouldContainLiveFocusKey(panelOpen = false, epgDialogOpen = false, Key.DirectionLeft))
+        assertFalse(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = false, Key.DirectionUp))
+        assertFalse(shouldContainLiveFocusKey(panelOpen = true, epgDialogOpen = true, Key.DirectionDown))
+    }
 }

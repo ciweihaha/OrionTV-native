@@ -90,6 +90,17 @@ internal fun resolvePanelFocusIndex(
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
 /**
+ * 直播页焦点 containment 是否应在预览阶段消费该 KeyDown（可单测，C7-P1-1 /
+ * A7-P2-5 同源）：面板打开时左键、EPG 弹窗打开时左/右键——焦点经空间导航会
+ * 跑到导航轨，返回键绕过“先关面板/弹窗”层级直接退出直播页，EPG 左键切台
+ * 也失效。只拦 KeyDown（焦点移动），不拦 KeyUp：KeyUp 仍到根的 onKeyUp 走
+ * 切台/关面板逻辑。EPG 打开时面板必然也开着，左键两条都命中，无冲突。
+ */
+internal fun shouldContainLiveFocusKey(panelOpen: Boolean, epgDialogOpen: Boolean, key: Key): Boolean =
+    (epgDialogOpen && (key == Key.DirectionLeft || key == Key.DirectionRight)) ||
+        (panelOpen && key == Key.DirectionLeft)
+
+/**
  * EPG 弹窗焦点陷阱是否应拦截该方向键（可单测，P2-6）：
  * 焦点在首个节目行按上、或在“关闭”按钮按下时拦截，不让焦点移出弹窗落到
  * 背后频道行（OK 会误触选台）；行间移动、末行下移到“关闭”按钮都放行。
@@ -230,6 +241,20 @@ fun LiveScreen(
             .focusable()
             .focusRequester(rootRequester)
             .onPreviewKeyEvent { event ->
+                // C7-P1-1/A7-P2-5：面板/EPG 打开时先做焦点 containment——左/右
+                // KeyDown 在隧道阶段消费掉，不让焦点移出面板/弹窗落到导航轨；
+                // KeyUp 不拦，仍到下面 onKeyUp 走 EPG 切台/关面板逻辑。
+                // 面板打开且焦点已在导航轨上时按返回直接退出的问题也由此根治：
+                // 焦点进不了导航轨，返回键一定先经过根的层级处理。
+                if (event.type == KeyEventType.KeyDown &&
+                    shouldContainLiveFocusKey(
+                        uiState.panelOpen,
+                        uiState.epgDialogChannel != null,
+                        event.key,
+                    )
+                ) {
+                    return@onPreviewKeyEvent true
+                }
                 // P2-7：直播长按上/下重复换台——重复 KeyDown 在预览阶段拦截并换台，
                 // 一律消费，不让重复事件触发焦点移动（与播放页 P1-C 同类问题）。
                 // 首按（repeatCount == 0）不换台，换台仍在松键时触发一次；

@@ -419,6 +419,9 @@ class LiveViewModel @Inject constructor(
         if (!controller.changeLine(delta)) return // 单线路频道无动作
         // P2-2：手动切线路同样取消数字键提交定时器（同换台）。
         cancelDigitCommit()
+        // A7-P1-2：切线路也要保存上次频道——之前只在换台时保存，重启后
+        // 永远回 1 号线；保存时存正在播的线路（见 saveLastChannel）。
+        saveLastChannel()
         _uiState.update {
             it.copy(lineIndex = controller.lineIndex, failCount = controller.failCount)
         }
@@ -427,7 +430,9 @@ class LiveViewModel @Inject constructor(
 
     private fun saveLastChannel() {
         val channel = controller.currentChannel ?: return
-        val last = LiveLastChannel(url = channel.url, name = channel.name)
+        // A7-P1-2：存正在播的那条线（controller.currentUrl），不是 channel.url
+        //（恒为 urls[0]）——正在播 2 号线时重启后应回 2 号线。
+        val last = LiveLastChannel(url = controller.currentUrl ?: channel.url, name = channel.name)
         viewModelScope.launch {
             runCatching {
                 settingsRepository.setLiveLastChannelJson(json.encodeToString(last))
@@ -644,7 +649,12 @@ class LiveViewModel @Inject constructor(
         // 后台播放开着：退出直播页后继续播（画中画/后台音频），不 pause、不 stop；
         // 关着：沿用旧行为，退出即停播。与 PlayViewModel.onCleared 同款逻辑。
         cleanupScope.launch {
-            if (settingsRepository.currentBackgroundPlayback()) {
+            // A7-P2-4：清理协程读 DataStore 也要包 runCatching——偏好损坏时
+            // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
+            // PlayViewModel.onCleared 同款）。
+            val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
+                .getOrDefault(false)
+            if (backgroundOn) {
                 playerManager.backgroundPlaybackEnabled = true
             } else {
                 playerManager.backgroundPlaybackEnabled = false

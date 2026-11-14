@@ -45,7 +45,10 @@ class DetailViewModel @Inject constructor(
     private var currentTitle: String = ""
     private var currentId: String = ""
 
-    /** B4-P2-2：轻量代次——init 时 +1，迟到的搜索回调/收藏读取复核后才写回。 */
+    /** B4-P2-2：轻量代次——init 时 +1，迟到的搜索回调/收藏读取复核后才写回。
+     * B7-P2-7：searchDetail 的回调跑在 IO 线程（withContext(ioDispatcher)），
+     * 代次在主线程写、IO 线程读，plain var 无可见性保证，改 @Volatile。 */
+    @Volatile
     private var generation = 0
 
     /**
@@ -63,6 +66,14 @@ class DetailViewModel @Inject constructor(
     companion object {
         /** SavedStateHandle 键：是否已落过“播放”按钮焦点锚点。 */
         const val SAVED_FOCUS_ANCHORED = "detail_focus_anchored"
+
+        /**
+         * 断点集号按当前源集数钳制（可单测，B7-P2-6）：记录集号超出当前源时落
+         * 到末集；源还没回来（集数为 0）时只保底 >= 0，不动集号。
+         */
+        internal fun clampSelectedEpisode(selectedEpisode: Int, episodeCount: Int): Int =
+            if (episodeCount <= 0) selectedEpisode.coerceAtLeast(0)
+            else selectedEpisode.coerceIn(0, episodeCount - 1)
     }
 
     fun init(source: String, id: String, title: String) {
@@ -106,6 +117,13 @@ class DetailViewModel @Inject constructor(
                     val current = state.current
                         ?: results.firstOrNull()
                         ?: state.current
+                    // B7-P2-6：断点集号按当前源集数钳制——记录里的集号可能超出
+                    // 当前源（换源/源更新后集数变少），不钳制时点“播放”进错误页；
+                    // 所属分组随钳制后的集号一起落好，否则分组视图仍停在旧分组。
+                    val clampedEpisode = clampSelectedEpisode(
+                        state.selectedEpisode,
+                        current?.episodes?.size ?: 0,
+                    )
                     _uiState.value = state.copy(
                         isLoading = false,
                         results = results,
@@ -113,6 +131,8 @@ class DetailViewModel @Inject constructor(
                         current = current,
                         allSourcesLoaded = allLoaded,
                         error = null,
+                        selectedEpisode = clampedEpisode,
+                        selectedGroup = DetailSearchLogic.groupIndexForEpisode(clampedEpisode),
                     )
                 }
             } catch (e: TimeoutCancellationException) {
