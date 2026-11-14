@@ -280,7 +280,7 @@ class RnMigration @Inject constructor(
         val existing = db.favoriteDao().getAll().map { it.key }.toSet()
         val now = System.currentTimeMillis()
         var count = 0
-        for (key in keysToImport(parsed.keys, existing)) {
+        for ((index, key) in keysToImport(parsed.keys, existing).withIndex()) {
             val fav = parsed.getValue(key)
             db.favoriteDao().insert(
                 FavoriteEntity(
@@ -291,7 +291,9 @@ class RnMigration @Inject constructor(
                     totalEpisodes = fav.total_episodes,
                     searchTitle = fav.search_title,
                     year = fav.year,
-                    saveTime = fav.save_time ?: now,
+                    // D7-P2-5：缺 save_time 的行按导入顺序递减 now - index，
+                    // 不再同取 now——否则超 200 条裁剪时平局淘汰是任意子集。
+                    saveTime = fallbackSaveTime(fav.save_time, now, index),
                 ),
             )
             count++
@@ -332,7 +334,7 @@ class RnMigration @Inject constructor(
         val existing = db.playRecordDao().getAll().map { it.key }.toSet()
         val now = System.currentTimeMillis()
         var count = 0
-        for (key in keysToImport(parsed.keys, existing)) {
+        for ((index, key) in keysToImport(parsed.keys, existing).withIndex()) {
             val record = parsed.getValue(key)
             db.playRecordDao().insert(
                 PlayRecordEntity(
@@ -344,7 +346,8 @@ class RnMigration @Inject constructor(
                     totalEpisodes = record.total_episodes,
                     playTimeSeconds = record.play_time,
                     totalTimeSeconds = record.total_time,
-                    saveTime = record.save_time.takeIf { it > 0 } ?: now,
+                    // D7-P2-5：同 importFavorites，缺时间的行按导入顺序递减。
+                    saveTime = fallbackSaveTime(record.save_time, now, index),
                     year = record.year,
                 ),
             )
@@ -389,14 +392,23 @@ class RnMigration @Inject constructor(
     }
 
     private suspend fun importSettings(raw: String) {
-        // 只在原生设置还是白板时导入（迁移跑在首次启动，正常一定是白板；
-        // 若用户已配过地址/源，不覆盖）。
-        if (settingsDataStore.apiBaseUrl.first().isNotBlank() ||
-            settingsDataStore.m3uUrl.first().isNotBlank()
-        ) return
+        // D7-P2-3：不再整包门控——首次导入中途某次写失败时，剩余设置在下次
+        // 重试时会被“apiBaseUrl 或 m3uUrl 任一非空即整包跳过”挡住、永久丢失；
+        // 改为逐项守卫：地址类只在原生侧仍空白时写（不覆盖用户已配的值），
+        // 开关类幂等重写同一份 RN 值；失败只影响当项，其余下次重试能补上。
+        // （迁移只在 rnMigrationDone==false 时跑，原生侧正常是白板；开关无
+        // “空白”概念，重复写同一值无副作用。）
         val parsed = RnMigrationParser.parseSettings(raw) ?: return
-        parsed.apiBaseUrl?.takeIf { it.isNotBlank() }?.let { settingsDataStore.setApiBaseUrl(it) }
-        parsed.m3uUrl?.takeIf { it.isNotBlank() }?.let { settingsDataStore.setM3uUrl(it) }
+        parsed.apiBaseUrl?.let {
+            if (shouldImportUrlSetting(settingsDataStore.apiBaseUrl.first(), it)) {
+                settingsDataStore.setApiBaseUrl(it)
+            }
+        }
+        parsed.m3uUrl?.let {
+            if (shouldImportUrlSetting(settingsDataStore.m3uUrl.first(), it)) {
+                settingsDataStore.setM3uUrl(it)
+            }
+        }
         parsed.remoteInputEnabled?.let { settingsDataStore.setRemoteInputEnabled(it) }
         parsed.autoSkipIntro?.let { settingsDataStore.setAutoSkipIntro(it) }
         parsed.introSkipSeconds?.let { settingsDataStore.setIntroSkipSeconds(it) }
@@ -428,3 +440,20 @@ class RnMigration @Inject constructor(
  */
 internal fun keysToImport(parsedKeys: Collection<String>, existingKeys: Set<String>): List<String> =
     parsedKeys.filter { it.isNotBlank() && it !in existingKeys }
+
+/**
+ * 第 7 轮 D7-P2-3：importSettings 的逐项门控（纯函数，可单测）——
+ * 只有 RN 值非空、且原生侧当前仍空白时才写；原生已有值时不覆盖，
+ * RN 值本身为空时不写（与整包门控不同，另一项的已写状态不影响本项）。
+ */
+internal fun shouldImportUrlSetting(currentValue: String, incoming: String?): Boolean =
+    !incoming.isNullOrBlank() && currentValue.isBlank()
+
+/**
+ * 第 7 轮 D7-P2-5：迁移导入缺时间的行的 saveTime（纯函数，可单测）——
+ * 有合法时间（>0）用原值；缺失/为 0 时按导入顺序递减 `now - index`
+ * （与搜索历史 `now - index * 1000` 同款思路，毫秒级递减已足够区分
+ * 顺序），不再同取 now——否则裁剪到 200 条时平局淘汰是任意子集。
+ */
+internal fun fallbackSaveTime(saveTime: Long?, now: Long, index: Int): Long =
+    saveTime?.takeIf { it > 0 } ?: (now - index)
