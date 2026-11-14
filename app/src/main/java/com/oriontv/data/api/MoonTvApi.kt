@@ -352,16 +352,16 @@ class MoonTvApi @Inject constructor(
             title.lowercase().replace(Regex("\\s+"), "")
 
         /**
-         * 服务端键：`${source}+${id}`，与 RN 一致——分段转义（每段内 `%`→`%25`、
-         * `+`→`%2B`）后用原样 `+` 连接。调用方（DetailViewModel/PlayViewModel）
-         * 用它拼键；请求方法只对整键做一次 URLEncoder.encode，不再整键 escapeKey
-         * （整键转义会把分隔符 `+` 也转掉，与 RN 的键不是同一个键，P1-1）。
+         * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
+         * 拆键时按最后一个 + 切分（见 PlayViewModel.retry）。
+         * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
          */
-        fun generateKey(source: String, id: String): String {
-            fun escapeSegment(segment: String): String =
-                segment.replace("%", "%25").replace("+", "%2B")
-            return "${escapeSegment(source)}+${escapeSegment(id)}"
-        }
+        fun generateKey(source: String, id: String): String =
+            escapeKeySegment(source) + "+" + escapeKeySegment(id)
+
+        /** 键段转义：%→%25、+→%2B（与 [MoonTvApi.escapeKey] 同款规则，按段做）。 */
+        private fun escapeKeySegment(segment: String): String =
+            segment.replace("%", "%25").replace("+", "%2B")
     }
 }
 
