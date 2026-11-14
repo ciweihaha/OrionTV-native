@@ -55,7 +55,7 @@ sealed interface DigitAction {
  * - 上/下循环换台、左/右切同台线路（单线路频道无动作）；
  * - 换台回到主线路（lineIndex=0），手动换台清零失败计数，自动跳台不清零；
  * - 断流：失败计数 >5 停手；面板打开时只提示不跳台；先试未试过的备用线路，全部试完才跳台；
- * - 播放成功清零失败计数与已试线路集合；
+ * - 播放成功只记一笔，连续稳定播出满 10 秒才清零失败计数与已试线路集合（P1-6）；
  * - 数字键：最多 4 位，1500ms 缓冲提交；唯一匹配（不存在以它为前缀的更大号）立即切换；
  * - 收藏：按 url 判重，新的插头部，上限 100 条。
  */
@@ -81,6 +81,13 @@ class LiveController(
     var failCount: Int = 0
         private set
 
+    /**
+     * 最近一次播出成功的时刻（毫秒，P1-6）：短暂播出不立即清零失败计数，
+     * 只有连续稳定播出满 [STABLE_PLAYBACK_MS] 才由 [confirmStablePlayback] 清零；
+     * 期间再失败即作废（见 [onPlaybackError]）。
+     */
+    private var lastSuccessAtMs: Long? = null
+
     /** 本轮自动备用已试过的线路下标。 */
     private val triedLines = mutableSetOf<Int>()
 
@@ -94,14 +101,22 @@ class LiveController(
     /** 台号（1-based，数字键与面板显示用）。 */
     fun channelNumber(index: Int): Int = index + 1
 
-    /** 装入频道列表；按上次频道 URL 恢复（只恢复一次，由调用方保证只调一次）。 */
-    fun setChannels(newChannels: List<M3uParser.Channel>, restoreUrl: String?) {
+    /** 装入频道列表；按上次频道 (url, name) 恢复（P2-4：同 URL 出现多次时只按 URL 会落到第一条）。 */
+    fun setChannels(
+        newChannels: List<M3uParser.Channel>,
+        restoreUrl: String?,
+        restoreName: String? = null,
+    ) {
         channels = newChannels
-        val restored = restoreUrl?.let { url -> newChannels.indexOfFirst { it.url == url } }
-            .takeIf { it != null && it >= 0 }
+        val restored = restoreUrl?.let { url ->
+            newChannels.indexOfFirst {
+                it.url == url && (restoreName == null || it.name == restoreName)
+            }
+        }.takeIf { it != null && it >= 0 }
         currentIndex = restored ?: 0
         lineIndex = 0
         failCount = 0
+        lastSuccessAtMs = null
         triedLines.clear()
         digitBuffer = ""
     }
@@ -118,6 +133,8 @@ class LiveController(
             triedLines.clear()
         }
         currentIndex = index
+        // 换台即开启新的稳定窗口：旧台的短暂播出不算新台的稳定播出。
+        lastSuccessAtMs = null
         if (!isAuto) failCount = 0
         return true
     }
@@ -142,19 +159,39 @@ class LiveController(
         if (channel.urls.size <= 1) return false
         lineIndex = (lineIndex + delta + channel.urls.size) % channel.urls.size
         failCount = 0
+        lastSuccessAtMs = null
         triedLines.clear()
         return true
     }
 
-    /** 播放成功：清零失败计数与已试线路集合。 */
-    fun onPlaybackSuccess() {
+    /**
+     * 播放成功：只记一笔成功时刻，不立即清零（P1-6）。
+     * 旧实现一见 isPlaying 就清零 failCount/triedLines：A 台播 1 秒断流→跳 B 台播 1 秒断流……
+     * 计数永远到不了 5，自动换台无限循环。改成只有连续稳定播出满 10 秒，
+     * 调用方（LiveViewModel 的稳定确认任务）调 [confirmStablePlayback] 才清零。
+     */
+    fun onPlaybackSuccess(nowMs: Long = System.currentTimeMillis()) {
+        lastSuccessAtMs = nowMs
+    }
+
+    /**
+     * 稳定播出确认（P1-6，可单测）：自最近一次成功起已连续稳定播出满
+     * [STABLE_PLAYBACK_MS] 且期间无失败，才清零失败计数与已试线路集合，返回 true；
+     * 否则返回 false、不清零。调用方在成功 10 秒后调一次。
+     */
+    fun confirmStablePlayback(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val since = lastSuccessAtMs ?: return false
+        if (nowMs - since < STABLE_PLAYBACK_MS) return false
+        lastSuccessAtMs = null
         failCount = 0
         triedLines.clear()
+        return true
     }
 
     /** 手动重试当前台（失败计数不清零上限内才有意义，由调用方判断）。 */
     fun resetFailures() {
         failCount = 0
+        lastSuccessAtMs = null
         triedLines.clear()
     }
 
@@ -164,6 +201,8 @@ class LiveController(
      */
     fun onPlaybackError(panelOpen: Boolean): LiveErrorAction {
         if (channels.isEmpty()) return LiveErrorAction.GiveUp("暂无频道")
+        // 本轮内再失败，之前记的短暂成功作废：不清零，等下一次稳定播出（P1-6）。
+        lastSuccessAtMs = null
         failCount++
         if (failCount > MAX_AUTO_FAIL) {
             return LiveErrorAction.GiveUp("连续切换失败，请按上下键手动换台")
@@ -267,6 +306,23 @@ class LiveController(
     companion object {
         /** 断流自动处理上限：连续失败 >5 次停手（plan §5.3）。 */
         const val MAX_AUTO_FAIL = 5
+
+        /** 稳定播出门槛（P1-6）：连续播出满 10 秒才算稳，才清零失败计数与已试线路集合。 */
+        const val STABLE_PLAYBACK_MS = 10_000L
+
+        /**
+         * 按对象身份定位频道在全表里的下标（P2-4）：M3U 里同 URL 出现多次时，
+         * 过滤列表由原表 filter 得出、元素是同一对象，`===` 能区分第几条；
+         * 找不到同一对象时按 (url, name) 回退；仍找不到返回 -1。
+         */
+        fun indexOfChannel(
+            channels: List<M3uParser.Channel>,
+            channel: M3uParser.Channel,
+        ): Int {
+            val byIdentity = channels.indexOfFirst { it === channel }
+            if (byIdentity >= 0) return byIdentity
+            return channels.indexOfFirst { it.url == channel.url && it.name == channel.name }
+        }
 
         /** 数字键缓冲提交 1500ms（RN DIGIT_COMMIT_MS）。 */
         const val DIGIT_COMMIT_MS = 1500L
