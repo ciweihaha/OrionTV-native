@@ -33,6 +33,8 @@ data class HomeRowItem(
 data class HomeRow(
     val title: String,
     val items: List<HomeRowItem>,
+    /** P2-9：单行加载失败时的占位文案（null = 正常行）。 */
+    val error: String? = null,
 )
 
 /** 首页 7 个点播分类（ui-design.md §5.1；CMS 类型对照 plan 附录 B）。 */
