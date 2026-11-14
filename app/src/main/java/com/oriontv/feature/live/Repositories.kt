@@ -1,6 +1,7 @@
 package com.oriontv.feature.live
 
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -57,7 +58,7 @@ class M3uRepository @Inject constructor(
         if (m3uUrl.isBlank()) return@withContext emptyList()
         try {
             val request = Request.Builder().url(m3uUrl).get().build()
-            playlistClient.newCall(request).execute().use { response ->
+            playlistClient.newCall(request).executeCancellable().use { response ->
                 if (!response.isSuccessful) return@withContext emptyList()
                 // A4-P2-2：流式限量读，超 5MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_M3U_BYTES)
@@ -125,7 +126,7 @@ class EpgRepository @Inject constructor(
     suspend fun fetchEpg(): EpgParser.EpgData? = withContext(ioDispatcher) {
         try {
             val request = Request.Builder().url(EPG_URL).get().build()
-            playlistClient.newCall(request).execute().use { response ->
+            playlistClient.newCall(request).executeCancellable().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 // A4-P2-2：流式限量读，超 3MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_CACHE_BYTES)
