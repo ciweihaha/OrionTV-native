@@ -24,6 +24,8 @@ import com.oriontv.feature.live.LiveScreen
 import com.oriontv.feature.play.PlayScreen
 import com.oriontv.feature.search.SearchScreen
 import com.oriontv.feature.settings.SettingsScreen
+import com.oriontv.feature.update.UpdateCard
+import com.oriontv.feature.update.UpdateViewModel
 import com.oriontv.ui.components.NavRail
 import com.oriontv.ui.theme.OrionColors
 
@@ -37,6 +39,7 @@ import com.oriontv.ui.theme.OrionColors
 fun OrionNavHost(
     modifier: Modifier = Modifier,
     authViewModel: AuthViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel(),
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -46,9 +49,12 @@ fun OrionNavHost(
     val showRail = currentRoute !is OrionRoute.Play
     val showLoginModal by authViewModel.showLoginModal.collectAsState()
     val loginError by authViewModel.loginError.collectAsState()
+    val updateState by updateViewModel.uiState.collectAsState()
 
     // 冷启动检查登录态：有标记直接进，无标记用保存凭据静默重登，失败才弹登录框。
     LaunchedEffect(Unit) { authViewModel.checkLoginStatus() }
+    // 冷启动 12 小时静默检查更新（plan §5.6/§6 M3）：有新版且未跳过才弹卡。
+    LaunchedEffect(Unit) { updateViewModel.checkForUpdate(silent = true) }
 
     Box(
         modifier = modifier
@@ -122,6 +128,23 @@ fun OrionNavHost(
                 onLogin = { username, password -> authViewModel.login(username, password) },
                 onDismiss = { authViewModel.hideLogin() },
                 error = loginError,
+            )
+        }
+        // 全局更新卡片：冷启动静默检查发现新版时弹（与设置页手动检查共用同一份状态机，
+        // 但这里是 Activity 级 ViewModel 实例，设置页是导航栈级实例，各自独立）。
+        if (updateState.showUpdateCard && updateState.latestVersion != null) {
+            UpdateCard(
+                currentVersion = updateState.currentVersion,
+                latestVersion = updateState.latestVersion ?: "",
+                apkSizeBytes = updateState.apkSizeBytes,
+                downloading = updateState.downloading,
+                downloadProgress = updateState.downloadProgress,
+                downloaded = updateState.downloadedFilePath != null,
+                error = updateState.error,
+                onUpdate = { updateViewModel.startDownload() },
+                onInstall = { updateViewModel.installUpdate() },
+                onSkip = { updateViewModel.skipVersion() },
+                onDismiss = { updateViewModel.dismissCard() },
             )
         }
     }

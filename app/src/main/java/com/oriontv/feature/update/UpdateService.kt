@@ -6,12 +6,23 @@ import java.security.MessageDigest
  * 更新服务骨架（plan §5.1）：下载地址客户端拼
  * `https://dl.ciweihaha.win/orionTV.{version}.apk`；
  * 下载后强制校验 `<url>.sha256`（支持 `hash  filename` 或纯 hash 两种格式），
- * 不匹配拒绝安装。下载/安装流程在 M3 实现。
+ * 不匹配拒绝安装。下载/校验/安装流程见 [UpdateDownloader] 与 [UpdateViewModel]。
  */
 object UpdateService {
+    /** 冷启动静默检查间隔 12 小时（plan §5.6：须等 lastCheckTime 读回后再算）。 */
+    const val SILENT_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000L
+
     fun downloadUrl(version: String): String = "https://dl.ciweihaha.win/orionTV.$version.apk"
 
     fun sha256Url(version: String): String = "${downloadUrl(version)}.sha256"
+
+    /** 是否到了静默检查时间（上次检查距今 >= 12 小时；从未检查过返回 true）。 */
+    fun shouldCheckNow(lastCheckTimeMs: Long, nowMs: Long = System.currentTimeMillis()): Boolean =
+        lastCheckTimeMs <= 0L || nowMs - lastCheckTimeMs >= SILENT_CHECK_INTERVAL_MS
+
+    /** 该版本是否已被用户跳过。 */
+    fun isSkippedVersion(version: String, skipVersion: String): Boolean =
+        skipVersion.isNotBlank() && version == skipVersion
 
     /** 解析 .sha256 文件内容：支持 `hash  filename` 或纯 hash 两种格式。 */
     fun parseSha256File(content: String): String? {

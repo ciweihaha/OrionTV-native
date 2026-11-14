@@ -83,6 +83,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // 版本号（BuildConfig.VERSION_NAME/VERSION_CODE）供设置页“关于”与更新比对用。
+        buildConfig = true
     }
     packaging {
         resources {
