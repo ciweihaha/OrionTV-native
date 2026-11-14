@@ -361,6 +361,8 @@ class MoonTvApi @Inject constructor(
         }
         var lastError: Exception? = null
         var refreshAttempted = false
+        // B4-P2-15：同 AggApi——repeat 的 lambda 里 coroutineContext 不可见，先捕获。
+        val context = coroutineContext
         repeat(ApiClient.MAX_RETRIES + 1) { attempt ->
             try {
                 client.newCall(request).executeCancellable().use { response ->

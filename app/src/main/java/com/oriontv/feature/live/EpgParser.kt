@@ -109,7 +109,6 @@ object EpgParser {
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
             true
         }.getOrDefault(false)
-        Log.i("EpgParser", "EPG 解析安全特性：$features（ACCESS_EXTERNAL_DTD=\"\" 拦外部 DTD 拉取、不拒 DOCTYPE）")
         // 逐项失败记 warning，防护失效时线上能排查（真机行为仍待用户验证）。
         features.filterValues { !it }.keys.forEach { name ->
             AppLog.w("EpgParser", "EPG 解析安全特性设置失败：$name（本机解析器不支持）")
