@@ -225,13 +225,10 @@ class UpdateViewModel @Inject constructor(
 }
 
 /**
- * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
- * 注意：AggApi.version() 内部仍会对带 v 的版本直接抛错（正则在数据层），
- * 这里的 strip 只是防御层，服务端一旦真带 v 返回，根治还得在 AggApi 里 strip。
+ * P2-22：第 5 轮起根治点在 AggApi（先 strip 再校验），这里只留兼容委托。
  * 纯逻辑，可单测。
  */
-fun stripVersionPrefix(version: String): String =
-    version.trim().removePrefix("v").removePrefix("V")
+fun stripVersionPrefix(version: String): String = VersionUtils.stripVersionPrefix(version)
 
 data class UpdateUiState(
     val currentVersion: String = "",
