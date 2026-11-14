@@ -45,4 +45,17 @@ class PlayViewModelLogicTest {
         assertEquals(0L, PlayViewModel.clampSeekTarget(-5_000L, 60_000L))
         assertEquals(30_000L, PlayViewModel.clampSeekTarget(30_000L, 0L))
     }
+
+    @Test
+    fun `next episode overlay respects dismiss`() {
+        // P1-1：没取消过 → 出现；本集点过“取消” → 播完也不再弹、不自动播下一集
+        assertTrue(PlayViewModel.shouldShowNextEpisode(true, 0, 10, -1))
+        assertFalse(PlayViewModel.shouldShowNextEpisode(true, 0, 10, 0))
+        // 取消的是上一集，不影响本集
+        assertTrue(PlayViewModel.shouldShowNextEpisode(true, 1, 10, 0))
+        // 开关关掉 → 不出现
+        assertFalse(PlayViewModel.shouldShowNextEpisode(false, 0, 10, -1))
+        // 末集 → 不出现
+        assertFalse(PlayViewModel.shouldShowNextEpisode(true, 9, 10, -1))
+    }
 }
