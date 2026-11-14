@@ -46,6 +46,7 @@ import kotlinx.coroutines.withContext
  * 订阅 RemoteInputManager.handshakes 后调 onDismiss）。
  * 服务未启动时显示红字原因，不放空白二维码。
  * 焦点（P1-5）：打开时落在“关闭”按钮上；方向键在弹窗内循环，不会移到背后页面。
+ * 焦点（P1-2，第 5 轮）：服务拉起后“一键开启”按钮消失时，焦点还给“关闭”。
  * 安全（P1-10）：明文提示 + 配对码 5 分钟有效；未启动时可一键开启（P2-14）。
  */
 @Composable
@@ -75,6 +76,12 @@ fun RemoteInputModal(
     LaunchedEffect(Unit) { closeRequester.requestFocus() }
 
     val showEnableButton = onEnableRemoteInput != null && serverUrl.isNullOrBlank()
+
+    // P1-2（第 5 轮）：服务拉起后“一键开启”按钮消失，焦点随之清除；
+    // 状态翻转后把焦点还给“关闭”按钮，不只打开瞬间抢一次。
+    LaunchedEffect(showEnableButton) {
+        if (!showEnableButton) closeRequester.requestFocus()
+    }
 
     AnimatedVisibility(
         visible = true,

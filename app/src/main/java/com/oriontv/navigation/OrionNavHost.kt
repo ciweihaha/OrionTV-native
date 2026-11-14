@@ -19,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -107,9 +106,9 @@ fun OrionNavHost(
     // currentRoute 为 null（未知路由/解析失败）时同样兜底首页（C5-P2-6）。
     val railRoute = railRouteFor(currentRoute) ?: OrionRoute.Home
     val showRail = currentRoute !is OrionRoute.Play
-    // 全局弹窗关闭后的焦点归宿（P1-2）：导航轨首项“首页”，各页的触发点恢复
-    // 由各页自己管（设置页见 SettingsScreen，搜索页扫码弹窗见 SearchScreen）。
-    val railFirstItemRequester = remember { FocusRequester() }
+    // 全局弹窗关闭后的焦点归宿见下面的 focusRestoreTick（C4-P1-2）：各页
+    // 监听 tick 回自己默认锚点，不再统一拉到导航轨首项（P1-2 原方案的前提
+    // “各页没有统一恢复入口”已被 tick 机制取代，见本次 rebase 说明）。
     val showLoginModal by authViewModel.showLoginModal.collectAsState()
     val loginError by authViewModel.loginError.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
@@ -173,7 +172,6 @@ fun OrionNavHost(
             if (showRail) {
                 NavRail(
                     currentRoute = railRoute,
-                    firstItemRequester = railFirstItemRequester,
                     onNavigate = { route ->
                         // C4-P1-5：已在当前页时不导航——popUpTo(Home) 会销毁顶级页
                         //（点已选中直播项重开播放、搜索切走再回丢结果）。
@@ -275,6 +273,8 @@ fun OrionNavHost(
         }
         // 全局更新卡片：冷启动静默检查发现新版时弹，与设置页手动检查共用
         // NavHost 持有的同一个 Activity 级 UpdateViewModel 实例（P1-6）。
+        // 只在这里渲染一份（设置页那份已删，见 SettingsScreen 的 C4-P2-1）；
+        // 关闭后焦点归宿由上面的 focusRestoreTick 恢复（各页回自己默认锚点）。
         if (showUpdateCard) {
             UpdateCard(
                 currentVersion = updateState.currentVersion,
