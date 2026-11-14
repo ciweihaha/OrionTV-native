@@ -80,7 +80,8 @@ object M3uParser {
         }
         // 同一 URL 只留第一次出现
         val deduped = parsed.distinctBy { it.url }
-        // 同名频道合并多线路（台名 Unknown 的不参与合并）
+        // 同名频道合并多线路（台名 Unknown 的不参与合并；D-P2-5：合并按名字
+        // 大小写不敏感，与 EPG 的大小写不敏感匹配一致——CCTV1 与 cctv1 是同一台）。
         val merged = mutableListOf<Channel>()
         val byName = LinkedHashMap<String, Channel>()
         for (channel in deduped) {
@@ -88,9 +89,10 @@ object M3uParser {
                 merged.add(channel)
                 continue
             }
-            val existing = byName[channel.name]
+            val mergeKey = channel.name.lowercase()
+            val existing = byName[mergeKey]
             if (existing == null) {
-                byName[channel.name] = channel
+                byName[mergeKey] = channel
                 merged.add(channel)
             } else {
                 // 合并后必须同步更新 byName：否则第 3 条同名线路到来时
@@ -104,7 +106,7 @@ object M3uParser {
                 )
                 val index = merged.indexOf(existing)
                 merged[index] = mergedChannel
-                byName[channel.name] = mergedChannel
+                byName[mergeKey] = mergedChannel
             }
         }
         return merged

@@ -33,6 +33,26 @@ class M3uParserTest {
     }
 
     @Test
+    fun `same name different case merges into one channel`() {
+        // D-P2-5：合并按名字大小写不敏感，与 EPG 的大小写不敏感匹配一致；
+        // CCTV1 与 cctv1 是同一台，首条的显示名保留。
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1-a.m3u8
+            #EXTINF:-1 tvg-id="cctv1",cctv1
+            http://example.com/cctv1-b.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(1, channels.size)
+        assertEquals("CCTV1", channels[0].name)
+        assertEquals(
+            listOf("http://example.com/cctv1-a.m3u8", "http://example.com/cctv1-b.m3u8"),
+            channels[0].urls,
+        )
+    }
+
+    @Test
     fun `three same-name lines merge without crashing`() {
         // P0-1：旧实现第 3 条同名线路 indexOf 返回 -1，IndexOutOfBoundsException 整表失败
         val content = """
