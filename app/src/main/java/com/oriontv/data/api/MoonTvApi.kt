@@ -128,6 +128,9 @@ class MoonTvApi @Inject constructor(
             try {
                 return@withContext json.decodeFromString<List<ApiSite>>(execute(request))
             } catch (e: IOException) {
+                // 仅超时重试 1 次：4xx、体超限等确定性失败立即抛
+                //（第 6/7/8 轮已让它们 fail fast，这里不能再兜回来多发一次）。
+                if (!AggApi.isBodyTimeout(e)) throw e
                 lastError = e
                 if (attempt == 0) delay(ApiClient.RETRY_BACKOFF_MS)
             }
