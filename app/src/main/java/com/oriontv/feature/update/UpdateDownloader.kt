@@ -75,7 +75,9 @@ class UpdateDownloader @Inject constructor(
             )
         }
         var lastError: Exception? = null
-        repeat(MAX_RETRIES) { attempt ->
+        // MAX_RETRIES 是重试次数（不含首次），与 ApiClient 一致：1 次初试 + 3 次重试。
+        // 原来 repeat(MAX_RETRIES) 只发 3 次（初试 + 2 次重试），与文档“失败重试 3 次”不符。
+        repeat(MAX_RETRIES + 1) { attempt ->
             try {
                 destFile.parentFile?.mkdirs()
                 val request = Request.Builder().url(url).get().build()
@@ -113,7 +115,7 @@ class UpdateDownloader @Inject constructor(
             } catch (e: Exception) {
                 lastError = e
                 destFile.delete()
-                if (attempt < MAX_RETRIES - 1) {
+                if (attempt < MAX_RETRIES) {
                     delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
                 }
             }
