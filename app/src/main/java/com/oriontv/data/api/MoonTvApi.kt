@@ -218,7 +218,7 @@ class MoonTvApi @Inject constructor(
 
     // ---- 收藏（服务端模式） ----
 
-    override suspend fun getFavorites(baseUrl: String, key: String? = null): Map<String, Favorite> =
+    override suspend fun getFavorites(baseUrl: String, key: String?): Map<String, Favorite> =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/favorites" +
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
