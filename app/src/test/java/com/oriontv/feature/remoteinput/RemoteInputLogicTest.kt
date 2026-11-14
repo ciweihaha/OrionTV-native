@@ -191,11 +191,17 @@ class RemoteInputLogicTest {
         assertEquals(32, token.length)
         assertTrue(token.all { it.isDigit() || it in 'a'..'f' })
         // 凭 token 发消息，不用再带码；错 token 拒绝。
+        // P2-14（第 5 轮）：token 绑定签发时客户端 IP，同一 IP 才能用。
         val viaToken = router.handle(
+            "POST", "/message", mapOf("X-Session-Token" to token),
+            """{"message":"你好"}""", "1.2.3.4",
+        )
+        assertEquals(200, viaToken.statusCode)
+        val otherIp = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to token),
             """{"message":"你好"}""", "9.9.9.9",
         )
-        assertEquals(200, viaToken.statusCode)
+        assertEquals(403, otherIp.statusCode)
         val badToken = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to "0".repeat(32)),
             """{"message":"你好"}""", "9.9.9.9",
@@ -203,7 +209,7 @@ class RemoteInputLogicTest {
         assertEquals(403, badToken.statusCode)
         // token 过期后拒绝。
         now += RemoteInputLogic.SESSION_TOKEN_TTL_MS + 1
-        assertFalse(router.isSessionTokenValid(token))
+        assertFalse(router.isSessionTokenValid(token, "1.2.3.4"))
         val expiredToken = router.handle(
             "POST", "/message", mapOf("X-Session-Token" to token),
             """{"message":"你好"}""", "9.9.9.9",

@@ -31,6 +31,9 @@ object RemoteInputLogic {
     /** 配对成功后发的会话 token 有效期 24 小时（P1-10：码只用于换 token）。 */
     const val SESSION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000L
 
+    /** 会话 token 表上限 32 条（P2-14：第 5 轮起加，超限淘汰签发最早的一条）。 */
+    const val MAX_SESSION_TOKENS = 32
+
     /** 同一 IP 连续失败 5 次锁定 60 秒（RN 同款，按 IP 分离计数）。 */
     const val MAX_PAIRING_ATTEMPTS = 5
     const val PAIRING_LOCKOUT_MS = 60_000L
@@ -244,12 +247,19 @@ class RemoteInputRouter(
     var previousPairingCodeIssuedAtMs: Long = 0L
         private set
 
+    /** 已发会话 token（P2-14：第 5 轮起绑定签发时客户端 IP）。 */
+    private data class SessionToken(
+        val expiresAtMs: Long,
+        val clientIp: String,
+        val issuedAtMs: Long,
+    )
+
     /**
-     * 已发会话 token → 过期时间（毫秒）。
+     * 已发会话 token → [SessionToken]。
      * 第 3 轮收尾 B-P2-1：与 PairingGate 同款问题，NanoHTTPD 多线程并发
      * 读写，换 ConcurrentHashMap（读-改-写单步操作本身已原子）。
      */
-    private val sessionTokens = ConcurrentHashMap<String, Long>()
+    private val sessionTokens = ConcurrentHashMap<String, SessionToken>()
 
     /** 服务启动成功后轮换配对码（启动失败不废旧码，RN 同款）。 */
     fun rotatePairingCode(): String {
@@ -294,28 +304,41 @@ class RemoteInputRouter(
             RemoteInputLogic.PAIRING_CODE_TTL_MS + RemoteInputLogic.PAIRING_CODE_GRACE_MS
     }
 
-    /** 校验会话 token（过期即清掉并返回 false）。 */
-    fun isSessionTokenValid(token: String, now: Long = nowMs()): Boolean {
+    /** 校验会话 token（过期即清掉并返回 false；P2-14：须与签发时同一 IP，嗅到即用不再成立）。 */
+    fun isSessionTokenValid(token: String, clientIp: String, now: Long = nowMs()): Boolean {
         if (token.isEmpty()) return false
-        val expiry = sessionTokens[token] ?: return false
-        if (now > expiry) {
+        val stored = sessionTokens[token] ?: return false
+        if (now > stored.expiresAtMs) {
             sessionTokens.remove(token)
             return false
         }
-        return true
+        return stored.clientIp == normalizedIp(clientIp)
     }
 
-    /** 握手成功后发一个会话 token（调用方把它写进响应）。 */
-    fun issueSessionToken(now: Long = nowMs()): String {
+    /** 握手成功后发一个会话 token（调用方把它写进响应；P2-14：绑定签发时客户端 IP）。 */
+    fun issueSessionToken(now: Long = nowMs(), clientIp: String = ""): String {
         pruneSessionTokens(now)
+        // P2-14：token 表加 32 条上限——多次握手不再只增不减；先清过期，
+        // 仍超限时淘汰签发最早的一条。
+        if (sessionTokens.size >= RemoteInputLogic.MAX_SESSION_TOKENS) {
+            sessionTokens.entries.minByOrNull { it.value.issuedAtMs }?.key?.let {
+                sessionTokens.remove(it)
+            }
+        }
         val token = RemoteInputLogic.generateSessionToken()
-        sessionTokens[token] = now + RemoteInputLogic.SESSION_TOKEN_TTL_MS
+        sessionTokens[token] = SessionToken(
+            expiresAtMs = now + RemoteInputLogic.SESSION_TOKEN_TTL_MS,
+            clientIp = normalizedIp(clientIp),
+            issuedAtMs = now,
+        )
         return token
     }
 
     private fun pruneSessionTokens(now: Long) {
-        sessionTokens.entries.removeIf { it.value <= now }
+        sessionTokens.entries.removeIf { it.value.expiresAtMs <= now }
     }
+
+    private fun normalizedIp(clientIp: String): String = clientIp.ifBlank { "unknown" }
 
     fun handle(
         method: String,
@@ -335,7 +358,7 @@ class RemoteInputRouter(
                     if (!isPairingValid(headers, clientIp)) {
                         return HttpResult(403, "application/json", """{"error":"Invalid pairing code"}""")
                     }
-                    val token = issueSessionToken()
+                    val token = issueSessionToken(clientIp = clientIp)
                     onHandshake()
                     HttpResult(200, "application/json", """{"status":"ok","token":"$token"}""")
                 }
@@ -380,12 +403,12 @@ class RemoteInputRouter(
         return pairingGate.check(clientIp, code, expected)
     }
 
-    /** /message 认会话 token，兼容仍在有效期内的配对码（老客户端/首次发送）。 */
+    /** /message 认会话 token（P2-14：须与签发时同一 IP），兼容仍在有效期内的配对码（老客户端/首次发送）。 */
     private fun isSessionValid(headers: Map<String, String>, clientIp: String): Boolean {
         val token = headers.entries.firstOrNull {
             it.key.equals("x-session-token", ignoreCase = true)
         }?.value.orEmpty()
-        if (token.isNotEmpty() && isSessionTokenValid(token)) return true
+        if (token.isNotEmpty() && isSessionTokenValid(token, clientIp)) return true
         return isPairingValid(headers, clientIp)
     }
 }
