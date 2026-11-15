@@ -183,10 +183,16 @@ class LiveViewModel @Inject constructor(
             _uiState.update { it.copy(m3uConfigured = true, favorites = favorites) }
             val channels = m3uRepository.loadChannels(m3uUrl)
             if (channels.isEmpty()) {
+                // 第 10 轮 L10-P2-2（D9-P2-8 残口）：空表不再恒当失败——
+                // 仓库层已区分“拉取失败”与“成功但空表”，调用点也要分：
+                // loadFailed 为真才是加载失败；否则是源本身 0 个频道，
+                // 置 emptySource 态（EmptyState 另分支提示），不误报失败。
+                val failed = m3uRepository.loadFailed.value
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        loadError = "直播源加载失败，请检查 M3U 地址或网络后重试",
+                        emptySource = !failed,
+                        loadError = if (failed) "直播源加载失败，请检查 M3U 地址或网络后重试" else null,
                     )
                 }
                 return@launch
@@ -199,6 +205,10 @@ class LiveViewModel @Inject constructor(
                     currentIndex = controller.currentIndex,
                     lineIndex = controller.lineIndex,
                     focusedChannelIndex = controller.currentIndex,
+                    // 第 10 轮 L10-P2-2：成功加载即清掉旧的空源/失败态——
+                    // 之前某次空源后源里又有了频道，不清会一直挂空态文案。
+                    emptySource = false,
+                    loadError = null,
                 )
             }
             playCurrent()
@@ -246,7 +256,9 @@ class LiveViewModel @Inject constructor(
             val fresh = m3uRepository.loadChannels(m3uUrl, forceRefresh = true)
             // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，
             // 只判空就当刷新成功、静默无事发生；loadFailed 标记是唯一的失败信号。
-            if (shouldReportRefreshFailed(fresh.isEmpty(), m3uRepository.loadFailed.value)) {
+            // 第 10 轮 L10-P2-2（D9-P2-8 残口）：空表不再恒当失败——合法空源
+            // （成功拉取、0 个频道）不再误报“刷新失败”；失败只看 loadFailed。
+            if (shouldReportRefreshFailed(m3uRepository.loadFailed.value)) {
                 showToast("刷新失败，仍用旧频道表")
                 return@launch
             }
@@ -271,6 +283,9 @@ class LiveViewModel @Inject constructor(
                     lineIndex = controller.lineIndex,
                     focusedChannelIndex = controller.currentIndex,
                     epgDialogChannel = resolvedDialogChannel,
+                    // 第 10 轮 L10-P2-2：合法空源刷新成功即置空源态（EmptyState
+                    // 另分支提示），不滞留旧的失败文案；非空即清掉旧空源态。
+                    emptySource = fresh.isEmpty(),
                     // A11-P2-3：频道表版本号 +1——面板打开时刷新若重排了频道表，
                     // 焦点所在的旧行可能已被卸载/换位；面板落焦 effect 的 key
                     // 只有 (panelOpen, selectedGroup)，表变化时不重跑、焦点丢失
@@ -278,8 +293,15 @@ class LiveViewModel @Inject constructor(
                     channelsVersion = it.channelsVersion + 1,
                 )
             }
+            // 第 10 轮 L10-P2-2：合法空源刷新成功后，正在播的旧台已不在
+            // 源里——停掉它，不留 EmptyState 盖着屏幕、旧台音频仍在播的
+            // 不一致态（失败刷新才保留旧表不断流，成功空源不适用）。
+            if (fresh.isEmpty()) {
+                playerManager.stopIfOwner(playbackToken)
+            }
             // 当前台还在新表里且之前没失败过：不断流，只更新表；否则重开播。
-            if (controller.currentUrl != lastPlayedUrl || wasFailed) playCurrent()
+            // 空源时上面已停播，playCurrent 取不到 url 会直接返回，不再调。
+            if (fresh.isNotEmpty() && (controller.currentUrl != lastPlayedUrl || wasFailed)) playCurrent()
         }
     }
 
@@ -1014,10 +1036,13 @@ class LiveViewModel @Inject constructor(
         /**
          * 手动刷新后是否应按“刷新失败”提示（可单测，A8-P1-2）：拉网失败时
          * loadChannels 回落旧缓存、返回非空旧表，只判表空会把失败当成功、
-         * 静默无事发生；失败标记为真或表为空时都要提示、保留旧表。
+         * 静默无事发生；失败标记为真时必须提示、保留旧表。
+         * 第 10 轮 L10-P2-2（D9-P2-8 残口）：失败只看 loadFailed——合法空源
+         * （成功拉取、0 个频道）不是失败，旧签名 `freshIsEmpty || loadFailed`
+         * 会误报“刷新失败，仍用旧频道表”；空表与否由调用方按 emptySource 态处理。
          */
-        internal fun shouldReportRefreshFailed(freshIsEmpty: Boolean, loadFailed: Boolean): Boolean =
-            freshIsEmpty || loadFailed
+        internal fun shouldReportRefreshFailed(loadFailed: Boolean): Boolean =
+            loadFailed
 
         /**
          * 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败的轻提示文案（可单测，与 M3U
@@ -1037,6 +1062,11 @@ data class LiveUiState(
     /** 是否配了 M3U 地址（未配时显示空态指引，不直接报错）。 */
     val m3uConfigured: Boolean = false,
     val loadError: String? = null,
+    /**
+     * 第 10 轮 L10-P2-2：合法空源态——M3U 拉取成功但 0 个频道（与拉取失败
+     * 区分：失败置 loadError，空源置本标志；EmptyState 另分支提示）。
+     */
+    val emptySource: Boolean = false,
     val channels: List<M3uParser.Channel> = emptyList(),
     /** A11-P2-3：频道表版本号——refreshChannels 成功即 +1，供面板落焦
      * effect 作 key；表重排后面板重落当前台行，焦点不丢失。 */

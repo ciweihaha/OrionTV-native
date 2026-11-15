@@ -127,13 +127,13 @@ class LiveViewModelLogicTest {
     }
 
     @Test
-    fun `refresh failure is reported when network fails even with cached channels`() {
+    fun `refresh failure is reported only on load failure, not on empty source`() {
         // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，只判空
-        // 会把失败当成功、静默无事发生；失败标记为真时必须提示
-        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = false, loadFailed = true))
-        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = true, loadFailed = false))
-        assertTrue(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = true, loadFailed = true))
-        assertFalse(LiveViewModel.shouldReportRefreshFailed(freshIsEmpty = false, loadFailed = false))
+        // 会把失败当成功、静默无事发生；失败标记为真时必须提示。
+        // 第 10 轮 L10-P2-2（D9-P2-8 残口）：合法空源（成功拉取、0 个频道）
+        // 不是失败——旧实现 `freshIsEmpty || loadFailed` 会误报“刷新失败”。
+        assertTrue(LiveViewModel.shouldReportRefreshFailed(loadFailed = true))
+        assertFalse(LiveViewModel.shouldReportRefreshFailed(loadFailed = false))
     }
 
     @Test
