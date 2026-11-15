@@ -318,12 +318,23 @@ class LiveViewModel @Inject constructor(
         stablePlayJob?.cancel()
         val url = controller.currentUrl ?: return
         playingConfirmed = false
-        // 同 URL 重播（OK 重试当前台）：先停掉旧 item 才能真正重挂播放器。
-        if (url == lastPlayedUrl) playerManager.stop()
-        lastPlayedUrl = url
-        // 点播 2× 倍速不泄漏到直播：PlayerManager 单例保留倍速，开播前复位 1×。
+        // A12-P2-1：回页时同台仍在缓冲——直接 play() 续播，不 stop()+playUrl()：
+        // stop() 内 clearMediaItems() 会丢掉已缓冲的分片，白白从头重缓；
+        // play() 只置 playWhenReady（缓冲中本来就已是 true，基本是空操作），
+        // 已缓冲的数据原地接上。只认“同 URL 且正在缓冲”：已暂停就绪态 /
+        // 未加载 / 换台仍走下面现有重播（回看语义不变）；播放器里挂的不是
+        // 同一条 URL 时 currentUrl 对不上，同样走重播，保守、不误判。
+        // 就绪超时照常重 arm（下面共用尾巴）：缓冲继续走、要么播出来、要么
+        // 超时进断流链，不借反复切后台给死流续命。
         playerManager.setPlaybackSpeed(LIVE_PLAYBACK_SPEED)
-        playerManager.playUrl(url)
+        if (shouldResumeBuffering(url, lastPlayedUrl, playerManager.currentUrl, playerManager.isBuffering)) {
+            playerManager.play()
+        } else {
+            // 同 URL 重播（OK 重试当前台）：先停掉旧 item 才能真正重挂播放器。
+            if (url == lastPlayedUrl) playerManager.stop()
+            lastPlayedUrl = url
+            playerManager.playUrl(url)
+        }
         playbackStarted = true
         _uiState.update {
             it.copy(
@@ -840,6 +851,22 @@ class LiveViewModel @Inject constructor(
             isPlaying: Boolean,
             playbackFailed: Boolean = false,
         ): Boolean = !(isCurrentOwner && isPlaying) && !playbackFailed
+
+        /**
+         * 回页时同台缓冲是否应直接 play() 续播、不 stop()+playUrl() 重挂
+         * （可单测，A12-P2-1）：目标台就是上次播的台、播放器里挂的也是同一条
+         * URL、且正在缓冲时才续播——play() 只置 playWhenReady，已缓冲的分片
+         * 原地接上；已暂停就绪态（isBuffering=false）/ 未加载（currentUrl=null）
+         * / 换台时一律走现有重播。Uri 往返的编码差异导致对不上时也走重播，
+         * 宁可多缓一次，不误判。
+         */
+        internal fun shouldResumeBuffering(
+            targetUrl: String?,
+            lastPlayedUrl: String?,
+            currentPlayerUrl: String?,
+            isBuffering: Boolean,
+        ): Boolean = targetUrl != null && targetUrl == lastPlayedUrl &&
+            targetUrl == currentPlayerUrl && isBuffering
 
         /**
          * 面板定时器是否应挂起（可单测，P1-4）：面板打开且 EPG 弹窗未打开时才挂 15 秒定时器；

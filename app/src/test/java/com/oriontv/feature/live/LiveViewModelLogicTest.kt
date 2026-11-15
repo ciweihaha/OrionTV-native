@@ -138,4 +138,24 @@ class LiveViewModelLogicTest {
         assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
         assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
     }
+
+    @Test
+    fun `buffering same channel resumes with play instead of stop and replay`() {
+        // A12-P2-1：回页时同台仍在缓冲——直接 play() 续播，不 stop()+playUrl()；
+        // stop() 会清掉媒体项、丢掉已缓冲的分片。只有“同 URL 且正在缓冲”才续播。
+        val url = "http://a/1.m3u8"
+        assertTrue(LiveViewModel.shouldResumeBuffering(url, url, url, isBuffering = true))
+        // 已暂停就绪态（不在缓冲）→ 走现有重播
+        assertFalse(LiveViewModel.shouldResumeBuffering(url, url, url, isBuffering = false))
+        // 换台 → 重播
+        assertFalse(LiveViewModel.shouldResumeBuffering("http://a/2.m3u8", url, url, isBuffering = true))
+        // 播放器里挂的不是这条 URL（或未加载）→ 重播，保守、不误判
+        assertFalse(LiveViewModel.shouldResumeBuffering(url, url, "http://a/2.m3u8", isBuffering = true))
+        assertFalse(LiveViewModel.shouldResumeBuffering(url, url, null, isBuffering = true))
+        // 上次没播过这台 → 重播
+        assertFalse(LiveViewModel.shouldResumeBuffering(url, null, url, isBuffering = true))
+        assertFalse(LiveViewModel.shouldResumeBuffering(url, "http://a/2.m3u8", url, isBuffering = true))
+        // 目标为空 → 重播
+        assertFalse(LiveViewModel.shouldResumeBuffering(null, url, url, isBuffering = true))
+    }
 }

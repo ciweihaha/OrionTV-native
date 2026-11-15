@@ -136,6 +136,13 @@ class PlayerManager @Inject constructor(
      * 既不进 PiP 也不暂停、稍后出声变无窗口后台音频——改按它进 PiP）。 */
     val hasMediaItem: Boolean get() = player.currentMediaItem != null
 
+    /**
+     * 当前已挂的媒体 URL（A12-P2-1：回页时缓冲中的同台直接 play() 续播、
+     * 不 stop()+playUrl() 重挂——须先确认播放器里挂的确实是同一条 URL；
+     * 未挂媒体项时 null。Uri 往返可能与原串有编码差异，对不上时调用方
+     * 只当“不是同 URL”、走原有重播，保守、不误判。 */
+    val currentUrl: String? get() = player.currentMediaItem?.localConfiguration?.uri?.toString()
+
     fun release() {
         player.release()
     }

@@ -164,6 +164,21 @@ class PlayViewModel @Inject constructor(
                     _uiState.update { it.copy(episodeIndex = episodeIndex, positionMs = positionMs) }
                     routePositionMs = positionMs
                 }
+            } else if (positionMs > 0) {
+                // A12-P2-2：同 key、同集、只换了新起点时旧实现直接 return，
+                // positionMs 全程未读，深链带来的新起点被丢弃；已开播时直接
+                // seek 一次（与当前进度相同则不动），仍在搜源（current == null）
+                // 时按集号变化分支同款记入 routePositionMs，由搜源回调的
+                // launchStartEpisode 消费，不丢起点。
+                val current = _uiState.value.current
+                if (current != null) {
+                    if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
+                        seekTo(positionMs)
+                    }
+                } else {
+                    routePositionMs = positionMs
+                    _uiState.update { it.copy(positionMs = positionMs) }
+                }
             }
             return
         }
@@ -1058,6 +1073,15 @@ class PlayViewModel @Inject constructor(
     }
 
     companion object {
+        /**
+         * 同 key、同集、只换了新起点时是否应直接 seek（可单测，A12-P2-2）：
+         * 新起点有效（>0）且与当前进度不同时 seek 一次；等于当前进度时不动，
+         * 免得一次重复深链把正在播的位置抖回几百毫秒前。起点为 0 不算“新起点”
+         * （调用方按“未指定”处理）。
+         */
+        internal fun shouldSeekToNewPosition(positionMs: Long, currentPositionMs: Long): Boolean =
+            positionMs > 0 && positionMs != currentPositionMs
+
         /**
          * 搜源回调是否应开播（可单测，A11-P2-2）：回调起搜时快照的 key 仍等于
          * 当前 currentKey、且当前无结果、有结果时才开播；旧 key 的回调一律

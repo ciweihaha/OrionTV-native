@@ -233,4 +233,14 @@ class PlayViewModelLogicTest {
         assertFalse(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(90_000L, 90_000L))
         assertFalse(PlayViewModel.shouldRearmIntroSkipOnSameEpisode(30_000L, 0L))
     }
+
+    @Test
+    fun `same episode new start position seeks only when it differs`() {
+        // A12-P2-2：同 key、同集、只换了新起点时直接 seek 一次；新起点为 0
+        // 不算“新起点”，等于当前进度时不动（免得重复深链把位置抖回去）。
+        assertTrue(PlayViewModel.shouldSeekToNewPosition(120_000L, 30_000L))
+        assertTrue(PlayViewModel.shouldSeekToNewPosition(1L, 0L))
+        assertFalse(PlayViewModel.shouldSeekToNewPosition(0L, 30_000L))
+        assertFalse(PlayViewModel.shouldSeekToNewPosition(30_000L, 30_000L))
+    }
 }
