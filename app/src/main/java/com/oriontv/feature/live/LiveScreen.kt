@@ -794,7 +794,10 @@ private fun ChannelPanel(
     // C5-P2-1/A5-P2-8：目标行尚未组合完成时单次 requestFocus 静默失败，
     // 改 requestFocusWithRetry；仍失败回退到根（根的 onKeyUp 知道面板开着，
     // 返回键仍能关面板），不再靠固定 delay(100) 猜时序。
-    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup) {
+    // A11-P2-3：key 加频道表版本——面板打开时“刷新直播源”若重排了频道表，
+    // 焦点所在的旧行可能已被卸载/换位；之前 key 只有 (panelOpen, selectedGroup)，
+    // 表变化时 effect 不重跑、焦点丢失且无恢复。
+    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion) {
         if (uiState.panelOpen) {
             if (filtered.isEmpty()) {
                 firstChipRequester.requestFocusWithRetry()

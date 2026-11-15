@@ -246,6 +246,11 @@ class LiveViewModel @Inject constructor(
                     lineIndex = controller.lineIndex,
                     focusedChannelIndex = controller.currentIndex,
                     epgDialogChannel = resolvedDialogChannel,
+                    // A11-P2-3：频道表版本号 +1——面板打开时刷新若重排了频道表，
+                    // 焦点所在的旧行可能已被卸载/换位；面板落焦 effect 的 key
+                    // 只有 (panelOpen, selectedGroup)，表变化时不重跑、焦点丢失
+                    // 且无恢复。版本号进 effect key，刷新后重落当前台行。
+                    channelsVersion = it.channelsVersion + 1,
                 )
             }
             // 当前台还在新表里且之前没失败过：不断流，只更新表；否则重开播。
@@ -924,6 +929,9 @@ data class LiveUiState(
     val m3uConfigured: Boolean = false,
     val loadError: String? = null,
     val channels: List<M3uParser.Channel> = emptyList(),
+    /** A11-P2-3：频道表版本号——refreshChannels 成功即 +1，供面板落焦
+     * effect 作 key；表重排后面板重落当前台行，焦点不丢失。 */
+    val channelsVersion: Int = 0,
     val currentIndex: Int = 0,
     val lineIndex: Int = 0,
     val selectedGroup: String = LiveController.ALL_GROUP,

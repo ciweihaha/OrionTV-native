@@ -8,6 +8,20 @@ import org.junit.Test
 class PlayViewModelLogicTest {
 
     @Test
+    fun `stale search callback does not start playback under a new key`() {
+        // A11-P2-2：旧搜源回调只凭 current == null 开播，新 key 的 init()
+        // 已清掉 current 后旧回调跑到，会让旧片在新 key 下开播；起搜时
+        // 快照 key，回调开播前复核快照仍等于当前 key。
+        assertTrue(PlayViewModel.shouldStartEpisodeFromSearch("a", "a", false, true))
+        // 旧 key 回调：即使当前无结果、有结果，也不开播
+        assertFalse(PlayViewModel.shouldStartEpisodeFromSearch("a", "b", false, true))
+        // 同代但已有结果：只更新列表，不开播
+        assertFalse(PlayViewModel.shouldStartEpisodeFromSearch("a", "a", true, true))
+        // 同代但无结果：不开播
+        assertFalse(PlayViewModel.shouldStartEpisodeFromSearch("a", "a", false, false))
+    }
+
+    @Test
     fun `ready only when actually playing`() {
         // P1-4：光出时长不算就绪，分片全死的流不能清 isLoading、不能取消 20 秒超时
         assertTrue(PlayViewModel.isPlaybackReady(isPlaying = true))

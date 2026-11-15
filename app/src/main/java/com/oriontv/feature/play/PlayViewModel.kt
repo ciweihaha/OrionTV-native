@@ -203,6 +203,18 @@ class PlayViewModel @Inject constructor(
                 error = null,
                 autoSwitchAttempts = 0,
                 failedSources = emptySet(),
+                // A11-P2-1：新 key 分支也要清掉旧集的 UI 态——之前只清了上面
+                // 几项，旧集的下一集预告卡（带倒计时）、抽屉、跳过片头胶囊、
+                // 时长/缓冲/断点位置全沿用旧值，残留在新片搜源期；旧集当时开着
+                // 抽屉时更会残留一个内容为空的抽屉，直到新集 startEpisode()
+                // 才把 showNextEpisode/drawer 置 false。
+                showNextEpisode = false,
+                isEnded = false,
+                drawer = null,
+                skipIntroVisible = false,
+                durationMs = 0L,
+                bufferedMs = 0L,
+                breakpointMs = 0L,
             )
         }
         startSearch()
@@ -216,7 +228,15 @@ class PlayViewModel @Inject constructor(
      */
     private fun startSearch() {
         searchInterrupted = false
-        val (source, id) = MoonTvApi.splitKey(currentKey)
+        // A11-P2-2：起搜时快照 currentKey——旧搜源的 onUpdate 在 IO 线程内
+        // 同步回调，Job.cancel() 只在挂起点生效；旧回调可能在新 key 的 init()
+        // 已清掉 current 之后才跑到，只凭 state.current == null 开播会让旧片
+        // 在新 key 下开播（A10-P2-4 的竞态残留）。回调开播前复核快照仍等于
+        // 当前 currentKey，不等只更新列表不开播；旧 key 回调连列表也不更新
+        //（旧源表会污染新片的换源列表）；搜完后的“无源”错误与异常错误
+        // 同样只在同代时才落态。
+        val searchKey = currentKey
+        val (source, id) = MoonTvApi.splitKey(searchKey)
         val title = _uiState.value.title
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
@@ -224,15 +244,21 @@ class PlayViewModel @Inject constructor(
                 val preferredSource = if (source == "douban") null else source.ifBlank { null }
                 detailRepository.searchDetail(title, preferredSource, id.ifBlank { null }) { results, _ ->
                     val state = _uiState.value
-                    if (state.current == null && results.isNotEmpty()) {
+                    if (shouldStartEpisodeFromSearch(
+                            searchKey,
+                            currentKey,
+                            state.current != null,
+                            results.isNotEmpty(),
+                        )
+                    ) {
                         val first = results.firstOrNull { it.source == source } ?: results[0]
                         _uiState.update { it.copy(results = results, current = first) }
                         launchStartEpisode(first, state.episodeIndex)
-                    } else {
+                    } else if (searchKey == currentKey) {
                         _uiState.update { it.copy(results = results) }
                     }
                 }
-                if (_uiState.value.current == null) {
+                if (searchKey == currentKey && _uiState.value.current == null) {
                     _uiState.update {
                         it.copy(isLoading = false, error = "没有找到可播放的源")
                     }
@@ -241,6 +267,7 @@ class PlayViewModel @Inject constructor(
                 // A4-P2-1：取消必须原样抛出（与 DetailViewModel 同款残留）。
                 throw e
             } catch (e: Exception) {
+                if (searchKey != currentKey) return@launch
                 _uiState.update {
                     it.copy(isLoading = false, error = "加载失败：${e.message ?: "网络错误"}")
                 }
@@ -1031,6 +1058,19 @@ class PlayViewModel @Inject constructor(
     }
 
     companion object {
+        /**
+         * 搜源回调是否应开播（可单测，A11-P2-2）：回调起搜时快照的 key 仍等于
+         * 当前 currentKey、且当前无结果、有结果时才开播；旧 key 的回调一律
+         * 不开播——onUpdate 在 IO 线程内同步回调，Job.cancel() 只在挂起点
+         * 生效，只凭 current == null 判断会让旧片在新 key 下开播。
+         */
+        internal fun shouldStartEpisodeFromSearch(
+            searchKey: String,
+            currentKey: String,
+            hasCurrent: Boolean,
+            hasResults: Boolean,
+        ): Boolean = searchKey == currentKey && !hasCurrent && hasResults
+
         /**
          * VOD 就绪超时到点是否应触发（可单测，A10-P2-1）：页面在前台、仍在
          * 加载、有当前结果、用户没手动暂停时才触发；离页后到点不触发
