@@ -288,6 +288,10 @@ class UpdateViewModel @Inject constructor(
                             _uiState.value.downloadedVersion,
                             latest,
                         ) && _uiState.value.downloadedFilePath?.let { File(it).exists() } == true
+                        // B24-P2-1：keepDownload == false 时旧版已下载包失效——只清
+                        // 内存态会让文件成孤儿（B20-P2-2 同族第四处；另两分支与
+                        // skipVersion() 已补这两步）。先读路径再清状态，清记录时顺手删文件。
+                        val downloadedPath = _uiState.value.downloadedFilePath
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -300,6 +304,10 @@ class UpdateViewModel @Inject constructor(
                                 downloadedFilePath = if (keepDownload) it.downloadedFilePath else null,
                                 downloadedVersion = if (keepDownload) it.downloadedVersion else null,
                             )
+                        }
+                        if (!keepDownload) {
+                            clearDownloadedApkRecordQuietly()
+                            deleteDownloadedApkFileQuietly(downloadedPath)
                         }
                     }
                 }
