@@ -170,6 +170,46 @@ class RemoteInputLogicTest {
     }
 
     @Test
+    fun `expired token messages do not lock pairing`() {
+        // B20-P2-1：过期 token 连发 5 次 /message 不得计入配对失败——旧实现
+        // token 失效后回落到 isPairingValid、无配对码也记一次失败，5 次即锁
+        // 定配对 60 秒，随后正确码握手也被拒。修后 5 次过期 token /message
+        // 均为 403、不记数，正确码握手仍立即成功。
+        var now = 1_000_000L
+        var handshakes = 0
+        val router = RemoteInputRouter(
+            pairingGate = PairingGate(nowMs = { now }),
+            onHandshake = { handshakes++ },
+            nowMs = { now },
+        )
+        router.rotatePairingCode()
+        val handshake = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to router.pairingCode), "{}", "1.2.3.4",
+        )
+        assertEquals(200, handshake.statusCode)
+        val token = handshake.body.substringAfter("\"token\":\"").substringBefore("\"")
+        assertEquals(32, token.length)
+        // token 过期（24 小时）；配对码也已过期，轮换一枚新码供随后握手用。
+        now += RemoteInputLogic.SESSION_TOKEN_TTL_MS + 1
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        repeat(5) {
+            val expired = router.handle(
+                "POST", "/message", mapOf("X-Session-Token" to token),
+                """{"message":"你好"}""", "1.2.3.4",
+            )
+            assertEquals(403, expired.statusCode)
+        }
+        assertEquals(1, handshakes)
+        // 正确码握手仍立即成功，不受 5 次过期 token /message 影响。
+        val ok = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(200, ok.statusCode)
+        assertEquals(2, handshakes)
+    }
+
+    @Test
     fun `router serves pairing page handshake and message`() {
         var received: String? = null
         var handshakes = 0

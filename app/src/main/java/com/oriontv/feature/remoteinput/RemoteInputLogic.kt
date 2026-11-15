@@ -477,6 +477,17 @@ class RemoteInputRouter(
             it.key.equals("x-session-token", ignoreCase = true)
         }?.value.orEmpty()
         if (token.isNotEmpty() && isSessionTokenValid(token, clientIp)) return true
+        // B20-P2-1：token 失效不再无条件回落到会记失败的 isPairingValid——
+        // 旧实现请求没带配对码也记一次失败，过期 token 连发 5 次 /message
+        // 就攒满锁定、随后正确码握手也在 60 秒锁定期内被拒。token 失败不是
+        // “猜配对码”，不记数：只有请求明确带了配对码时才走兼容校验（错码
+        // 才记数）；否则直接 403。
+        if (token.isNotEmpty()) {
+            val code = headers.entries.firstOrNull {
+                it.key.equals("x-pairing-code", ignoreCase = true)
+            }?.value.orEmpty()
+            if (code.isEmpty()) return false
+        }
         return isPairingValid(headers, clientIp)
     }
 }

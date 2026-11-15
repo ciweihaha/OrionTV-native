@@ -149,6 +149,18 @@ class UpdateViewModel @Inject constructor(
     }
 
     /**
+     * B20-P2-2：清已下载记录时顺手删磁盘上的包——只清记录不删文件时，
+     * 记录已被清掉、启动恢复 load() 返回 null 直接 return，文件永远无人
+     * 处理成孤儿包（上限约 2 个、~6MB）。失败忽略：附属清理，不推翻主流程
+     *（与 clearDownloadedApkRecordQuietly 同款口径；B11-P2-1）。
+     * 调用方须先读 _uiState.value.downloadedFilePath（清状态前）。
+     */
+    private fun deleteDownloadedApkFileQuietly(path: String?) {
+        if (path.isNullOrBlank()) return
+        runCatching { File(path).delete() }
+    }
+
+    /**
      * B16-P2-1：附属读跳过版本（B15-P2-2 同款）：DataStore 读失败按“未跳过”走，
      * 但 CancellationException 必须原样重抛——runCatching 会把它一并吞掉，
      * 取消传不出去。两处调用点（检查分支、下载完成分支）共用。
@@ -204,6 +216,9 @@ class UpdateViewModel @Inject constructor(
                 restoreDownloadedApkOnce()
                 when {
                     !needsUpdate(current, latest) -> {
+                        // B20-P2-2：先读路径再清状态——清掉后顺手删磁盘上的包，
+                        // 否则记录已清、启动恢复 load() 返回 null，文件成孤儿。
+                        val downloadedPath = _uiState.value.downloadedFilePath
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -223,8 +238,11 @@ class UpdateViewModel @Inject constructor(
                         // Jewel 第 8 轮 P2-2：clear() 抛错只记日志，不把成功的
                         // “已是最新”检查改写成 error 态（B11-P2-1 同款口径）。
                         clearDownloadedApkRecordQuietly()
+                        deleteDownloadedApkFileQuietly(downloadedPath)
                     }
                     UpdateService.isSkippedVersion(latest, skipVersion) -> {
+                        // B20-P2-2：同上，先读路径再清状态，清记录时顺手删文件。
+                        val downloadedPath = _uiState.value.downloadedFilePath
                         _uiState.update {
                             it.copy(
                                 isChecking = false,
@@ -241,6 +259,7 @@ class UpdateViewModel @Inject constructor(
                         // 第 7 轮 P2-5：同上，跳过版本的持久化记录同步清掉。
                         // Jewel 第 8 轮 P2-2：同上，clear() 抛错只记日志（B11-P2-1 同款口径）。
                         clearDownloadedApkRecordQuietly()
+                        deleteDownloadedApkFileQuietly(downloadedPath)
                     }
                     else -> {
                         val size = downloader.headApkSizeBytes(UpdateService.downloadUrl(latest))
@@ -508,14 +527,27 @@ class UpdateViewModel @Inject constructor(
         // 先置位后，无论完成分支在取消前还是取消后跑到，都读到已跳过的内存态。
         skippedVersionMemory = latest
         cancelDownload()
+        // B20-P2-2：跳过版本的已下载包不要留在磁盘上成孤儿——只清记录不删
+        // 文件时，记录一清、启动恢复 load() 返回 null，文件永远无人处理。
+        // 删文件放在跳过版本写盘成功后：写盘失败时跳过没记上、卡片留着可再点
+        // 一次，已下好的包还要能“立即安装”，不能先删。文件既已删掉，内存态
+        // 与持久化记录同步清掉，不留指向已删文件的残值。
+        val downloadedPath = _uiState.value.downloadedFilePath
         // Jewel 第 8 轮 P2-1：先同步记内存态，再异步写盘——完成分支优先读
         // 内存态，不等写盘落地；写盘失败时清掉内存态（跳过没记上，卡片留着可再点一次）。
         viewModelScope.launch {
             try {
                 settingsRepository.setUpdateSkipVersion(latest)
+                deleteDownloadedApkFileQuietly(downloadedPath)
                 _uiState.update {
-                    it.copy(showUpdateCard = false, toast = nextToastEvent("已跳过 v$latest"))
+                    it.copy(
+                        showUpdateCard = false,
+                        downloadedFilePath = null,
+                        downloadedVersion = null,
+                        toast = nextToastEvent("已跳过 v$latest"),
+                    )
                 }
+                clearDownloadedApkRecordQuietly()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
