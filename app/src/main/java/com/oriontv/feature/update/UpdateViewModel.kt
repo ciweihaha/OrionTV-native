@@ -148,6 +148,16 @@ class UpdateViewModel @Inject constructor(
             }
     }
 
+    /**
+     * B16-P2-1：附属读跳过版本（B15-P2-2 同款）：DataStore 读失败按“未跳过”走，
+     * 但 CancellationException 必须原样重抛——runCatching 会把它一并吞掉，
+     * 取消传不出去。两处调用点（检查分支、下载完成分支）共用。
+     */
+    private suspend fun currentSkipVersionOrEmpty(): String =
+        runCatching { settingsRepository.currentUpdateSkipVersion() }
+            .onFailure { if (it is CancellationException) throw it }
+            .getOrDefault("")
+
     /** 当前版本是否低于目标版本。 */
     fun needsUpdate(currentVersion: String, latestVersion: String): Boolean =
         VersionUtils.isOlderThan(currentVersion, stripVersionPrefix(latestVersion))
@@ -177,10 +187,15 @@ class UpdateViewModel @Inject constructor(
                 // Jewel 第 8 轮 P2-1：跳过版本优先读内存态（skipVersion() 同步置位），
                 // 写盘尚未落地的窗口内也按“已跳过”走。
                 runCatching { settingsRepository.setUpdateLastCheckTime(System.currentTimeMillis()) }
-                    .onFailure { AppLog.w("UpdateViewModel", "检查时间保存失败：${it.message}") }
+                    .onFailure {
+                        // B16-P2-1：附属写里的 CancellationException 先单独重抛
+                        // （B15-P2-2 同款），其他异常仍只记日志、不进主流程失败分支。
+                        if (it is CancellationException) throw it
+                        AppLog.w("UpdateViewModel", "检查时间保存失败：${it.message}")
+                    }
                 val skipVersion = resolveSkipVersion(
                     skippedVersionMemory,
-                    runCatching { settingsRepository.currentUpdateSkipVersion() }.getOrDefault(""),
+                    currentSkipVersionOrEmpty(),
                 )
                 val current = _uiState.value.currentVersion
                 // 第 7 轮 P2-5：先跑启动恢复（init 里那路可能还没跑完），
@@ -345,7 +360,7 @@ class UpdateViewModel @Inject constructor(
                     // 会拿到旧值、刚跳过的版本又弹完成 Toast 并重弹卡片。
                     val skipVersion = resolveSkipVersion(
                         skippedVersionMemory,
-                        runCatching { settingsRepository.currentUpdateSkipVersion() }.getOrDefault(""),
+                        currentSkipVersionOrEmpty(),
                     )
                     if (shouldNotifyDownloadComplete(latest, skipVersion)) {
                         _uiState.update {

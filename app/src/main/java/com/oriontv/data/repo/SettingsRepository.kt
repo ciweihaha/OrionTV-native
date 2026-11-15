@@ -82,11 +82,23 @@ class SettingsRepository @Inject constructor(
 
     /** 是否走服务端存储（redis 且配了地址）；否则走本地 Room。 */
     suspend fun useServerStorage(): Boolean {
-        ensureServerConfig()
         // B13-P2-4：一次快照同时取两键再判定——之前两次独立 .first() 分别读
         // storageType 与 apiBaseUrl，读侧仍有撕裂窗口。
+        // B16-P2-3：判定本体走原子快照（见 currentServerStorageSnapshot）。
+        return currentServerStorageSnapshot().useServer
+    }
+
+    /**
+     * B16-P2-3：服务端存储判定 + 地址的一次原子快照——调用方之前先调
+     * useServerStorage() 再调 currentApiBaseUrl()，两次独立 DataStore 读之间
+     * 用户在设置页保存新地址可插进来，判定与地址错配；现一次快照读出配对，
+     * 判定与地址必属同一时刻。ensureServerConfig() 先行（与旧 useServerStorage
+     * 同款），快照读在其后。
+     */
+    suspend fun currentServerStorageSnapshot(): ServerStorageSnapshot {
+        ensureServerConfig()
         val (storageType, apiBaseUrl) = settingsDataStore.currentStorageTypeAndApiBaseUrl()
-        return storageType == "redis" && apiBaseUrl.isNotBlank()
+        return resolveServerStorage(storageType, apiBaseUrl)
     }
 
     // D-P2-16：失败缓存的读写加 @Volatile，跨线程可见（之前最坏多跑一次拉取）。
@@ -182,6 +194,16 @@ class SettingsRepository @Inject constructor(
     suspend fun setUpdateLastCheckTime(value: Long) = settingsDataStore.setUpdateLastCheckTime(value)
     suspend fun setUpdateSkipVersion(value: String) = settingsDataStore.setUpdateSkipVersion(value)
 }
+
+/** B16-P2-3：服务端存储快照（判定 + 地址配对，一次快照读出）。 */
+data class ServerStorageSnapshot(val useServer: Boolean, val baseUrl: String)
+
+/**
+ * B16-P2-3：快照判定（纯函数，可单测）——redis 且配了地址才走服务端，
+ * 否则本地 Room；地址原样带回，调用方不再另读一次。
+ */
+internal fun resolveServerStorage(storageType: String, apiBaseUrl: String): ServerStorageSnapshot =
+    ServerStorageSnapshot(storageType == "redis" && apiBaseUrl.isNotBlank(), apiBaseUrl)
 
 /**
  * 第 7 轮 D7-P2-9：server-config 拉取失败的 30 秒缓存（纯逻辑，可单测；

@@ -142,8 +142,9 @@ class FavoritesRepository @Inject constructor(
 
     /** 全部收藏（最新在前），附带记录键（导航到详情页要 source+id）。 */
     suspend fun getAllWithKeys(): List<Pair<String, Favorite>> {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             val favorites = try {
                 moonTvApi.getFavorites(baseUrl).also {
                     lastGoodFavorites = it
@@ -160,7 +161,11 @@ class FavoritesRepository @Inject constructor(
                 .sortedByDescending { it.value.save_time ?: 0L }
                 .map { it.key to it.value }
         }
-        return db.favoriteDao().getAll().map { it.key to it.toFavorite() }
+        // B16-P2-2：本地 Room 分支成功拉取也要复位 _loadFailed——之前只在服务端
+        // 分支读写，服务端失败后切本地模式（或本地模式下点“重试”）仍挂虚假失败提示。
+        return db.favoriteDao().getAll()
+            .also { _loadFailed.value = false }
+            .map { it.key to it.toFavorite() }
     }
 
     suspend fun getAll(): List<Favorite> = getAllWithKeys().map { it.second }
@@ -177,8 +182,9 @@ class FavoritesRepository @Inject constructor(
      * （如按钮置灰）而非“未收藏”。本地模式以 Room 实态为准，无 UNKNOWN。
      */
     suspend fun favoriteState(key: String): FavoriteState {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             // B4-P2-19：服务端失败时返回上次已知态，不误显示“未收藏”；
             // 从未查过才返回 UNKNOWN（见 decideFavoriteState）。
             return try {
@@ -206,8 +212,9 @@ class FavoritesRepository @Inject constructor(
      * 展示侧（详情页初始化）仍用宽容版 [isFavorite]，不误显示“未收藏”。
      */
     suspend fun isFavoriteStrict(key: String): Boolean {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             return moonTvApi.getFavorites(baseUrl, key).isNotEmpty().also {
                 lastKnownFavorites[key] = it
             }
@@ -216,14 +223,15 @@ class FavoritesRepository @Inject constructor(
     }
 
     suspend fun toggle(key: String, favorite: Favorite): Boolean = writeMutex.withLock {
-        if (settingsRepository.useServerStorage()) {
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
             // D-P2-13（第 7 轮客户端部分已做）：服务端 toggle 仍是“先 GET 判存在、
             // 再 POST/DELETE”的非原子操作；writeMutex 只串行化本进程内调用，
             // 双端或跨进程并发点两次仍可能互相覆盖。根治需服务端提供原子
             // toggle 接口（存在才删 / 不存在才加），客户端侧无法凭空造出。
             // 客户端只做写后校验（见下）：发现分叉时以服务端实态为准并抛错，
             // 调用方提示失败后重读 isFavorite() 展示实态。
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+            val baseUrl = serverStorage.baseUrl
             // D6-P1-2：读失败直接抛错（见 toggleServerFavorite），不再默认
             // 按“不存在”走添加分支——否则取消收藏会在 GET 失败时静默变已收藏。
             val nowFavorite = toggleServerFavorite(
@@ -313,8 +321,9 @@ class PlayRecordsRepository @Inject constructor(
 
     /** 全部播放记录（最新在前），附带记录键。 */
     suspend fun getAllWithKeys(): List<Pair<String, PlayRecord>> {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             val records = try {
                 moonTvApi.getPlayRecords(baseUrl).also {
                     lastGoodRecords = it
@@ -331,14 +340,19 @@ class PlayRecordsRepository @Inject constructor(
                 .sortedByDescending { it.value.save_time }
                 .map { it.key to it.value }
         }
-        return db.playRecordDao().getAll().map { it.key to it.toPlayRecord() }
+        // B16-P2-2：同上，本地 Room 分支成功拉取复位 _loadFailed（首页“最近播放”
+        // 的残留失败提示同款清掉）。
+        return db.playRecordDao().getAll()
+            .also { _loadFailed.value = false }
+            .map { it.key to it.toPlayRecord() }
     }
 
     suspend fun getAll(): List<PlayRecord> = getAllWithKeys().map { it.second }
 
     suspend fun getByKey(key: String): PlayRecord? {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             return try {
                 // D7-P2-7：单条查询（?key=，与 getFavorites 同款），不再为查
                 // 一条记录全表拉取；服务端忽略参数回整表时按 key 取值仍正确。
@@ -370,8 +384,9 @@ class PlayRecordsRepository @Inject constructor(
      *（调用方 PlayViewModel 周期性保存，下次保存即重试）。
      */
     suspend fun save(key: String, record: PlayRecord): Boolean = writeMutex.withLock {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             val ok = runOrDefault(false) { moonTvApi.savePlayRecord(baseUrl, key, record) }
             if (!ok) Log.w("PlayRecordsRepository", "服务端保存播放记录失败 key=$key")
             return@withLock ok
@@ -396,8 +411,9 @@ class PlayRecordsRepository @Inject constructor(
 
     /** B-P2-19：返回是否删成功；服务端失败记日志，不再静默丢弃。 */
     suspend fun delete(key: String): Boolean = writeMutex.withLock {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             val ok = runOrDefault(false) { moonTvApi.deletePlayRecord(baseUrl, key) }
             if (!ok) Log.w("PlayRecordsRepository", "服务端删除播放记录失败 key=$key")
             return@withLock ok
@@ -433,8 +449,9 @@ class SearchHistoryRepository @Inject constructor(
 
     /** 搜索历史最新 20 条，新词插头部、去重。 */
     suspend fun getLatest20(): List<String> {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             val history = try {
                 moonTvApi.getSearchHistory(baseUrl).also { lastGoodHistory = it }
             } catch (e: CancellationException) {
@@ -476,8 +493,9 @@ class SearchHistoryRepository @Inject constructor(
     suspend fun add(keyword: String): Boolean = writeMutex.withLock {
         val trimmed = keyword.trim()
         if (trimmed.isEmpty()) return@withLock true
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             return@withLock serverWrite("add:$trimmed") {
                 moonTvApi.addSearchHistory(baseUrl, trimmed)
             }
@@ -492,8 +510,9 @@ class SearchHistoryRepository @Inject constructor(
 
     /** 单条删除（搜索历史 chips 的 ×）；返回是否删成功。 */
     suspend fun delete(keyword: String): Boolean = writeMutex.withLock {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             return@withLock serverWrite("delete:$keyword") {
                 moonTvApi.deleteSearchHistory(baseUrl, keyword)
             }
@@ -504,8 +523,9 @@ class SearchHistoryRepository @Inject constructor(
 
     /** 返回是否清成功。 */
     suspend fun clear(): Boolean = writeMutex.withLock {
-        if (settingsRepository.useServerStorage()) {
-            val baseUrl = settingsRepository.currentApiBaseUrl()
+        val serverStorage = settingsRepository.currentServerStorageSnapshot()
+        if (serverStorage.useServer) {
+            val baseUrl = serverStorage.baseUrl
             return@withLock serverWrite("clear") {
                 moonTvApi.deleteSearchHistory(baseUrl)
             }
