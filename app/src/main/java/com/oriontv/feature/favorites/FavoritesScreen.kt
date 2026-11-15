@@ -198,7 +198,7 @@ fun FavoritesScreen(
                     else onGoHome?.invoke() ?: onNavigate(OrionRoute.Home)
                 },
                 modifier = Modifier.preferredFocus(goHomeRequester)
-                    .onFocusChanged { if (it.isActive) emptyStateFocused = it.isFocused },
+                    .onFocusChanged { emptyStateFocused = it.isFocused },
             )
         }
         return
