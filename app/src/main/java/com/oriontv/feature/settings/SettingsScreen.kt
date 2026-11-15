@@ -134,12 +134,21 @@ fun SettingsScreen(
         }
     }
 
-    // P2-5（第 5 轮）：返回键先关更新卡片/二维码弹窗，不直接退出设置页。
-    // 注意：卡片只由 NavHost 全局渲染（P1-2 已删设置页那份），但关闭状态
-    // 是同一个 ViewModel，这里照样能拦住；二维码弹窗是设置页自己的。
-    BackHandler(enabled = updateState.showUpdateCard || showQrModal) {
-        if (updateState.showUpdateCard) updateViewModel.dismissCard()
-        else showQrModal = false
+    // 第 7 轮 P2-2：Back 消费层级理清——
+    // ① 全局更新卡片的关闭只归 NavHost 的 BackHandler（OrionNavHost，
+    // enabled=showUpdateCard）：这里曾有一份同样的分支，焦点在弹窗外时
+    // 它比 NavHost 的后注册、反而先触发，两处做同一件事，删掉本份；
+    // ② 本页自己的 BackHandler 只留二维码弹窗（RemoteInputModal 自己的
+    // BackHandler 是第一道——焦点在弹窗内时它先触发；焦点不在弹窗内
+    // （如焦点丢失）时这道兜底）；
+    // ③ 下面外层 Box 的 onKeyUp 只在焦点落在设置内容区时触发（弹窗焦点
+    // 陷阱正常时到不了这里），按 settingsBackAction 决策：卡片/二维码
+    // 开着先关弹窗，不直接 onBack() 退出设置页（旧实现恒 onBack()，
+    // 焦点一旦以某种方式回到内容区而卡片仍开着，Back 会直接退出设置页）。
+    // 三层互补不重叠：弹窗内→弹窗自己的 handler；弹窗外无焦点→本页/
+    // NavHost 的 handler；焦点在内容区→Box onKeyUp。
+    BackHandler(enabled = showQrModal) {
+        showQrModal = false
     }
 
     Box(
@@ -147,14 +156,19 @@ fun SettingsScreen(
             .fillMaxSize()
             .onKeyUp { event ->
                 if (event.key == Key.Back) {
-                    // C4-P1-3：二维码弹窗开着时返回先关弹窗（弹窗在 Box 外，
-                    // 按键不经过这里时由弹窗自己的 BackHandler 关；这里是兜底）。
-                    if (showQrModal) {
-                        showQrModal = false
-                        true
-                    } else {
-                        onBack()
-                        true
+                    when (settingsBackAction(updateState.showUpdateCard, showQrModal)) {
+                        SettingsBackAction.DismissUpdateCard -> {
+                            updateViewModel.dismissCard()
+                            true
+                        }
+                        SettingsBackAction.CloseQrModal -> {
+                            showQrModal = false
+                            true
+                        }
+                        SettingsBackAction.ExitSettings -> {
+                            onBack()
+                            true
+                        }
                     }
                 } else {
                     false
@@ -741,3 +755,27 @@ private fun AboutSettings(firstRequester: FocusRequester) {
         Text(text = "Kotlin + Compose for TV + Media3 原生重写。", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
     }
 }
+
+/** 设置页返回键动作（第 7 轮 P2-2，纯决策，可单测）。 */
+internal enum class SettingsBackAction {
+    /** 全局更新卡片开着：先关卡片，不退出设置页。 */
+    DismissUpdateCard,
+
+    /** 二维码弹窗开着：先关弹窗，不退出设置页。 */
+    CloseQrModal,
+
+    /** 无弹窗：退出设置页。 */
+    ExitSettings,
+}
+
+/**
+ * 第 7 轮 P2-2：设置页焦点在内容区时返回键的决策——弹窗在上先关弹窗。
+ * 全局更新卡片优先于本页二维码弹窗（卡片是 NavHost 级全局弹窗；
+ * 两者正常互斥，同时开着时先关卡片）。
+ */
+internal fun settingsBackAction(showUpdateCard: Boolean, showQrModal: Boolean): SettingsBackAction =
+    when {
+        showUpdateCard -> SettingsBackAction.DismissUpdateCard
+        showQrModal -> SettingsBackAction.CloseQrModal
+        else -> SettingsBackAction.ExitSettings
+    }

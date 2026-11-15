@@ -376,7 +376,12 @@ class RemoteInputRouter(
                 }
                 method == "POST" && path == "/message" -> {
                     // P1-11：体超限直接 413（路由层兜底；读体前另有预检）。
-                    if (body.length > RemoteInputLogic.MAX_REQUEST_BODY_BYTES) {
+                    // 第 7 轮 P2-7：按 UTF-8 字节数判（isRequestBodyTooLarge，
+                    // 与第 6 轮 P2-13 的 RemoteInputServer.readBody 兜底一致）——
+                    // 旧实现 body.length 计 UTF-16 码元，多字节字符为主的体
+                    // 可在字符数 ≤16K 时超过 16KB 字节；上游已先按字节拦掉，
+                    // 这里是死检查，改过来只为语义一致。
+                    if (isRequestBodyTooLarge(body)) {
                         return HttpResult(413, "application/json", """{"error":"Request body too large"}""")
                     }
                     if (!isSessionValid(headers, clientIp)) {

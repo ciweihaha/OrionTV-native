@@ -352,4 +352,41 @@ class RemoteInputLogicTest {
         assertTrue(router.matchesPairingCode(router.pairingCode))
         assertTrue(router.isPairingCodeUsable())
     }
+
+    @Test
+    fun `message body limit counts utf8 bytes not characters`() {
+        // 第 7 轮 P2-7：路由层 /message 体长兜底改按 UTF-8 字节数（与第 6 轮
+        // P2-13 的 RemoteInputServer.readBody 一致）。6000 个中文字符的体
+        // 只有约 6013 个字符、却约 18013 字节：旧实现按字符数会放行（再按
+        // message 长度 6000 < 10K 也放行），新实现按字节数判 413。
+        val router = RemoteInputRouter()
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        val multiByteBody = """{"message":"${"测".repeat(6000)}"}"""
+        assertTrue(multiByteBody.length < RemoteInputLogic.MAX_REQUEST_BODY_BYTES)
+        assertTrue(multiByteBody.toByteArray(Charsets.UTF_8).size > RemoteInputLogic.MAX_REQUEST_BODY_BYTES)
+        val tooLarge = router.handle(
+            "POST", "/message", mapOf("X-Pairing-Code" to code), multiByteBody, "1.2.3.4",
+        )
+        assertEquals(413, tooLarge.statusCode)
+
+        // 字节数恰好等于上限时不拦：16384 个 ASCII 字符 = 16384 字节，
+        // 过体长检查后因无合法会话落 403（不是 413）。
+        val atLimit = router.handle(
+            "POST", "/message", emptyMap(), "a".repeat(16 * 1024), "1.2.3.4",
+        )
+        assertEquals(403, atLimit.statusCode)
+        // 超 1 字节即拦。
+        val overLimit = router.handle(
+            "POST", "/message", emptyMap(), "a".repeat(16 * 1024 + 1), "1.2.3.4",
+        )
+        assertEquals(413, overLimit.statusCode)
+
+        // 正常中文消息仍放行。
+        val ok = router.handle(
+            "POST", "/message", mapOf("X-Pairing-Code" to code),
+            """{"message":"周星驰的电影真好看"}""", "1.2.3.4",
+        )
+        assertEquals(200, ok.statusCode)
+    }
 }

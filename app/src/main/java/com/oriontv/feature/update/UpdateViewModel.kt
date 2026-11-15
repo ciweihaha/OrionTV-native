@@ -58,6 +58,41 @@ class UpdateViewModel @Inject constructor(
     @Volatile
     private var downloadGeneration = 0
 
+    /** 第 7 轮 P2-5：已下载包路径 + 版本的持久化（独立 DataStore，不碰设置层）。 */
+    private val downloadedApkStore = DownloadedApkStore(context)
+
+    /** 第 7 轮 P2-5：启动恢复是否已跑过（init 与 checkForUpdate 各调一次，只跑一次）。 */
+    private var downloadRestoreDone = false
+
+    init {
+        viewModelScope.launch { restoreDownloadedApkOnce() }
+    }
+
+    /**
+     * 第 7 轮 P2-5：启动时恢复已下载包——记录存在、文件仍在、文件名与版本
+     * 匹配时复用（重查/卡片直接显示“立即安装”，不用重新下载）；否则清记录，
+     * 文件存在但对不上号时删掉，不留孤儿包。
+     */
+    private suspend fun restoreDownloadedApkOnce() {
+        if (downloadRestoreDone) return
+        downloadRestoreDone = true
+        val record = try {
+            downloadedApkStore.load()
+        } catch (_: Exception) {
+            null
+        } ?: return
+        if (validateRestoredDownload(record.path, record.version)) {
+            _uiState.update {
+                it.copy(downloadedFilePath = record.path, downloadedVersion = record.version)
+            }
+        } else {
+            if (isOrphanDownloadFile(record.path, record.version)) {
+                runCatching { File(record.path).delete() }
+            }
+            runCatching { downloadedApkStore.clear() }
+        }
+    }
+
     /** 当前版本是否低于目标版本。 */
     fun needsUpdate(currentVersion: String, latestVersion: String): Boolean =
         VersionUtils.isOlderThan(currentVersion, stripVersionPrefix(latestVersion))
@@ -89,6 +124,10 @@ class UpdateViewModel @Inject constructor(
                 val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
                     .getOrDefault("")
                 val current = _uiState.value.currentVersion
+                // 第 7 轮 P2-5：先跑启动恢复（init 里那路可能还没跑完），
+                // 再按恢复出的 downloadedVersion 判同版保留——否则重查
+                // 会因恢复未完成而误判“从未下载过”，白白重新下载。
+                restoreDownloadedApkOnce()
                 when {
                     !needsUpdate(current, latest) -> {
                         _uiState.update {
@@ -105,6 +144,9 @@ class UpdateViewModel @Inject constructor(
                                 toast = if (silent) null else nextToastEvent("已是最新版本 v$current"),
                             )
                         }
+                        // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉，
+                        // 否则重启后恢复又把失效包复活。
+                        downloadedApkStore.clear()
                     }
                     UpdateService.isSkippedVersion(latest, skipVersion) -> {
                         _uiState.update {
@@ -120,6 +162,8 @@ class UpdateViewModel @Inject constructor(
                                 toast = if (silent) null else nextToastEvent("已跳过 v$latest，可在设置里重新检查"),
                             )
                         }
+                        // 第 7 轮 P2-5：同上，跳过版本的持久化记录同步清掉。
+                        downloadedApkStore.clear()
                     }
                     else -> {
                         val size = downloader.headApkSizeBytes(UpdateService.downloadUrl(latest))
@@ -223,28 +267,42 @@ class UpdateViewModel @Inject constructor(
                     _uiState.update { it.copy(downloadProgress = progress.coerceIn(0, 100)) }
                 }
                 if (downloadGen == downloadGeneration) {
-                    _uiState.update {
-                        it.copy(
-                            downloading = false,
-                            downloadProgress = 100,
-                            downloadedFilePath = dest.absolutePath,
-                            // 第 6 轮 P2-2：版本标记与路径同步置位（重查按版本比对保留同版包）。
-                            downloadedVersion = latest,
-                            toast = nextToastEvent("下载完成，校验通过，可以安装了"),
-                        )
-                    }
-                    // 第 6 轮 P2-2：下载完成时卡片若已被“稍后”/返回键关掉，要重新
-                    // 弹出给安装入口，否则下好的包没有任何入口能再打开“立即安装”
-                    //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
-                    // 代次过期（已被更新的下载取代）时不弹旧任务的卡。
-                    if (!_uiState.value.showUpdateCard) {
-                        // B9-P2-2：同上——下载已完成、校验已通过，跳过版本读失败
-                        // 只按“未跳过”走，不把已下好的包报成“下载失败”。
-                        val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
-                            .getOrDefault("")
-                        if (skipVersion != latest) {
+                    // 第 7 轮 P2-4：完成时复核是否已被跳过——跳过此版后下载
+                    // 才跑完（或跳过与完成竞态）时，不再弹“下载完成，可以安装了”
+                    // Toast、不置已下载路径、不重弹卡片；“稍后”关掉卡片的情形
+                    // 不受影响（见下面的重弹分支，同样以未跳过为前提）。
+                    // B9-P2-2：同上——下载已完成、校验已通过，跳过版本读失败
+                    // 只按“未跳过”走，不把已下好的包报成“下载失败”。
+                    val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
+                        .getOrDefault("")
+                    if (shouldNotifyDownloadComplete(latest, skipVersion)) {
+                        _uiState.update {
+                            it.copy(
+                                downloading = false,
+                                downloadProgress = 100,
+                                downloadedFilePath = dest.absolutePath,
+                                // 第 6 轮 P2-2：版本标记与路径同步置位（重查按版本比对保留同版包）。
+                                downloadedVersion = latest,
+                                toast = nextToastEvent("下载完成，校验通过，可以安装了"),
+                            )
+                        }
+                        // 第 7 轮 P2-5：下载完成即持久化路径 + 版本，进程重启
+                        // 后恢复复用，不用重新下载。
+                        downloadedApkStore.save(dest.absolutePath, latest)
+                        // 第 6 轮 P2-2：下载完成时卡片若已被“稍后”/返回键关掉，要重新
+                        // 弹出给安装入口，否则下好的包没有任何入口能再打开“立即安装”
+                        //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
+                        // 代次过期（已被更新的下载取代）时不弹旧任务的卡。
+                        if (!_uiState.value.showUpdateCard) {
                             _uiState.update { it.copy(showUpdateCard = true) }
                         }
+                    } else {
+                        _uiState.update {
+                            it.copy(downloading = false, downloadProgress = 100)
+                        }
+                        // 已跳过版本的包不要留在磁盘上成孤儿（下次 cleanOldApkFiles
+                        // 才清要等下一次下载成功）；刚下好的就是这个文件，直接删。
+                        runCatching { dest.delete() }
                     }
                 }
             } catch (e: CancellationException) {
@@ -264,6 +322,8 @@ class UpdateViewModel @Inject constructor(
                             error = e.message ?: "下载失败",
                         )
                     }
+                    // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
+                    downloadedApkStore.clear()
                 }
             } catch (e: Exception) {
                 if (downloadGen == downloadGeneration) {
@@ -276,6 +336,8 @@ class UpdateViewModel @Inject constructor(
                             error = "下载失败：${e.message ?: "网络错误"}",
                         )
                     }
+                    // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
+                    downloadedApkStore.clear()
                 }
             } finally {
                 if (downloadGen == downloadGeneration) downloadJob = null
@@ -339,6 +401,13 @@ class UpdateViewModel @Inject constructor(
     fun skipVersion() {
         val latest = _uiState.value.latestVersion ?: return
         installInFlight = false
+        // 第 7 轮 P2-4：“跳过”是明确拒绝，不是“稍后”——进行中的下载
+        // 一并取消（代次守卫仍在：取消后旧任务的完成分支不再写状态；
+        // 万一完成分支已跑完、取消没拦住，下面的 shouldNotifyDownloadComplete
+        // 复核跳过版本后也不弹完成 Toast、不置路径）。
+        // 注意 cancelDownload() 不加代次：CE catch 凭现有代次把 downloading
+        // 清掉；若在这里 +1 代次，旧任务收尾会被守卫拦住、downloading 永远 true。
+        cancelDownload()
         viewModelScope.launch {
             try {
                 settingsRepository.setUpdateSkipVersion(latest)
@@ -363,6 +432,14 @@ class UpdateViewModel @Inject constructor(
         _uiState.update { it.copy(toast = null) }
     }
 }
+
+/**
+ * 第 7 轮 P2-4：下载完成时是否发“下载完成，可以安装了”Toast 并置已下载路径——
+ * 该版本已被用户“跳过此版”时不发（跳过与完成竞态时完成分支凭此复核）。
+ * 纯逻辑，可单测。
+ */
+internal fun shouldNotifyDownloadComplete(latestVersion: String, skippedVersion: String?): Boolean =
+    !UpdateService.isSkippedVersion(latestVersion, skippedVersion.orEmpty())
 
 /**
  * 第 6 轮 P2-2：重查时是否保留已下载包——只在已下载包的版本就是本次

@@ -275,6 +275,10 @@ fun HomeScreen(
                                                 source = item.source,
                                                 id = item.id,
                                                 title = item.title,
+                                                // 第 7 轮豆瓣透传：首页卡片自带的评分
+                                                //（agg vod_douban_score / 豆瓣 rate）；
+                                                // 最近播放行无评分（上面直达播放页，不走这里）。
+                                                rate = item.rate,
                                             ),
                                         )
                                     }
