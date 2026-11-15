@@ -159,7 +159,7 @@ fun HomeScreen(
             return false
         }
         val (row, card) = found
-        listState.scrollToItem(row + 1)
+        listState.scrollToItem(row)
         rowListStates[rows[row].title]?.scrollToItem(card)
         val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry(isStillValid = isStillValid) ?: false
         if (!restored && isStillValid()) firstChipRequester.requestFocus()
@@ -221,154 +221,166 @@ fun HomeScreen(
                 OrionDimens.ContentPadding.calculateRightPadding(layoutDirection)
         val cardWidth =
             (maxWidth - horizontalPadding - OrionDimens.CardSpacing * 5f) / OrionDimens.HomeRowCards.toFloat()
-        LazyColumn(
-            state = listState,
-            contentPadding = OrionDimens.ContentPadding,
-            verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
+        // C20-P1-1：分类 chip 栏移出 LazyColumn、固定在顶部（设计稿 §5.1
+        // “分类菜单置顶”）——旧实现里 chip 栏是 LazyColumn 的第 0 项，点 chip
+        // 后 scrollToItem 把目标行顶到视口顶部、chip 栏整体滚出视口并被处置，
+        // 获焦节点随之丢焦点且无任何恢复口（滚动不改 rows/tick、restoreDone
+        // 与 initialFocusDone 已为真），首页直接砖掉。固定头后焦点始终留在
+        // 被点的 chip 上，菜单也一直可见；行从此是 LazyColumn 的第 0 项起，
+        // 两处 scrollToItem 的 +1 偏移一并去掉。
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(OrionDimens.ContentPadding),
         ) {
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                    items(HomeCategory.entries) { category ->
-                        CategoryChip(
-                            text = category.title,
-                            selected = selectedCategory == category.title,
-                            onClick = {
-                                selectedCategory = category.title
-                                // 点 chip 滚动到对应行（第 0 项是 chip 栏，行从 1 开始）。
-                                val rowIndex = uiState.rows.indexOfFirst { it.title == category.title }
-                                if (rowIndex >= 0) {
-                                    scope.launch { listState.scrollToItem(rowIndex + 1) }
-                                }
-                            },
-                            modifier = if (category == HomeCategory.RECENT) {
-                                Modifier.preferredFocus(firstChipRequester)
-                            } else {
-                                Modifier
-                            },
-                        )
-                    }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                items(HomeCategory.entries) { category ->
+                    CategoryChip(
+                        text = category.title,
+                        selected = selectedCategory == category.title,
+                        onClick = {
+                            selectedCategory = category.title
+                            // 点 chip 滚动到对应行（行从第 0 项开始，无偏移）。
+                            val rowIndex = uiState.rows.indexOfFirst { it.title == category.title }
+                            if (rowIndex >= 0) {
+                                scope.launch { listState.scrollToItem(rowIndex) }
+                            }
+                        },
+                        modifier = if (category == HomeCategory.RECENT) {
+                            Modifier.preferredFocus(firstChipRequester)
+                        } else {
+                            Modifier
+                        },
+                    )
                 }
             }
-            if (uiState.isLoading && uiState.rows.isEmpty()) {
-                item {
-                    // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
-                    LoadingAnimation()
-                }
-            }
-            if (uiState.error != null && uiState.rows.isEmpty()) {
-                val errorMessage = uiState.error
-                item {
-                    // P2-10：错误态居中需占满宽，否则在 LazyColumn item 里是窄列、视觉左偏。
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
-                        Spacer(modifier = Modifier.height(24.dp))
-                        SecondaryButton(text = "重试", onClick = { viewModel.refresh() })
+            Spacer(modifier = Modifier.height(OrionDimens.RowSpacing))
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
+            ) {
+                if (uiState.isLoading && uiState.rows.isEmpty()) {
+                    item {
+                        // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
+                        LoadingAnimation()
                     }
                 }
-            }
-            itemsIndexed(uiState.rows) { rowIndex, row ->
-                val isRecent = row.title == HomeCategory.RECENT.title
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(text = row.title, style = OrionTextStyles.SectionTitle)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    // P2-9：单行失败留占位行，用户能看到哪一行挂了。
-                    // B-P2-20：有旧数据时也显示 error（“显示上次内容”的提示），不只空行才显示。
-                    if (row.error != null) {
-                        Text(
-                            text = row.error,
-                            style = OrionTextStyles.Body,
-                            color = OrionColors.TextSecondary,
-                        )
+                if (uiState.error != null && uiState.rows.isEmpty()) {
+                    val errorMessage = uiState.error
+                    item {
+                        // P2-10：错误态居中需占满宽，否则在 LazyColumn item 里是窄列、视觉左偏。
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
+                            Spacer(modifier = Modifier.height(24.dp))
+                            SecondaryButton(text = "重试", onClick = { viewModel.refresh() })
+                        }
                     }
-                    // 分类浏览分页：取下一页失败不丢已有卡片，行尾留一句失败文案，
-                    // 焦点移开再回来即重试（loadMore 失败后 hasMore 仍为真）。
-                    if (row.loadMoreError != null) {
-                        Text(
-                            text = row.loadMoreError,
-                            style = OrionTextStyles.Body,
-                            color = OrionColors.TextSecondary,
-                        )
-                    }
-                    LazyRow(
-                        state = rowListStates.getOrPut(row.title) { LazyListState() },
-                        horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
-                    ) {
-                        itemsIndexed(row.items) { cardIndex, item ->
-                            VideoCard(
-                                title = item.title,
-                                posterUrl = item.poster,
-                                meta = when {
-                                    isRecent -> "第 ${item.episodeIndex + 1} 集"
-                                    item.year != null && item.rate != null -> "${item.year} · ${item.rate} 分"
-                                    item.year != null -> item.year
-                                    item.rate != null -> "${item.rate} 分"
-                                    item.sourceName != null -> item.sourceName
-                                    else -> null
-                                },
-                                progressFraction = item.progress,
-                                remainingLabel = if (isRecent) {
-                                    remainingMinutesLabel(item.playTimeSeconds, item.totalTimeSeconds)
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    if (isRecent) {
-                                        // 最近播放卡片直达播放页（断点续播，跳过详情）。
-                                        onNavigate(
-                                            OrionRoute.Play(
-                                                source = item.source,
-                                                id = item.id,
-                                                title = item.title,
-                                                episodeIndex = item.episodeIndex,
-                                                positionMs = item.playTimeSeconds * 1000,
-                                            ),
-                                        )
-                                    } else {
-                                        onNavigate(
-                                            OrionRoute.Detail(
-                                                source = item.source,
-                                                id = item.id,
-                                                title = item.title,
-                                                // 第 7 轮豆瓣透传：首页卡片自带的评分
-                                                //（agg vod_douban_score / 豆瓣 rate）；
-                                                // 最近播放行无评分（上面直达播放页，不走这里）。
-                                                rate = item.rate,
-                                            ),
-                                        )
-                                    }
-                                },
-                                onFocused = {
-                                    viewModel.savedFocusKey = homeFocusKey(row.title, item)
-                                    // 分类浏览分页：电视遥控按方向键逐张移动，焦点位置即滚动
-                                    // 位置；焦点到行尾附近（还剩 3 张）时取下一页。
-                                    // ViewModel 的状态机门控会拦下重复触发、取数中与已到底的行。
-                                    if (row.hasMore &&
-                                        cardIndex >= row.items.size - RowPagingState.FOCUS_THRESHOLD
-                                    ) {
-                                        viewModel.loadMore(row.title)
-                                    }
-                                },
-                                modifier = Modifier
-                                    .width(cardWidth)
-                                    .preferredFocus(
-                                        cardRequesters.getOrPut("$rowIndex:$cardIndex") {
-                                            FocusRequester()
-                                        },
-                                    ),
+                }
+                itemsIndexed(uiState.rows) { rowIndex, row ->
+                    val isRecent = row.title == HomeCategory.RECENT.title
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(text = row.title, style = OrionTextStyles.SectionTitle)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        // P2-9：单行失败留占位行，用户能看到哪一行挂了。
+                        // B-P2-20：有旧数据时也显示 error（“显示上次内容”的提示），不只空行才显示。
+                        if (row.error != null) {
+                            Text(
+                                text = row.error,
+                                style = OrionTextStyles.Body,
+                                color = OrionColors.TextSecondary,
                             )
                         }
-                        // 分类浏览分页：正在取下一页时行尾挂一句提示（新卡片追加进来后焦点不丢）。
-                        if (row.isLoadingMore) {
-                            item {
-                                Text(
-                                    text = "加载更多中…",
-                                    style = OrionTextStyles.Body,
-                                    color = OrionColors.TextSecondary,
-                                    modifier = Modifier.width(cardWidth),
+                        // 分类浏览分页：取下一页失败不丢已有卡片，行尾留一句失败文案，
+                        // 焦点移开再回来即重试（loadMore 失败后 hasMore 仍为真）。
+                        if (row.loadMoreError != null) {
+                            Text(
+                                text = row.loadMoreError,
+                                style = OrionTextStyles.Body,
+                                color = OrionColors.TextSecondary,
+                            )
+                        }
+                        LazyRow(
+                            state = rowListStates.getOrPut(row.title) { LazyListState() },
+                            horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
+                        ) {
+                            itemsIndexed(row.items) { cardIndex, item ->
+                                VideoCard(
+                                    title = item.title,
+                                    posterUrl = item.poster,
+                                    meta = when {
+                                        isRecent -> "第 ${item.episodeIndex + 1} 集"
+                                        item.year != null && item.rate != null -> "${item.year} · ${item.rate} 分"
+                                        item.year != null -> item.year
+                                        item.rate != null -> "${item.rate} 分"
+                                        item.sourceName != null -> item.sourceName
+                                        else -> null
+                                    },
+                                    progressFraction = item.progress,
+                                    remainingLabel = if (isRecent) {
+                                        remainingMinutesLabel(item.playTimeSeconds, item.totalTimeSeconds)
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        if (isRecent) {
+                                            // 最近播放卡片直达播放页（断点续播，跳过详情）。
+                                            onNavigate(
+                                                OrionRoute.Play(
+                                                    source = item.source,
+                                                    id = item.id,
+                                                    title = item.title,
+                                                    episodeIndex = item.episodeIndex,
+                                                    positionMs = item.playTimeSeconds * 1000,
+                                                ),
+                                            )
+                                        } else {
+                                            onNavigate(
+                                                OrionRoute.Detail(
+                                                    source = item.source,
+                                                    id = item.id,
+                                                    title = item.title,
+                                                    // 第 7 轮豆瓣透传：首页卡片自带的评分
+                                                    //（agg vod_douban_score / 豆瓣 rate）；
+                                                    // 最近播放行无评分（上面直达播放页，不走这里）。
+                                                    rate = item.rate,
+                                                ),
+                                            )
+                                        }
+                                    },
+                                    onFocused = {
+                                        viewModel.savedFocusKey = homeFocusKey(row.title, item)
+                                        // 分类浏览分页：电视遥控按方向键逐张移动，焦点位置即滚动
+                                        // 位置；焦点到行尾附近（还剩 3 张）时取下一页。
+                                        // ViewModel 的状态机门控会拦下重复触发、取数中与已到底的行。
+                                        if (row.hasMore &&
+                                            cardIndex >= row.items.size - RowPagingState.FOCUS_THRESHOLD
+                                        ) {
+                                            viewModel.loadMore(row.title)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .width(cardWidth)
+                                        .preferredFocus(
+                                            cardRequesters.getOrPut("$rowIndex:$cardIndex") {
+                                                FocusRequester()
+                                            },
+                                        ),
                                 )
+                            }
+                            // 分类浏览分页：正在取下一页时行尾挂一句提示（新卡片追加进来后焦点不丢）。
+                            if (row.isLoadingMore) {
+                                item {
+                                    Text(
+                                        text = "加载更多中…",
+                                        style = OrionTextStyles.Body,
+                                        color = OrionColors.TextSecondary,
+                                        modifier = Modifier.width(cardWidth),
+                                    )
+                                }
                             }
                         }
                     }
