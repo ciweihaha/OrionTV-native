@@ -36,6 +36,10 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
 class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
+    companion object {
+        /** 内置默认直播源：https://live.ciweihaha.win/live.m3u（与 mytv / OrionTV-android 同源）。 */
+        const val DEFAULT_M3U_URL = "https://live.ciweihaha.win/live.m3u"
+    }
     private object Keys {
         val API_BASE_URL = stringPreferencesKey("apiBaseUrl")
         val M3U_URL = stringPreferencesKey("m3uUrl")
@@ -70,7 +74,12 @@ class SettingsDataStore @Inject constructor(
     }
 
     val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL].orEmpty() }
-    val m3uUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.M3U_URL].orEmpty() }
+    /**
+     * 直播源地址：键从未写过时返回内置默认源（DEFAULT_M3U_URL），新装即能看直播；
+     * 用户在设置里改过地址后用用户的值；用户主动清空成空串时返回空串——键已存在，
+     * ?: 不触发，直播回到“未配”空态，不会自动恢复默认值。
+     */
+    val m3uUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.M3U_URL] ?: DEFAULT_M3U_URL }
     val remoteInputEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.REMOTE_INPUT_ENABLED] ?: false }
     val autoSkipIntro: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.AUTO_SKIP_INTRO] ?: true }
     val introSkipSeconds: Flow<Int> = context.settingsDataStore.data.map { it[Keys.INTRO_SKIP_SECONDS] ?: 90 }
@@ -95,6 +104,16 @@ class SettingsDataStore @Inject constructor(
     suspend fun currentStorageTypeAndApiBaseUrl(): Pair<String, String> {
         val prefs = context.settingsDataStore.data.first()
         return prefs[Keys.STORAGE_TYPE].orEmpty() to prefs[Keys.API_BASE_URL].orEmpty()
+    }
+
+    /**
+     * 读 M3U_URL 的原始存值（不带默认值）：键从未写过时返回 ""。
+     * 仅供 RnMigration 的“原生侧仍空白才导入”守卫用——m3uUrl Flow 在键缺失时
+     * 返回内置默认值，直接拿它判断会误判“原生侧已配”，旧 RN 端的自定义 M3U
+     * 就永远导不进来。
+     */
+    suspend fun currentRawM3uUrl(): String {
+        return context.settingsDataStore.data.first()[Keys.M3U_URL].orEmpty()
     }
 
     suspend fun setAuthCookies(value: String) {
