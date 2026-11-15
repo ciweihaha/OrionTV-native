@@ -45,9 +45,11 @@ class PlayRecordLookupTest {
     }
 
     @Test
-    fun `empty response keeps cache`() {
+    fun `empty response replaces cache`() {
+        // B19-P2-1：空表就是“整表为空”的确定信息（服务端恒回整表、永不回单条），
+        // 按整表处理、整体替换；旧实现走合并分支保留旧缓存，已删断点幽灵复活。
         val cached = mapOf("a" to record("A"))
-        assertEquals(cached, mergePlayRecordLookup(cached, emptyMap(), "a"))
+        assertTrue(mergePlayRecordLookup(cached, emptyMap(), "a").isEmpty())
         assertTrue(mergePlayRecordLookup(null, emptyMap(), "a").isEmpty())
     }
 

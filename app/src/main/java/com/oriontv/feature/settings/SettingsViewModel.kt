@@ -26,6 +26,15 @@ import kotlin.coroutines.cancellation.CancellationException
 val INTRO_SKIP_OPTIONS = listOf(0, 30, 60, 90, 120)
 
 /**
+ * 片头时长下一档（B19-P2-2：纯函数，可单测）——档位表内循环；未知值
+ * （indexOf -1）时回到首档 0。
+ */
+internal fun nextIntroSkipSeconds(current: Int): Int {
+    val idx = INTRO_SKIP_OPTIONS.indexOf(current)
+    return INTRO_SKIP_OPTIONS[(idx + 1) % INTRO_SKIP_OPTIONS.size]
+}
+
+/**
  * 设置 ViewModel（ui-design.md §5.7，plan §6 M3）：
  * 5 个 section 的真实读写；源地址保存后立即生效并清除登录态
  *（先对旧地址登出，再写新地址、清凭据、清登录标记、刷新 server-config）；
@@ -41,6 +50,15 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SettingsUiState(isLoading = true))
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    /**
+     * B19-P2-2：片头时长待定档位——cycleIntroSkipSeconds 点按时同步推进，
+     * 下一档以它为准，不读 DataStore 流驱动的 _uiState（写盘落盘 + 流重发
+     * 前还是旧值，快速连按两次会算出同一档、写两次同一值）；写盘落盘、流值
+     * 追上后由 collect 清掉。写盘失败时残留待定值，下次点按仍以它推进、
+     * 写成功即自愈（失败本身另有 Toast 提示）。
+     */
+    private var pendingIntroSkipSeconds: Int? = null
 
     /** 远程输入服务状态（设置页远程输入 section 直接读）。 */
     val remoteInputState: StateFlow<RemoteInputState> = remoteInputManager.state
@@ -104,19 +122,29 @@ class SettingsViewModel @Inject constructor(
                     remoteInputEnabled = values[8] as Boolean,
                 )
             }.collect { loaded ->
+                // B19-P2-2：待定档位优先于流值——点按后写盘落盘前的窗口内，
+                // 其他流变化触发的重建也不能把乐观值打回旧档；流值追上待定值
+                // 时清掉待定（写盘已落盘），之后以流值为准。
+                val pending = pendingIntroSkipSeconds
+                val effective = if (pending != null) {
+                    if (loaded.introSkipSeconds == pending) pendingIntroSkipSeconds = null
+                    loaded.copy(introSkipSeconds = pending)
+                } else {
+                    loaded
+                }
                 // 保留用户正在编辑的草稿：只在首次加载或已保存值变化时同步输入框。
                 _uiState.update { current ->
                     val draftApi = if (current.isLoading || current.apiUrl == current.savedApiUrl) {
-                        loaded.apiUrl
+                        effective.apiUrl
                     } else {
                         current.apiUrl
                     }
                     val draftM3u = if (current.isLoading || current.m3uUrl == current.savedM3uUrl) {
-                        loaded.m3uUrl
+                        effective.m3uUrl
                     } else {
                         current.m3uUrl
                     }
-                    loaded.copy(apiUrl = draftApi, m3uUrl = draftM3u)
+                    effective.copy(apiUrl = draftApi, m3uUrl = draftM3u)
                 }
             }
             } catch (e: CancellationException) {
@@ -335,9 +363,13 @@ class SettingsViewModel @Inject constructor(
 
     /** 片头时长：点按循环切换档位（0/30/60/90/120 秒，0=不跳）。 */
     fun cycleIntroSkipSeconds() {
-        val current = _uiState.value.introSkipSeconds
-        val idx = INTRO_SKIP_OPTIONS.indexOf(current)
-        val next = INTRO_SKIP_OPTIONS[(idx + 1) % INTRO_SKIP_OPTIONS.size]
+        // B19-P2-2：以待定值（有）或当前态算下一档，同步记下待定并乐观更新
+        // _uiState——两次 OK 在写盘时延内也各前进一档；流随后发出的值与乐观
+        // 值一致，不会回跳。
+        val current = pendingIntroSkipSeconds ?: _uiState.value.introSkipSeconds
+        val next = nextIntroSkipSeconds(current)
+        pendingIntroSkipSeconds = next
+        _uiState.update { it.copy(introSkipSeconds = next) }
         saveSetting("introSkipSeconds") { settingsRepository.setIntroSkipSeconds(next) }
     }
 
