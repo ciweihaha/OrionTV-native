@@ -151,6 +151,18 @@ class MoonTvApiTest {
     }
 
     @Test
+    fun `login does not retry when response body exceeds limit`() {
+        // B10-P2-2：响应体超限是确定性失败——重发只会再下载一遍同样的超大体；
+        // ResponseTooLargeException 是 IOException 子类，不先拦会被当可重试
+        // 网络错再跑一次（execute() 内已有同款专用 catch，login 漏了）
+        val bigBody = "x".repeat(2 * 1024 * 1024 + 1)
+        val (client, calls, _) = countingClient { request -> responseFor(request, 200, bigBody) }
+        val result = runBlocking { api(client).login("https://example.com", "u", "p") }
+        assertTrue(result is MoonTvApi.LoginResult.Transient)
+        assertEquals(1, calls.get())
+    }
+
+    @Test
     fun `login retries once on 5xx and succeeds`() {
         val callCount = AtomicInteger(0)
         val client = OkHttpClient.Builder().addInterceptor { chain ->

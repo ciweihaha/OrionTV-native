@@ -73,6 +73,21 @@ class DetailViewModel @Inject constructor(
         const val SAVED_FOCUS_ANCHORED = "detail_focus_anchored"
 
         /**
+         * 详情搜索错误文案映射（可单测，B10-P2-1）：各源都返回、但无精确标题
+         * 匹配时仓库抛“没有找到相关内容”，那是“搜不到”，不是网络失败——
+         * 旧实现落到通用分支显示“加载失败，请检查网络后重试”，误导用户查网络。
+         */
+        internal fun mapDetailError(message: String?): String = when {
+            message?.contains("未配置服务器地址") == true -> "还没有配置源地址，先去设置里添加吧"
+            message?.contains("登录已过期") == true -> "登录已过期，请重新登录"
+            // B5-P1-3：超时单独提示，用户知道是等太久而不是网络断了，可直接重试。
+            message?.contains("超时") == true -> "搜索超时，请重试"
+            message?.contains("没有找到相关内容") == true -> "没有找到相关内容，换个关键词试试"
+            // P2-17：不把原始异常拼给用户，固定文案。
+            else -> "加载失败，请检查网络后重试"
+        }
+
+        /**
          * 断点集号按当前源集数钳制（可单测，B7-P2-6）：记录集号超出当前源时落
          * 到末集；源还没回来（集数为 0）时只保底 >= 0，不动集号。
          */
@@ -283,14 +298,7 @@ class DetailViewModel @Inject constructor(
         _uiState.value = state.copy(failedSources = state.failedSources + source)
     }
 
-    private fun friendlyError(e: Exception): String = when {
-        e.message?.contains("未配置服务器地址") == true -> "还没有配置源地址，先去设置里添加吧"
-        e.message?.contains("登录已过期") == true -> "登录已过期，请重新登录"
-        // B5-P1-3：超时单独提示，用户知道是等太久而不是网络断了，可直接重试。
-        e.message?.contains("超时") == true -> "搜索超时，请重试"
-        // P2-17：不把原始异常拼给用户，固定文案。
-        else -> "加载失败，请检查网络后重试"
-    }
+    private fun friendlyError(e: Exception): String = mapDetailError(e.message)
 }
 
 /**

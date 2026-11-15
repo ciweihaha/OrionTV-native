@@ -38,8 +38,12 @@ class AuthRepositoryRestoreTest {
 
         override suspend fun login(baseUrl: String, username: String?, password: String?): MoonTvApi.LoginResult {
             loginCalls++
+            // B10-P2-3：先把 loginGate 读进局部变量再 complete(loginStarted)——
+            // 旧实现先 complete、再读可变字段，测试线程会在这窗口把 gate 置
+            // null，旧恢复就误走 loginResults 的 Success 路径、全量跑时飘红。
+            val gate = loginGate
             if (!loginStarted.isCompleted) loginStarted.complete(Unit)
-            val result = loginGate?.let { it.await() }
+            val result = gate?.let { it.await() }
                 ?: (loginResults.removeFirstOrNull() ?: MoonTvApi.LoginResult.Success)
             onLogin?.invoke()
             return result
@@ -322,6 +326,49 @@ class AuthRepositoryRestoreTest {
             gate.complete(MoonTvApi.LoginResult.WrongCredentials)
             assertFalse(restoreJob.await())
             assertTrue(repo.isLoggedIn.value)
+            assertEquals("1", settings.marker)
+        }
+    }
+
+    @Test
+    fun `401 refresh failure shows login modal`() {
+        // B10-P1-1：会话使用中过期、静默续期失败时弹登录框——旧实现只抛
+        // UnauthorizedException，各调用方只落错误文案，进程内再无登录入口。
+        val api = FakeAuthApi()
+        val repo = repository(api)
+        runBlocking {
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            assertFalse(repo.showLoginModal.value)
+            // 续期用的已保存凭据已过期：静默重登失败。
+            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.WrongCredentials))
+            val restored = api.onUnauthorized?.invoke()
+            assertFalse(restored!!)
+            assertEquals(2, api.loginCalls)
+            assertFalse(repo.isLoggedIn.value)
+            assertTrue(repo.showLoginModal.value)
+        }
+    }
+
+    @Test
+    fun `failed 401 refresh does not reopen modal after concurrent manual login`() {
+        // B10-P1-1 的代次守卫：恢复在途时用户手动登录成功，那是新会话，
+        // 旧恢复失败后不得把刚登进去的会话又弹回登录框（与 D7-P2-1 同款竞态）。
+        val gate = CompletableDeferred<MoonTvApi.LoginResult>()
+        val api = FakeAuthApi(loginGate = gate)
+        val settings = FakeAuthSettings(marker = "")
+        val repo = repository(api, settings)
+        runBlocking {
+            val refreshJob = async { api.onUnauthorized?.invoke() }
+            api.loginStarted.await()
+            api.loginGate = null
+            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.Success))
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            gate.complete(MoonTvApi.LoginResult.WrongCredentials)
+            assertFalse(refreshJob.await()!!)
+            assertTrue(repo.isLoggedIn.value)
+            assertFalse(repo.showLoginModal.value)
             assertEquals("1", settings.marker)
         }
     }

@@ -119,6 +119,12 @@ class MoonTvApi @Inject constructor(
                     }
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: ResponseTooLargeException) {
+                    // B10-P2-2：响应体超限是确定性失败——重发只会再下载一遍
+                    // 同样的超大体；它是 IOException 子类，不先拦会在下面被
+                    // 当可重试网络错再跑一次（execute() 内已有同款专用 catch
+                    // 原样抛出不重试，login 没走 execute()，漏了）。
+                    return@withContext LoginResult.Transient(e)
                 } catch (e: IOException) {
                     lastError = e
                 }

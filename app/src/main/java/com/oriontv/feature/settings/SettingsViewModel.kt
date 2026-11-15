@@ -240,6 +240,12 @@ class SettingsViewModel @Inject constructor(
                         ),
                     )
                 }
+                // B10-P1-1：换了 API 地址即已登出旧服务器，新地址上没有登录态——
+                // 旧实现只 Toast“登录状态已清除”，进程内再无登录入口；保存成功
+                // 且新地址非空时直接弹登录框（空地址 = 本地模式，不弹）。
+                if (apiChanged && state.apiUrl.trim().isNotBlank()) {
+                    authRepository.showLogin()
+                }
             } catch (e: CancellationException) {
                 // B-P1-9 / D-P2-2：取消原样抛出，不把取消写成“保存失败”。
                 throw e

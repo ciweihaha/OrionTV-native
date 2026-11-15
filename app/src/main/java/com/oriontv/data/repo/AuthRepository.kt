@@ -81,6 +81,13 @@ class AuthRepository @Inject constructor(
      * internal 可写只为单测能缩短等待，生产代码不动它。
      */
     internal var configRetryDelayMs: Long = CONFIG_RETRY_DELAY_MS
+    /**
+     * B10-P1-1：手动登录成功代次——login() 成功时推进一次；401 续期回调
+     * 在恢复失败后凭它判断恢复期间是否有人手动登进去了（是则不弹登录框，
+     * 否则把已过期会话的登录框弹出来；与 D7-P2-1“旧恢复不得清并发手动
+     * 登录”同款竞态，只不过这里守的是弹窗不是登录态）。
+     */
+    private val manualLoginEpoch = AtomicInteger(0)
 
     init {
         // MoonTvApi 的 401 续期回调：静默重登。
@@ -91,7 +98,18 @@ class AuthRepository @Inject constructor(
                 false
             } else {
                 unauthorizedRefreshCount.incrementAndGet()
-                restoreSession()
+                // B10-P1-1：续期失败即会话已过期，弹登录框——旧实现只由
+                // execute() 抛 UnauthorizedException，各调用方只落错误文案，
+                // 进程内再无登录入口（登录弹窗只在冷启动弹一次）。
+                // 恢复期间手动登录成功会推进 manualLoginEpoch，那是新会话，
+                // 不得把刚登进去的会话又弹回登录框；期间退出登录由 loggedOut 拦住。
+                val epochBefore = manualLoginEpoch.get()
+                val restored = restoreSession()
+                if (!restored && !loggedOut && manualLoginEpoch.get() == epochBefore) {
+                    _isLoggedIn.value = false
+                    _showLoginModal.value = true
+                }
+                restored
             }
         }
     }
@@ -119,6 +137,9 @@ class AuthRepository @Inject constructor(
                     // D7-P1-1：显式登录成功清掉已退出标志——退出后重登不受影响，
                     // 在途旧恢复的世代复核仍以 logoutEpoch 为准，不被本标志误拦。
                     loggedOut = false
+                    // B10-P1-1：手动登录成功推进代次——401 续期回调凭它判断
+                    // 恢复期间是否有人手动登进去了（是则不弹登录框）。
+                    manualLoginEpoch.incrementAndGet()
                     _isLoggedIn.value = true
                     _showLoginModal.value = false
                     Result.success(Unit)
