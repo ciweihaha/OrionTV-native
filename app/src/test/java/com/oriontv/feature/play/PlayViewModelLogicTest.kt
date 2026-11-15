@@ -1,5 +1,6 @@
 package com.oriontv.feature.play
 
+import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -220,6 +221,76 @@ class PlayViewModelLogicTest {
                 overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
             ),
         )
+    }
+
+    @Test
+    fun `playback errors are ignored after leaving page unless background continuation`() {
+        // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落错误态——
+        // 重播已被 startEpisode 的门控拦住，但计数与 Toast 在门控之前；门控与开播
+        // 同谓词（前台一律处理，后台只处理已开播过的延续）；离页且后台播放关着时
+        // 只记 pendingStart 待补开播，回页重播当前源。
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    }
+
+    @Test
+    fun `stale search callback is dropped by key generation`() {
+        // 第 8 轮 P2-2：旧搜源回调已在 IO 线程执行中时，init() 清 current 与取消
+        // 都拦不住它；凭代际快照丢弃——同键接受、换 key 后旧回调一律丢弃。
+        assertTrue(PlayViewModel.shouldAcceptSearchResults("a:1", "a:1"))
+        assertFalse(PlayViewModel.shouldAcceptSearchResults("a:1", "b:2"))
+        assertFalse(PlayViewModel.shouldAcceptSearchResults("a:1", ""))
+        assertTrue(PlayViewModel.shouldAcceptSearchResults("", ""))
+    }
+
+    @Test
+    fun `new key resets stale playback ui state`() {
+        // 第 8 轮 P2-1：同回栈项复用换 key 时，旧集的下一集预告卡、跳过片头胶囊、
+        // 抽屉与旧片长不能带到新搜源加载期间（会叠在加载动画之上）；搜源回调
+        // 只在 current == null 时开播，旧结果同清。
+        val stale = PlayUiState(
+            isLoading = false,
+            error = "旧错误",
+            title = "旧片",
+            results = listOf(SearchResult(title = "旧片", source = "a")),
+            current = SearchResult(title = "旧片", source = "a"),
+            episodeIndex = 3,
+            positionMs = 600_000L,
+            durationMs = 1_800_000L,
+            isEnded = true,
+            showNextEpisode = true,
+            autoSwitchAttempts = 2,
+            failedSources = setOf("a"),
+            skipIntroVisible = true,
+            drawer = PlayDrawer.EPISODES,
+            // A11-P2-1（main 第 11 轮）：缓冲/断点位置同样不能沿用旧值，
+            // 复位时一并清零——rebase 时补进 helper 的两项。
+            bufferedMs = 5000L,
+            breakpointMs = 600_000L,
+        )
+        val reset = PlayViewModel.resetUiStateForNewKey(
+            stale, episodeIndex = 5, positionMs = 0L, title = "新片",
+        )
+        assertTrue(reset.isLoading)
+        assertEquals(5, reset.episodeIndex)
+        assertEquals(0L, reset.positionMs)
+        assertEquals("新片", reset.title)
+        assertEquals(null, reset.current)
+        assertEquals(emptyList<SearchResult>(), reset.results)
+        assertEquals(null, reset.error)
+        assertEquals(0, reset.autoSwitchAttempts)
+        assertEquals(emptySet<String>(), reset.failedSources)
+        assertFalse(reset.showNextEpisode)
+        assertFalse(reset.isEnded)
+        assertFalse(reset.skipIntroVisible)
+        assertEquals(null, reset.drawer)
+        assertEquals(0L, reset.durationMs)
+        assertEquals(0L, reset.bufferedMs)
+        assertEquals(0L, reset.breakpointMs)
     }
 
     @Test

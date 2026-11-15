@@ -125,12 +125,14 @@ internal fun shouldAutoHideControls(
 
 /**
  * 落点预览 2 秒无操作是否应自动提交（可单测，P2-3）：
- * 有待定落点且抽屉关闭时才提交；抽屉打开时不提交——否则挑集时视频
+ * 有待定落点、抽屉关闭、无错误页时才提交；抽屉打开时不提交——否则挑集时视频
  * 在抽屉后跳进度。打开抽屉时待定落点另由抽屉 effect 直接取消（同款处理），
  * 这里是兜底（落点在抽屉打开期间才产生时，关抽屉后才起定时器）。
+ * 第 8 轮 P2-4：错误页同款——错误出现时不提交，否则 2 秒到点会对已出错的
+ * 播放器发 seekTo；错误出现时待定落点由自动提交 effect 直接取消。
  */
-internal fun shouldAutoCommitPreview(previewTargetMs: Long, drawerOpen: Boolean): Boolean =
-    previewTargetMs >= 0 && !drawerOpen
+internal fun shouldAutoCommitPreview(previewTargetMs: Long, drawerOpen: Boolean, hasError: Boolean = false): Boolean =
+    previewTargetMs >= 0 && !drawerOpen && !hasError
 
 /**
  * 方向键/OK 按键是否应重置 5 秒自动隐藏计时器（可单测，P2-1/P2-2）：
@@ -361,6 +363,17 @@ fun PlayScreen(
         controlsTick++
     }
 
+    // 抽屉初始落焦重试耗尽时的回退（第 8 轮 P2-6）：焦点从未进过抽屉，
+    // 边缘态恒 false，左/下键会把焦点送到遮罩后的控制条按钮上；回退到根时
+    // 把边缘态置为“全缘”（左缘 + 底缘均真），containment 在焦点回根期间消费
+    // 左/下键；焦点一旦进抽屉，内容上报的边缘值会覆盖这里的回退值（自愈）；
+    // 右/上键不拦，右键仍可经焦点搜索进抽屉。
+    fun onDrawerFocusFailed() {
+        drawerLeftEdgeFocused = true
+        drawerBottomEdgeFocused = true
+        rootRequester.requestFocus()
+    }
+
     // 控制器随 durationMs 重建时，同步清掉旧落点（P2-6）：
     // 落点曾双份存放，控制器重建丢落点但 previewTargetMs 仍 >=0 会一直残留预览气泡。
     LaunchedEffect(previewController) {
@@ -497,15 +510,25 @@ fun PlayScreen(
     // 从不产生预览，也就不会启用提交定时器（P1-3）。
     // 第 6 轮 P2-3：key 加抽屉、守卫加抽屉关闭——抽屉打开时不提交（另有
     // 抽屉 effect 在打开时直接取消待定落点，这里是落点在抽屉打开期间才产生的兜底）。
-    LaunchedEffect(previewTargetMs, uiState.drawer) {
-        if (shouldAutoCommitPreview(previewTargetMs, uiState.drawer != null)) {
+    // 第 8 轮 P2-4：key 加错误、守卫加无错误页——错误出现时取消待定落点
+    // （与抽屉打开时取消同款），否则 2 秒到点仍会对已出错的播放器发 seekTo；
+    // 到点后也再复核 error==null（与 5 秒自动隐藏 effect 的双保险同款）。
+    LaunchedEffect(previewTargetMs, uiState.drawer, uiState.error) {
+        if (shouldAutoCommitPreview(previewTargetMs, uiState.drawer != null, uiState.error != null)) {
             delay(SeekPreviewController.AUTO_COMMIT_MS)
-            viewModel.seekTo(previewTargetMs)
+            if (uiState.error == null) {
+                viewModel.seekTo(previewTargetMs)
+                previewController.cancel()
+                previewTargetMs = -1L
+                previewDirection = 0
+                previewThumbnail = null
+                pokeControls()
+            }
+        } else if (uiState.error != null) {
             previewController.cancel()
             previewTargetMs = -1L
             previewDirection = 0
             previewThumbnail = null
-            pokeControls()
         }
     }
     // 落点预览缩略图：防抖 300ms 后抓帧，m3u8 抓不到时用海报兜底。
@@ -927,7 +950,7 @@ fun PlayScreen(
                         drawerBottomEdgeFocused = bottom
                     },
                     // 第 7 轮 P2-4：初始落焦重试耗尽时回退到根，不留在遮罩后的控制条按钮上。
-                    onFocusFailed = { rootRequester.requestFocus() },
+                    onFocusFailed = { onDrawerFocusFailed() },
                     globalModalOpen = globalModalOpen,
                     focusRestoreTick = focusRestoreTick,
                 )
@@ -942,7 +965,7 @@ fun PlayScreen(
                         drawerLeftEdgeFocused = left
                         drawerBottomEdgeFocused = bottom
                     },
-                    onFocusFailed = { rootRequester.requestFocus() },
+                    onFocusFailed = { onDrawerFocusFailed() },
                     globalModalOpen = globalModalOpen,
                     focusRestoreTick = focusRestoreTick,
                 )
@@ -955,7 +978,7 @@ fun PlayScreen(
                         drawerLeftEdgeFocused = left
                         drawerBottomEdgeFocused = bottom
                     },
-                    onFocusFailed = { rootRequester.requestFocus() },
+                    onFocusFailed = { onDrawerFocusFailed() },
                 )
             }
             null -> Unit

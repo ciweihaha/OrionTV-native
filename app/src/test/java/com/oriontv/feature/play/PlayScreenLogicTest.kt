@@ -82,6 +82,11 @@ class PlayScreenLogicTest {
         assertFalse(shouldAutoCommitPreview(30_000L, drawerOpen = true))
         assertFalse(shouldAutoCommitPreview(-1L, drawerOpen = false))
         assertFalse(shouldAutoCommitPreview(-1L, drawerOpen = true))
+        // 第 8 轮 P2-4：错误页上不提交——否则 2 秒到点会对已出错的播放器
+        // 发 seekTo；错误出现时待定落点由 effect 直接取消。
+        assertFalse(shouldAutoCommitPreview(30_000L, drawerOpen = false, hasError = true))
+        assertFalse(shouldAutoCommitPreview(30_000L, drawerOpen = true, hasError = true))
+        assertFalse(shouldAutoCommitPreview(-1L, drawerOpen = false, hasError = true))
     }
 
     @Test
@@ -106,6 +111,11 @@ class PlayScreenLogicTest {
         assertFalse(shouldContainPlayDrawerFocusKey(true, Key.DirectionRight, leftEdge = true, bottomEdge = true))
         assertFalse(shouldContainPlayDrawerFocusKey(true, Key.DirectionUp, leftEdge = true, bottomEdge = true))
         assertFalse(shouldContainPlayDrawerFocusKey(false, Key.DirectionLeft, leftEdge = true, bottomEdge = true))
+        // 第 8 轮 P2-6：初始落焦重试耗尽回退到根时，边缘态置为“全缘”
+        // （左缘 + 底缘均真），左/下键在焦点回根期间被消费、不逃到遮罩后的
+        // 控制条按钮上；右/上键仍放行，右键可经焦点搜索进抽屉。
+        assertTrue(shouldContainPlayDrawerFocusKey(true, Key.DirectionLeft, leftEdge = true, bottomEdge = true))
+        assertTrue(shouldContainPlayDrawerFocusKey(true, Key.DirectionDown, leftEdge = true, bottomEdge = true))
     }
 
     @Test

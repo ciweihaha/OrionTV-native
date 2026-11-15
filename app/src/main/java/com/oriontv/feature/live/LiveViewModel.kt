@@ -361,6 +361,14 @@ class LiveViewModel @Inject constructor(
         // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
         // 点播的错误不能触发直播切台（会抢走点播的播放器）。
         if (!playerManager.isCurrentOwner(playbackToken)) return
+        // 第 8 轮 P2-3：离页后播放器错误回调不推进失败计数、不弹 Toast——
+        // playCurrent 的 shouldStartPlayback 门控已拦住重播（无音频泄漏），
+        // 但门控之前的账已算了（controller.onPlaybackError 推进 failCount/
+        // lineIndex/currentIndex，TryLine/NextChannel 还弹“正在尝试备用线路”
+        // Toast、GiveUp 还置 playbackFailed）；后台播放开着时按“已开播过的
+        // 延续”放行（与 playCurrent 同谓词），回页时 onPageResumed 按
+        // shouldResumePlayback 重开播当前台，不丢恢复。
+        if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
         // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
         stablePlayJob?.cancel()
         val state = _uiState.value
@@ -605,6 +613,21 @@ class LiveViewModel @Inject constructor(
                 is DigitAction.Invalid -> {
                     _uiState.update { it.copy(digitBuffer = "") }
                     showToast("无 ${action.number} 号频道")
+                    // 第 8 轮 P1-1（A10-P2-3 的回归）：数字键路径关面板时跳过信号重播，
+                    // 前提是随后数字键切台又调一次 playCurrent()；台号无效时根本没有
+                    // 切台，就绪超时已取消、面板定时器已取消，播放器会静置在无提示的
+                    // 断流态（signalError 的常驻提示随面板关闭一起消失）。无效台号时
+                    // 按关面板原语义补一次重播（与 shouldReplaySignalOnClosePanel
+                    // 同谓词、skip=false），让就绪超时/自动换台链重新接管。
+                    if (shouldReplaySignalAfterInvalidDigit(
+                            _uiState.value.signalError,
+                            _uiState.value.isPlaying,
+                            _uiState.value.channels.isNotEmpty(),
+                            pagePaused,
+                        )
+                    ) {
+                        playCurrent()
+                    }
                 }
                 else -> _uiState.update { it.copy(digitBuffer = "") }
             }
@@ -888,6 +911,18 @@ class LiveViewModel @Inject constructor(
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
 
         /**
+         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3）：与开播门控同谓词——
+         * 前台一律处理；后台只处理已开播过的延续（PiP 内断流恢复）；离页且后台
+         * 播放关着时不处理（不推进失败计数、不弹 Toast、不落失败态），回页时
+         * onPageResumed 重开播当前台。
+         */
+        internal fun shouldHandlePlaybackError(
+            pageActive: Boolean,
+            backgroundPlaybackEnabled: Boolean,
+            playbackStarted: Boolean,
+        ): Boolean = shouldStartPlayback(pageActive, backgroundPlaybackEnabled, playbackStarted)
+
+        /**
          * 关面板时是否应重播当前台（可单测，A10-P2-3）：信号异常且未在播、
          * 有频道、未离页时重播，让就绪超时/自动换台链重新接管；数字键换台
          * 先关面板时跳过（随后数字键切台还会调一次 playCurrent()，关面板
@@ -901,6 +936,20 @@ class LiveViewModel @Inject constructor(
             skipSignalReplay: Boolean,
         ): Boolean = signalError && !isPlaying && hasChannels &&
             shouldFirePendingPlaybackTask(pagePaused) && !skipSignalReplay
+
+        /**
+         * 无效台号提交后是否应重播当前台（可单测，第 8 轮 P1-1）：与关面板信号重播
+         * 同谓词、skip=false——A10-P2-3 让数字键关面板时跳过重播，台号无效时
+         * 随后没有切台，跳过的那一次重播必须在这里补回来，否则恢复链彻底断掉。
+         */
+        internal fun shouldReplaySignalAfterInvalidDigit(
+            signalError: Boolean,
+            isPlaying: Boolean,
+            hasChannels: Boolean,
+            pagePaused: Boolean,
+        ): Boolean = shouldReplaySignalOnClosePanel(
+            signalError, isPlaying, hasChannels, pagePaused, skipSignalReplay = false,
+        )
 
         /**
          * 待定播放任务到点时是否应执行（可单测，第 7 轮 P1-1）：离页后就绪超时/
