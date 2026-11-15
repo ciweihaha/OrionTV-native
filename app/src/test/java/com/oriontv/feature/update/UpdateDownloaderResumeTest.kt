@@ -1,10 +1,12 @@
 package com.oriontv.feature.update
 
+import com.oriontv.data.api.readStreamCapped
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -364,6 +366,57 @@ class UpdateDownloaderResumeTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    /**
+     * 阻塞直到被关、关后读抛错的输入流（ApiClientTest.GatedInputStream 同款）。
+     */
+    private class BlockingStream : java.io.InputStream() {
+        private val gate = CountDownLatch(1)
+
+        @Volatile
+        var closed = false
+
+        override fun read(): Int {
+            gate.await()
+            throw IOException("stream closed")
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            gate.await()
+            throw IOException("stream closed")
+        }
+
+        override fun close() {
+            closed = true
+            gate.countDown()
+        }
+    }
+
+    @Test
+    fun `diagnostic readStreamCapped inside withContext propagates cancel`() {
+        // 诊断（D8-P2-2）：与 ApiClientTest 通过用例唯一差别是外面多一层
+        // withContext。若此测试失败（thrown 为空），说明 withContext 吞掉
+        // 了 suspendCancellableCoroutine 的取消；若通过，吞没点在下载器
+        // 特有的环节（OkHttp 体/.use/attempt 循环）。诊断完即删。
+        val stream = BlockingStream()
+        val thrown: CancellationException? = try {
+            runBlocking {
+                val job = async(Dispatchers.IO) {
+                    withContext(Dispatchers.IO) {
+                        readStreamCapped(stream, 1024L) { stream.close() }
+                    }
+                }
+                delay(100)
+                job.cancel()
+                withTimeout(5_000) { job.join() }
+                null
+            }
+        } catch (e: CancellationException) {
+            e
+        }
+        assertNotNull("withContext 里的体读取消应抛 CancellationException", thrown)
+        assertTrue(stream.closed)
     }
 
     @Test
