@@ -17,12 +17,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.theme.OrionColors
@@ -101,7 +105,15 @@ fun ConfirmDialog(
 ) {
     val confirmRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val cancelRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    androidx.compose.runtime.LaunchedEffect(focusRestoreTick) { confirmRequester.requestFocus() }
+    // 第 13 轮跟进（轻微 3）：tick 到达时不再无条件抢回“确认”——用户已把焦点
+    // 移到“取消”上时，每次 tick 都把焦点偷回“确认”，再按一次确认就误退出。
+    // 跟踪取消按钮是否聚焦：tick 到达时聚焦过“取消”就恢复回“取消”，否则回
+    // “确认”（仍保留 C12-P1-3 的全局弹窗关闭后恢复——退出确认只能在无全局
+    // 弹窗时打开，见 LiveScreen 的 BackHandler 门控）。
+    var cancelFocused by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(focusRestoreTick) {
+        if (cancelFocused) cancelRequester.requestFocus() else confirmRequester.requestFocus()
+    }
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方条件组合，
     // 卸载时整棵子树直接移除，exit 动画永远跑不到；留着只是死代码。
     // C11-P2-3：入场淡入 150ms（设计稿 §4）——KDoc 一直写着淡入，代码却没有；
@@ -150,6 +162,7 @@ fun ConfirmDialog(
                     onClick = onCancel,
                     modifier = Modifier
                         .focusRequester(cancelRequester)
+                        .onFocusChanged { cancelFocused = it.isFocused }
                         .focusProperties {
                             left = confirmRequester
                             right = confirmRequester
