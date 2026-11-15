@@ -19,6 +19,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -85,6 +86,16 @@ class UpdateDownloader @Inject constructor(
         destFile: File,
         onProgress: ((written: Long, total: Long) -> Unit)? = null,
     ): File {
+        // D8-P2-2：取消到达标志——监听协程在取消时置位（见下），外层凭它补抛
+        // CE。不用 Job/ensureActive() 判断：实测 withContext 会吞掉内部
+        // 抛出的 CE，且外层 ensureActive() 在 Job 已取消时仍不抛（单测时序
+        // 诊断证实：cancel() 后 Job.isCancelled 为 true、关体与读抛错均在
+        // 取消之后、无重试、join 快速返回，唯独 join 不抛 CE）；监听协程
+        // provably 在取消时触发（关体发生在取消后），故以它为准。
+        // copyDone 区分“取消时拷贝已正常完成”与“取消打断了拷贝”：正常完成
+        // 后的 watcher.cancel() 也会进 finally，不能误标为取消。
+        val cancelledDuringCopy = AtomicBoolean(false)
+        val copyDone = AtomicBoolean(false)
         val downloaded = withContext(ioDispatcher) {
         val declared = headApkSizeBytes(url)
         if (declared != null && declared > MAX_APK_BYTES) {
@@ -191,6 +202,11 @@ class UpdateDownloader @Inject constructor(
                                 try {
                                     awaitCancellation()
                                 } finally {
+                                    // 取消到达即记下（拷贝已正常完成时不记——正常完成
+                                    // 后的 watcher.cancel() 也会进 finally，不能误标
+                                    // 为取消）；先置标志再关体：读因关体抛错，标志一
+                                    // 定在读抛错之前已置位，外层复核读到它时无竞态。
+                                    if (!copyDone.get()) cancelledDuringCopy.set(true)
                                     runCatching { body.close() }
                                 }
                             }
@@ -202,7 +218,10 @@ class UpdateDownloader @Inject constructor(
                                         // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
                                         context.ensureActive()
                                         val read = input.read(buffer)
-                                        if (read < 0) break
+                                        if (read < 0) {
+                                            copyDone.set(true)
+                                            break
+                                        }
                                         written += read
                                         if (written > MAX_APK_BYTES) {
                                             throw UpdateDownloadException(
@@ -260,6 +279,13 @@ class UpdateDownloader @Inject constructor(
         // join 却正常返回）。这里是调用方协程上下文，CE 能传出：已取消的
         // 下载绝不能当成成功返回。
         currentCoroutineContext().ensureActive()
+        // D8-P2-2：监听协程置位的取消标志——取消到达时读被关体打断、
+        // withContext 把 CE 吞掉后下载会“正常”返回；这里凭标志补抛 CE。
+        // （外层 ensureActive() 在 Job 已取消时仍不抛，原因未明，故标志
+        // 是决定性复核，ensureActive() 只作辅助。）
+        if (cancelledDuringCopy.get()) {
+            throw CancellationException("下载已取消")
+        }
         return downloaded
     }
 
