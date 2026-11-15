@@ -84,9 +84,37 @@ class EpgRepositoryTest {
     @Test
     fun `decideLoad with empty fresh epg is success not failure`() {
         // D9-P2-8：拉取成功但源本身 0 节目是合法空源，按成功处理——
-        // 返回空表、loadFailed=false，不再恒报“刷新失败”。
+        // loadFailed=false，不再恒报“刷新失败”。
+        // 第 10 轮 D10-P2-1：返回数据时优先用仍新鲜的旧缓存（旧缓存里
+        // 的节目未播完），而不是空表——服务端偶尔吐一次空文件时，旧
+        // 节目单比“当次无节目单”强。
         val decision = EpgRepository.decideLoad(
             nonEmpty,
+            LiveFetchResult.Success(EpgParser.EpgData(emptyMap(), emptyMap())),
+            nowMs,
+        )
+        assertEquals(nonEmpty, decision.data)
+        assertFalse(decision.loadFailed)
+    }
+
+    @Test
+    fun `decideLoad with empty fresh epg and expired cache returns empty`() {
+        // D10-P2-1：旧缓存本身也已过期时无可用的节目可回落，返回空表
+        // （loadFailed 仍为 false：空源本身是成功的拉取）。
+        val decision = EpgRepository.decideLoad(
+            expired,
+            LiveFetchResult.Success(EpgParser.EpgData(emptyMap(), emptyMap())),
+            nowMs,
+        )
+        assertEquals(EpgParser.EpgData(emptyMap(), emptyMap()), decision.data)
+        assertFalse(decision.loadFailed)
+    }
+
+    @Test
+    fun `decideLoad with empty fresh epg and no cache returns empty`() {
+        // D10-P2-1：无旧缓存时同样返回空表、不报失败。
+        val decision = EpgRepository.decideLoad(
+            null,
             LiveFetchResult.Success(EpgParser.EpgData(emptyMap(), emptyMap())),
             nowMs,
         )

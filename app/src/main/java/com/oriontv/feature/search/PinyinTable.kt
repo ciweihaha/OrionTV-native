@@ -4,15 +4,20 @@ package com.oriontv.feature.search
  * 标准普通话拼音音节表（不带声调）与手机九键 T9 映射——由 ciweihaha/TV 的
  * PinyinTable.java（v5.9.6 键盘前例）原样移植，音节/RANK/切分算法均未改动。
  *
- * 音节表是汉语拼音的固定语言学集合（423 个，ü 记作 v，不含 lo 等非音节），不是
- * 编造的词库：对照维基百科《汉语拼音音节列表》核对，极罕见音节已补全（ê、yai、
- * lvan 等）。本类不产生任何中文词——音节只用于把遥控敲出的拼音字母切分成
- * 音节，切分结果再走 getSuggest → iQIYI 建议链出中文候选（见 IqiyiSuggest），
- * 中文候选全部来自 iQIYI 联想接口，不自造词典。
+ * 音节表是 423 条音节（ü 记作 v，不含 lo 等非音节），不是编造的词库：其中
+ * 约 403–412 条是标准音节，另含 ê、biang、cei/dei/kei/sei/tei、nun/den/din、
+ * fiao、shong、yai 等非常见/方言音节——多出的条目不影响常见输入的切分：
+ * DP 按音节数最少、覆盖最长优先，合法音节恒占优；非常见条目只在输入本身
+ * 就是该音节时才会被切出。本类不产生任何中文词——音节只用于把遥控敲出的
+ * 拼音字母切分成音节，切分结果再走 getSuggest → iQIYI 建议链出中文候选
+ * （见 IqiyiSuggest），中文候选全部来自 iQIYI 联想接口，不自造词典。
  *
  * Jewel 第 9 轮 P2-6：屏上键盘补拼音候选。QWERTY 逐字敲出的是拼音字母，
  * [segmentLetters] 用同一张音节表做 DP 切分（音节数最少、覆盖最长优先）；
- * 九键仍走 TV 同款数字码切分 [segment]。
+ * 第 10 轮 S10-P2-1：九键并不走数字码切分 [segment]——屏上 9 键是
+ * NineKeyInput 多击（同键连按循环切字母），[segment]/[forDigits]/
+ * [isDigitCode]/[canSegment]/[encode] 目前只有单测在用、未接入生产 UI，
+ * 留作数字码切分的工具 API（勿按旧注释把它当成 9 键的切分路径）。
  *
  * 九键数字键位（与手机一致）：2 abc、3 def、4 ghi、5 jkl、6 mno、7 pqrs、8 tuv、9 wxyz。
  */

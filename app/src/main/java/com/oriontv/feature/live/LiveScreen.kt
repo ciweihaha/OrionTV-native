@@ -98,6 +98,20 @@ internal fun isPanelChannelFavorite(
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
 /**
+ * 第 10 轮 L10-P2-1：直播 Toast 的底部边距（dp）——信息条在时上移 160dp
+ * （信息条约 115–135dp 高），否则 48dp；数字键回显在时再上移 64dp
+ * （回显约 48dp 高），免得两条 OrionToast 在同一位置重叠。回显本身
+ * 的落点不变（仍是信息条在时 160dp、否则 48dp）。
+ */
+internal fun liveToastBottomPaddingDp(showInfoBar: Boolean, digitEchoVisible: Boolean): Int =
+    when {
+        digitEchoVisible && showInfoBar -> 224
+        digitEchoVisible -> 112
+        showInfoBar -> 160
+        else -> 48
+    }
+
+/**
  * 面板落焦 effect 是否应落焦点到当前台行（可单测，C12-P1-3）：面板打开且
  * EPG 弹窗未打开时才落——EPG 弹窗开着时焦点归弹窗，面板 effect 重跑
  * （例如全局弹窗关闭的 tick）不能把焦点从弹窗里抢回面板行；EPG 关闭后
@@ -566,11 +580,12 @@ fun LiveScreen(
             }
         }
 
-        // 空态：未配 M3U 地址 → 指引去设置；拉取失败 → 重试。
+        // 空态：未配 M3U 地址 → 指引去设置；拉取失败 → 重试；合法空源 → 另分支提示。
         if (!uiState.isLoading && uiState.channels.isEmpty()) {
             EmptyState(
                 m3uConfigured = uiState.m3uConfigured,
                 loadError = uiState.loadError,
+                emptySource = uiState.emptySource,
                 onGoSettings = { onNavigate(OrionRoute.Settings) },
                 onRetry = { viewModel.reload() },
                 globalModalOpen = globalModalOpen,
@@ -614,11 +629,14 @@ fun LiveScreen(
         }
 
         // 提示消息条（底部居中，3 秒消失；信息条在时上移，免得盖住信息条）。
+        // 第 10 轮 L10-P2-1：数字回显在时 Toast 再上移一格——两者之前同落点，
+        // 收藏/播错/刷新失败提示可在 1500ms 缓冲窗内与回显同时出现、两条
+        // OrionToast 在同一位置重叠；回显约 48dp 高，上移 64dp 即错开。
         uiState.toastMessage?.let { message ->
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = if (showInfoBar) 160.dp else 48.dp),
+                    .padding(bottom = liveToastBottomPaddingDp(showInfoBar, uiState.digitBuffer.isNotEmpty()).dp),
                 contentAlignment = Alignment.Center,
             ) {
                 OrionToast(message = message)
@@ -706,11 +724,13 @@ fun LiveScreen(
     }
 }
 
-/** 空态：未配地址 → 去设置；拉取失败 → 重试。 */
+/** 空态：未配地址 → 去设置；拉取失败 → 重试；合法空源 → 另分支提示。 */
 @Composable
 private fun EmptyState(
     m3uConfigured: Boolean,
     loadError: String?,
+    /** 第 10 轮 L10-P2-2：合法空源（拉取成功但 0 个频道）——与拉取失败区分文案。 */
+    emptySource: Boolean = false,
     onGoSettings: () -> Unit,
     onRetry: () -> Unit,
     /** C11-P2-1：全局弹窗开着时挂载也不抢焦（弹窗关闭后由根焦点 effect 恢复）。 */
@@ -732,6 +752,8 @@ private fun EmptyState(
             Text(
                 text = if (!m3uConfigured) {
                     "还没有配置直播源地址"
+                } else if (emptySource) {
+                    "直播源为空（0 个频道）"
                 } else {
                     loadError ?: "直播源加载失败"
                 },
@@ -741,6 +763,8 @@ private fun EmptyState(
             Text(
                 text = if (!m3uConfigured) {
                     "请在设置里填写 M3U 地址后回来"
+                } else if (emptySource) {
+                    "请检查 M3U 文件内容，确认源里有频道"
                 } else {
                     "请检查 M3U 地址或网络后重试"
                 },
