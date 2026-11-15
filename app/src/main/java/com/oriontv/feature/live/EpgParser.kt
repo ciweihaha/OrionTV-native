@@ -30,6 +30,15 @@ object EpgParser {
      */
     internal const val MAX_ENTITY_DECLARATIONS = 5
 
+    /**
+     * 第 9 轮 D9-P2-4：解析出的节目数上限——与 M3uParser.MAX_CHANNELS=20_000
+     * 对称（M3U 第 7 轮已堵同款口，EPG 漏了）。只有 3MB 体上限时，按当前
+     * 密度（413KB ≈ 2,569 条）3MB 约 1.8 万条，未超 2 万；但标题短、台多
+     * 的源可塞数万条 programme，全进内存与缓存编解码；超限截断并记日志，
+     * 不静默丢数据。
+     */
+    const val MAX_PROGRAMMES = 20_000
+
     /** EPG 安全拒绝：防护不可用或疑似实体膨胀攻击时抛，调用方按“拉取失败”回落旧缓存。 */
     class EpgSecurityException(message: String) : Exception(message)
 
@@ -129,8 +138,17 @@ object EpgParser {
         }
 
         val programmes = mutableMapOf<String, MutableList<Programme>>()
+        var totalProgrammes = 0
         val programmeNodes = doc.getElementsByTagName("programme")
         for (i in 0 until programmeNodes.length) {
+            // D9-P2-4：节目数上限——超限截断并记日志（与 M3U 的 MAX_CHANNELS 同口径）。
+            if (totalProgrammes >= MAX_PROGRAMMES) {
+                AppLog.w(
+                    "EpgParser",
+                    "EPG 节目数 ${programmeNodes.length} 超上限 $MAX_PROGRAMMES，只保留前 $MAX_PROGRAMMES 条",
+                )
+                break
+            }
             val el = programmeNodes.item(i) as? Element ?: continue
             val channel = el.getAttribute("channel").trim()
             val start = TimeUtils.parseXmltvTime(el.getAttribute("start")) ?: continue
@@ -140,6 +158,7 @@ object EpgParser {
             val title = if (titleNodes.length > 0) titleNodes.item(0).textContent.trim() else ""
             programmes.getOrPut(channel) { mutableListOf() }
                 .add(Programme(channelId = channel, title = title, startAt = start, endAt = stop))
+            totalProgrammes++
         }
         val sorted = programmes.mapValues { (_, list) -> list.sortedBy { it.startAt } }
         return EpgData(programmesByChannel = sorted, channelNames = channelNames)
@@ -185,14 +204,24 @@ object EpgParser {
     }
 
     /**
+     * 第 9 轮 D9-P1-1：数据里是否还有未播完的节目（任一 endAt > now）——
+     * “新鲜数据”的判据，供 [isCacheFresh] 与 EpgRepository 的落盘/失败
+     * 判定共用。实测 epg.xml 仍只覆盖昨天：拉回的过期文件解析成功、节目
+     * 非空，旧实现只判非空就当成功落盘、全天无节目单且无任何失败信号；
+     * 现在没有任何 endAt > now 的节目时按失败处理，不落盘、置 loadFailed。
+     */
+    fun hasFutureProgramme(data: EpgData, nowMs: Long): Boolean =
+        data.programmesByChannel.values.any { programmes ->
+            programmes.any { it.endAt > nowMs }
+        }
+
+    /**
      * EPG 缓存新鲜判据（plan §4.3 / 天光 v2.2.20 教训）：
      * 不能只看文件日期，要看缓存里是否还有正在播的节目——没有就强制重拉，
      * 否则凌晨拉到昨天数据会整天无节目。
      */
     fun isCacheFresh(data: EpgData, cachedAtMs: Long, nowMs: Long, ttlMs: Long = 6 * 60 * 60 * 1000L): Boolean {
         if (nowMs - cachedAtMs > ttlMs) return false
-        return data.programmesByChannel.values.any { programmes ->
-            programmes.any { it.endAt > nowMs }
-        }
+        return hasFutureProgramme(data, nowMs)
     }
 }

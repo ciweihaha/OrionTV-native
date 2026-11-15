@@ -10,15 +10,18 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 import javax.inject.Inject
@@ -267,16 +270,26 @@ class AuthRepository @Inject constructor(
             // 不当成普通失败吞掉；但登出收尾（清凭据/清 Jar/清标记/落未登录态）
             // 本就应在取消时也跑完，故先记下 CE、跑完收尾再重抛，不让第一步
             // 的取消截断后面的清理。
-            loginStateMutex.withLock {
-                var cancelled: CancellationException? = null
-                // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了，改 try/catch。
-                try { credentialsStore.clear() } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
-                runCatching { cookieJar.clear() }
-                // B5-P2-3：标记清除失败也不拦登出收尾（_isLoggedIn 必须落 false）。
-                try { settingsRepository.setAuthCookies("") } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
-                _isLoggedIn.value = false
-                cancelled?.let { throw it }
+            // D9-P2-3：B13-P2-3 只管了锁内的 CE——等锁时被取消（logout 协程
+            // 在切页时被取消、锁正被在途登录/恢复持有），withLock 直接抛 CE，
+            // 块内清理一行都不跑，退出“假成功”（凭据/Jar/标记都在、_isLoggedIn
+            // 仍为 true，下次冷启动见标记又去静默重登）。收尾包进
+            // withContext(NonCancellable)：等锁不再可取消，清理一定跑完；
+            // 跑完后再把取消信号还给调用方（ensureActive，B13-P2-3 同款
+            // “记下 CE、跑完收尾再重抛”在锁外同样适用）。
+            withContext(NonCancellable) {
+                loginStateMutex.withLock {
+                    var cancelled: CancellationException? = null
+                    // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了，改 try/catch。
+                    try { credentialsStore.clear() } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
+                    runCatching { cookieJar.clear() }
+                    // B5-P2-3：标记清除失败也不拦登出收尾（_isLoggedIn 必须落 false）。
+                    try { settingsRepository.setAuthCookies("") } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
+                    _isLoggedIn.value = false
+                    cancelled?.let { throw it }
+                }
             }
+            coroutineContext.ensureActive()
         }
     }
 
@@ -440,7 +453,17 @@ class AuthRepository @Inject constructor(
             // D7-P1-2：登录响应到达时 OkHttp 已把新 Set-Cookie 写回 Jar——
             // 世代不匹配只拦住了状态写，Jar 里仍留着活的会话 cookie；
             // 仍是已退出态时清掉本次登录种下的 cookie（见 scrubStaleRestoreSession）。
-            scrubStaleRestoreSession()
+            // D9-P2-2：这处 scrub 原来在 loginStateMutex 外（D8-P2-6 只把复核+
+            // 置位、登录落盘、退出收尾三段放进锁，这条调用漏了）——scrub 的唯一
+            // 守卫是 _isLoggedIn，而 login() 在互斥块内先写凭据/标记、最后才
+            // 置 _isLoggedIn=true；锁外检查时手动登录可能刚写完凭据/标记、尚
+            // 未置位，scrub 会清掉新会话的 cookie 与标记。放进锁内、复核后
+            // 再 scrub（与 :464-468 第二处调用点同款），窗口关闭。
+            loginStateMutex.withLock {
+                if (logoutEpoch.get() != epochAtStart || loggedOut) {
+                    scrubStaleRestoreSession()
+                }
+            }
             return false
         }
         return if (ok) {

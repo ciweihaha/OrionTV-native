@@ -163,7 +163,13 @@ data class ServerConfig(
 
 @Serializable
 data class VersionResponse(
-    val version: String,
+    /**
+     * 第 9 轮 D9-P2-9（D6-P2-16 闭环）：coerceInputValues 只对有默认值
+     * 的字段生效，version 原来是必填标量、缺字段时整表解码失败报
+     * “版本接口返回 JSON 损坏”；给默认值 ""，缺字段时由 isValidVersion
+     * 报“版本号格式非法”，文案更准。
+     */
+    val version: String = "",
 )
 
 @Serializable

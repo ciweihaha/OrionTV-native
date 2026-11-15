@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -183,11 +184,20 @@ class AggApi @Inject constructor(
     /**
      * 整表解码失败时的逐条容错：根节点不是对象、或缺 code/list 时返回 null
      * （调用方按“JSON 损坏”处理）；code != 1 时直接报结构异常。
+     * 第 9 轮 D9-P2-9：code 下成字符串 "1" 时旧实现 `intOrNull ?: return null`
+     * 直接误报“JSON 损坏”——code 接受字符串数字（content.toIntOrNull()
+     * 兜底，数字 1 与 "1" 等价）；code 是对象/数组等非标量时同样回 null
+     * （不再让 jsonPrimitive 抛 IllegalArgumentException 漏出去）。
+     * D6-P2-16 闭环：coerceInputValues 只对有默认值的字段生效，触发条件
+     * 已证实——Models 里 Favorite/PlayRecord/SearchResult/AggVideoItem
+     * 全字段有默认值，已被覆盖；仅 AggListResponse.code、DoubanResponse.code、
+     * VersionResponse.version 三个必填标量不受保护，残口即本项（agg 侧
+     * 在此兜底，version 侧给默认值 "" 再由 isValidVersion 报错）。
      */
     private fun lenientAggList(body: String): AggListResponse? {
         val root = runCatching { json.parseToJsonElement(body) }.getOrNull() as? JsonObject
             ?: return null
-        val code = root["code"]?.jsonPrimitive?.intOrNull ?: return null
+        val code = (root["code"] as? JsonPrimitive)?.content?.toIntOrNull() ?: return null
         if (code != 1) throw AggInvalidResponseException("agg 返回结构异常：code=$code")
         val rawList = root["list"] as? JsonArray ?: return null
         val items = LenientDecode.decodeList(json, rawList, AggVideoItem.serializer())

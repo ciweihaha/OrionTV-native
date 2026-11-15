@@ -2,7 +2,9 @@ package com.oriontv.feature.update
 
 import com.oriontv.core.util.VersionUtils
 import com.oriontv.data.api.ApiClient
+import com.oriontv.data.api.BodyTooLargeException
 import com.oriontv.data.api.executeCancellable
+import com.oriontv.data.api.readStreamCapped
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -325,18 +327,23 @@ class UpdateDownloader @Inject constructor(
                         return@withContext null
                     }
                     val body = response.body ?: return@withContext null
-                    // 流式限量读：超 4KB 直接判无效，不整包进内存。
-                    val bytes = body.byteStream().use { input ->
-                        val buf = ByteArray((MAX_SHA256_FILE_BYTES + 1).toInt())
-                        var read = 0
-                        while (read < buf.size) {
-                            val n = input.read(buf, read, buf.size - read)
-                            if (n < 0) break
-                            read += n
+                    // 第 9 轮 D9-P2-6：流式限量读改用 readStreamCapped（ApiClient，
+                    // D8-P2-2 的 SCC 同款机制）——旧实现是裸循环读 body.byteStream()，
+                    // executeCancellable 的取消挂钩在拿到响应头后即摘掉，取消到达
+                    // 时阻塞的 read() 不响应、要等 15 秒读超时才停；现在取消时
+                    // SCC 挂钩关响应体、中断 socket 读，体读立即以 CE 收尾。
+                    // 超限是确定性失败（不是网络错），直接回 null，不进下面的
+                    // IOException 重试分支（BodyTooLargeException 是 IOException
+                    // 的子类，必须先接住）。
+                    val bytes = try {
+                        body.byteStream().use { input ->
+                            readStreamCapped(input, MAX_SHA256_FILE_BYTES) {
+                                runCatching { body.close() }
+                            }
                         }
-                        buf.copyOf(read)
+                    } catch (_: BodyTooLargeException) {
+                        return@withContext null
                     }
-                    if (bytes.size > MAX_SHA256_FILE_BYTES) return@withContext null
                     return@withContext UpdateService.parseSha256File(String(bytes, Charsets.UTF_8))
                 }
             } catch (e: CancellationException) {

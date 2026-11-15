@@ -169,6 +169,50 @@ class AggApiTest {
     }
 
     @Test
+    fun `videoList accepts string code 1`() {
+        // D9-P2-9：服务端把 code 下成字符串 "1" 时，旧实现误报“JSON 损坏”——
+        // 字符串数字与数字等价，应正常解析。
+        val body = """{"code":"1","page":1,"pagecount":1,"limit":20,"total":1,"list":[
+            {"vod_id":"1","vod_name":"好片","vod_pic":""}
+        ]}"""
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, body)
+        }
+        val parsed = runBlocking { api(client).videoList(1, 1) }
+        assertEquals(1, parsed.code)
+        assertEquals(1, parsed.list?.size)
+        assertEquals("好片", parsed.list?.first()?.vod_name)
+    }
+
+    @Test
+    fun `videoList with string code 0 reports structure error not corrupt json`() {
+        // D9-P2-9：code "0" 是结构异常（code != 1），不是 JSON 损坏——报错文案要准。
+        val body = """{"code":"0","list":[]}"""
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, body)
+        }
+        val thrown = assertThrows(AggInvalidResponseException::class.java) {
+            runBlocking { api(client).videoList(1, 1) }
+        }
+        assertTrue(thrown.message!!.contains("结构异常"))
+        assertFalse(thrown.message!!.contains("JSON 损坏"))
+    }
+
+    @Test
+    fun `version with missing version field reports invalid format not corrupt json`() {
+        // D9-P2-9（D6-P2-16 闭环）：VersionResponse.version 给默认值 "" 后，
+        // 缺字段不再解码失败报“JSON 损坏”，而由 isValidVersion 报“版本号格式非法”。
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, "{}")
+        }
+        val thrown = assertThrows(AggInvalidResponseException::class.java) {
+            runBlocking { api(client).version() }
+        }
+        assertTrue(thrown.message!!.contains("版本号格式非法"))
+        assertFalse(thrown.message!!.contains("JSON 损坏"))
+    }
+
+    @Test
     fun `oversize body is rejected before decode`() {
         val bigBody = "x".repeat(2 * 1024 * 1024 + 1)
         val (client, _) = countingClient { request, _ ->
