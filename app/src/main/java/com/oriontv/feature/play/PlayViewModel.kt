@@ -521,7 +521,13 @@ class PlayViewModel @Inject constructor(
         }
         _uiState.update {
             it.copy(
-                isLoading = true,
+                // A20-P2-2：暂停态重挂不置加载态——旧实现无条件 isLoading=true，
+                // 但暂停态下就绪超时复核（userPaused 门控）与轮询（只有真正开播
+                // 才清 isLoading）两条清除路径都被堵死，加载动画一直盖在已暂停
+                // 的画面上，只能按 OK 恢复播放才消失；playUrl(autoPlay=false)
+                // 也已渲染首帧，加载态本身无事实依据。播错自动换源路径不受影响
+                //（handlePlaybackError 在页分支自己会再置 isLoading=true）。
+                isLoading = !resumePaused,
                 error = null,
                 current = result,
                 episodeIndex = episodeIndex,
@@ -586,10 +592,14 @@ class PlayViewModel @Inject constructor(
         if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) {
             // A16-P2-1：播完态下当前进度即片尾位置，直接记会让回页补开播触发
             // 起点溢出守卫误判、自动换源并记当前源失效；播完态记 0L 从头播。
+            // A20-P2-1：待补开播也带上暂停态——暂停后离页期间播错、回页补开播
+            // 时 resumePaused 默认为 false 会把暂停的片自动续播（与 A19-P2-2
+            // 修掉的 reclaim 缺口同一失效模式，只是走了 deferred 路径）。
             pendingStart = PendingStart(
                 current,
                 state.episodeIndex,
                 resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs.takeIf { it > 0 }),
+                resumePaused = userPaused,
             )
             return
         }
@@ -611,10 +621,13 @@ class PlayViewModel @Inject constructor(
                 // A5-P1-5：自动换源也走串行开播入口，不与手动选集并发。
                 // A7-P2-2：起点溢出时从 0 播，不再传已超长的原进度。
                 // A16-P2-1：播完态下当前进度即片尾位置，同款误判（见上）；播完态从 0 播。
+                // A20-P2-1：在页自动换源也带上暂停态——暂停时源报错换源后
+                // resumePaused 默认为 false 会把暂停的片在新源上自动播出。
                 launchStartEpisode(
                     next,
                     state.episodeIndex,
                     if (resumeFromStart) 0L else resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs),
+                    resumePaused = userPaused,
                 )
                 return
             }
