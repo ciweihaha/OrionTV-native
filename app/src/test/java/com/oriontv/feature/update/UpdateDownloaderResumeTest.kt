@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 
 /** downloadApk 断点续传测试（D-P1-5）：中途停顿从断点续下，不从零重下。 */
@@ -295,6 +296,9 @@ class UpdateDownloaderResumeTest {
         val readReturnedMinusOne = AtomicBoolean(false)
         val readThrew = AtomicBoolean(false)
         val closeCalls = AtomicInteger(0)
+        /** 诊断时序：第一次关体 / 读抛错的 nanoTime（与测试的 cancelAt 对照）。 */
+        val closedAtNanos = AtomicLong(0)
+        val threwAtNanos = AtomicLong(0)
 
         private var cachedSource: BufferedSource? = null
 
@@ -308,6 +312,7 @@ class UpdateDownloaderResumeTest {
                     release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
                     if (closed) {
                         readThrew.set(true)
+                        threwAtNanos.compareAndSet(0, System.nanoTime())
                         throw IOException("body closed")
                     }
                     readReturnedMinusOne.set(true)
@@ -318,6 +323,7 @@ class UpdateDownloaderResumeTest {
 
                 override fun close() {
                     closeCalls.incrementAndGet()
+                    closedAtNanos.compareAndSet(0, System.nanoTime())
                     closed = true
                     release.countDown()
                 }
@@ -403,14 +409,23 @@ class UpdateDownloaderResumeTest {
             val readEntered: Boolean
             val thrown: CancellationException?
             var joinMs = -1L
+            // 诊断时序：cancel() 调用点、调用后 Job 是否已取消/已完成。
+            var cancelAt = 0L
+            var cancelledImmediately = false
+            var completedImmediately = false
             runBlocking {
                 // 下载跑在 IO 线程：阻塞的 read() 占一条线程，主线程仍可取消。
                 val job = async(Dispatchers.IO) {
                     downloader.downloadApk("https://example.com/orionTV.apk", dest)
                 }
                 readEntered = body.readStarted.await(10, TimeUnit.SECONDS)
-                val cancelAt = System.nanoTime()
+                cancelAt = System.nanoTime()
                 job.cancel()
+                // 诊断：cancel() 之后 Job 必须已取消；若 isCancelled 为 false
+                // 且 isCompleted 为 true，说明下载在取消前已完成、cancel 是
+                // 空操作——外层复核自然看不到已取消的 Job。
+                cancelledImmediately = job.isCancelled
+                completedImmediately = job.isCompleted
                 // 同 ApiClientTest 的 D7-P2-4 写法：5 秒护栏内 join 应以
                 // 下载自身的 CancellationException 返回；若取消递送不到，
                 // withTimeout 先抛 TimeoutCancellationException。
@@ -423,6 +438,11 @@ class UpdateDownloaderResumeTest {
                 joinMs = (System.nanoTime() - cancelAt) / 1_000_000
             }
             assertTrue("下载应在 10 秒内进入体读", readEntered)
+            // 诊断时序（先于行为断言）：取消必须真的取消了 Job，且关体/读抛错
+            // 必须发生在取消之后；否则下载在取消前已完成，cancel 是空操作。
+            assertTrue("cancel() 后 Job 应已取消（否则下载在取消前已完成，completed=$completedImmediately）", cancelledImmediately)
+            assertTrue("关体应在取消之后（否则关体者不是取消监听）", body.closedAtNanos.get() > cancelAt)
+            assertTrue("读抛错应在取消之后", body.threwAtNanos.get() > cancelAt)
             // 先断言读的行为本身（失败行号直接说明读干了什么）：
             // 正常取消路径：读进 1 次、因关体抛错、不回 -1。
             assertEquals("读应只进 1 次（无重试）", 1, body.readCalls.get())
