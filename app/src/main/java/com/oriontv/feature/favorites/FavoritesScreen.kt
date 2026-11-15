@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -116,6 +117,11 @@ fun FavoritesScreen(
     // 按钮被卸载、焦点无处可落）；记一笔“上次是否空列表”，空态→有内容时也
     // 跑一次恢复。例行刷新（已有内容时）不满足“由空变有”，不抢焦点。
     var hadNoItems by remember { mutableStateOf(true) }
+    // 第 13 轮跟进（轻微 5）：空态唯一按钮是否正聚焦——后台回前台的例行刷新把
+    // 空态翻成有内容时，用户可能已把焦点移到导航轨，再把焦点抢回首卡就是误抢。
+    // 只采活跃态的焦点变化：按钮卸载（空态→有内容）时节点失活，不清旗标，
+    // “重试成功恢复”主路径不受影响；用户仍在空态时把焦点移走才清旗标。
+    var emptyStateFocused by remember { mutableStateOf(false) }
     val restoreRequest = uiState.focusRestoreRequest
     LaunchedEffect(restoreRequest) {
         if (restoreRequest > 0) restorePending = true
@@ -129,6 +135,14 @@ fun FavoritesScreen(
         val emptyToContent = hadNoItems && uiState.items.isNotEmpty()
         hadNoItems = uiState.items.isEmpty()
         if (!shouldRunFavoritesRestore(restorePending, focusRestoreTick, lastHandledTick, emptyToContent)) return@LaunchedEffect
+        // 第 13 轮跟进（轻微 5）：纯粹由 emptyToContent 触发的恢复（非
+        // restorePending、tick 未变、已完成首焦）只在用户焦点确实还在空态按钮
+        // 上时才跑——焦点已移到导航轨时不抢。放在 restorePending/lastHandledTick
+        // 消费之前：这次不恢复也不吞掉恢复请求（hadNoItems 已更新，下次不再
+        // 是 emptyToContent；真正的恢复请求仍由 tick/restorePending 触发）。
+        val pureEmptyToContent = emptyToContent && !restorePending &&
+            focusRestoreTick == lastHandledTick && viewModel.initialFocusDone
+        if (pureEmptyToContent && !emptyStateFocused) return@LaunchedEffect
         restorePending = false
         lastHandledTick = focusRestoreTick
         if (!viewModel.initialFocusDone) {
@@ -183,7 +197,8 @@ fun FavoritesScreen(
                     // 直推（栈里会留出 Home→Favorites→Home，返回先回收藏页）。
                     else onGoHome?.invoke() ?: onNavigate(OrionRoute.Home)
                 },
-                modifier = Modifier.preferredFocus(goHomeRequester),
+                modifier = Modifier.preferredFocus(goHomeRequester)
+                    .onFocusChanged { if (it.isActive) emptyStateFocused = it.isFocused },
             )
         }
         return
