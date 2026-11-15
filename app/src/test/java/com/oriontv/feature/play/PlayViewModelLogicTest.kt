@@ -246,6 +246,19 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `explicit start clears stale route position`() {
+        // A27-P2-1：routePositionMs 是无集号作用域的“消费一次”槽位——
+        // 显式起点开播已取代它，残留即过期；不清掉，下一次空起点开播
+        // （下一集/选集）会把上一集的起点当成新集起点误播。
+        // 显式起点优先，且槽位清零。
+        assertEquals(90_000L to 0L, PlayViewModel.resolveStartPosition(90_000L, 45_000L))
+        // 空起点开播消费回落值，同样清零。
+        assertEquals(45_000L to 0L, PlayViewModel.resolveStartPosition(null, 45_000L))
+        // 都没有：走断点记录，槽位保持 0。
+        assertEquals(null to 0L, PlayViewModel.resolveStartPosition(null, 0L))
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。

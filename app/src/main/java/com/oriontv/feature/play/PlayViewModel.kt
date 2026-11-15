@@ -493,16 +493,17 @@ class PlayViewModel @Inject constructor(
         val rate = if (speedMemory) settings?.playbackRate ?: 1f else 1f
         // 断点：显式起点（换源/自动换源传当前进度）优先，其次路由带来的位置，
         // 最后取该集的播放记录（看完的集从 0 播，见 resolveRecordStartMs）。
-        val startPosition = when {
-            startPositionMs != null -> startPositionMs
-            routePositionMs > 0 -> routePositionMs.also { routePositionMs = 0L }
-            else -> {
-                val record = playRecordsRepository.getByKey(key)
-                if (record?.index == episodeIndex) {
-                    resolveRecordStartMs(record.play_time, record.total_time)
-                } else {
-                    0L
-                }
+        // A27-P2-1：起点解析抽成纯函数 resolveStartPosition——显式起点开播
+        // 已取代 routePositionMs 回落值，残留即过期，本次开播后槽位必须清零，
+        // 否则下一次空起点开播（下一集/选集）会把上一集的起点当成新集起点。
+        val (resolvedStart, remainingRoute) = resolveStartPosition(startPositionMs, routePositionMs)
+        routePositionMs = remainingRoute
+        val startPosition = resolvedStart ?: run {
+            val record = playRecordsRepository.getByKey(key)
+            if (record?.index == episodeIndex) {
+                resolveRecordStartMs(record.play_time, record.total_time)
+            } else {
+                0L
             }
         }
         // P2-5：按集重置的状态只在集号真的变了时重置——同集换源/自动换源/重试
@@ -1636,6 +1637,25 @@ class PlayViewModel @Inject constructor(
             playerEnded: Boolean,
             stateEnded: Boolean,
         ): Boolean = (isCurrentEpisodeMedia(playerUrl, episodeUrl) && playerEnded) || stateEnded
+
+        /**
+         * A27-P2-1：开播起点解析（可单测）——显式起点优先，其次消费
+         * routePositionMs 回落值，都没有返回 null（调用方走断点记录）。
+         * 关键：routePositionMs 是无集号作用域的“消费一次”槽位——显式起点
+         * 开播已取代它，残留即过期；空起点开播消费它后同样清零。任一分支
+         * 结束后槽位都必须为 0，否则下一次空起点开播（下一集/选集）会把
+         * 上一集的起点当成新集起点误播（P2 ≥ 新集时长还会触发起点溢出
+         * 误判播错、自动换源甚至落错误页）。
+         * @return Pair(本次起点，null 表示走断点记录；本次开播后槽位的剩余值）
+         */
+        internal fun resolveStartPosition(
+            startPositionMs: Long?,
+            routePositionMs: Long,
+        ): Pair<Long?, Long> = when {
+            startPositionMs != null -> startPositionMs to 0L
+            routePositionMs > 0 -> routePositionMs to 0L
+            else -> null to routePositionMs
+        }
 
         /**
          * A17-P2-1：回页时是否应重开当前集（可单测）——只补“被抢走”一种情形：
