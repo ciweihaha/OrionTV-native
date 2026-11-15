@@ -94,12 +94,19 @@ class SettingsRepository @Inject constructor(
      * 用户在设置页保存新地址可插进来，判定与地址错配；现一次快照读出配对，
      * 判定与地址必属同一时刻。ensureServerConfig() 先行（与旧 useServerStorage
      * 同款），快照读在其后。
+     * 第 9 轮 D9-P2-5：DataStore 读失败（ensureServerConfig 里的
+     * isServerConfigUnknown/refreshServerConfig 读地址、下面的一次快照读）
+     * 原来全程无 try/catch，CE 之外的读异常直接上抛；调用方（收藏/记录/
+     * 历史的各数据访问，全在 try 之外调这里）无兜底；登录侧 B12-P2-1
+     * 同款口径：读失败按本地模式回落（useServer=false），CE 原样重抛。
+     * （包在快照函数上：useServerStorage() 与各仓库都走这里，一处包全覆盖。）
      */
-    suspend fun currentServerStorageSnapshot(): ServerStorageSnapshot {
-        ensureServerConfig()
-        val (storageType, apiBaseUrl) = settingsDataStore.currentStorageTypeAndApiBaseUrl()
-        return resolveServerStorage(storageType, apiBaseUrl)
-    }
+    suspend fun currentServerStorageSnapshot(): ServerStorageSnapshot =
+        runOrDefault(ServerStorageSnapshot(useServer = false, baseUrl = "")) {
+            ensureServerConfig()
+            val (storageType, apiBaseUrl) = settingsDataStore.currentStorageTypeAndApiBaseUrl()
+            resolveServerStorage(storageType, apiBaseUrl)
+        }
 
     // D-P2-16：失败缓存的读写加 @Volatile，跨线程可见（之前最坏多跑一次拉取）。
     // 第 7 轮 D7-P2-9：失败缓存只记网络失败（见 ServerConfigFailureCache）——
@@ -168,6 +175,21 @@ class SettingsRepository @Inject constructor(
         configFailureCache.isCached(url)
 
     override suspend fun setAuthCookies(value: String) = settingsDataStore.setAuthCookies(value)
+
+    /**
+     * 第 9 轮 D9-P2-5：DataStore 读写失败回落默认值，协程取消原样抛出
+     * （同 Repositories.runOrDefault / AuthRepository.runOrDefault，
+     * 那个是 private、这里各写一份；登录侧 B12-P2-1 同款口径）。
+     */
+    private suspend fun <T> runOrDefault(default: T, block: suspend () -> T): T {
+        return try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            default
+        }
+    }
     suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
 
