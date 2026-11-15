@@ -9,6 +9,7 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -420,5 +421,99 @@ class MoonTvApiTest {
         val records = runBlocking { api(client).getPlayRecords("https://example.com") }
         assertFalse(lastUrl.get().contains("?key="))
         assertEquals(1, records.size)
+    }
+
+    @Test
+    fun `getFavorites with key returns empty map for JSON null body`() {
+        // D8-P1-1：服务端“未收藏”合法回 JSON null（Favorite | null），
+        // 不是错误——按空表处理，不得抛错；否则 favoriteState() 误判 UNKNOWN、
+        // toggle() 的 existsCheck 抛错，服务端模式下收藏加不上。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, "null") }
+        val favs = runBlocking { api(client).getFavorites("https://example.com", "agg+1") }
+        assertTrue(favs.isEmpty())
+    }
+
+    @Test
+    fun `getFavorites with key returns empty map for whitespace-padded null body`() {
+        // D8-P1-1 的另一半：体带空白/换行的 null 同样按空表处理。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, "  null\n") }
+        val favs = runBlocking { api(client).getFavorites("https://example.com", "agg+1") }
+        assertTrue(favs.isEmpty())
+    }
+
+    @Test
+    fun `getFavorites without key still throws on JSON null body`() {
+        // D8-P1-1 的边界：整表查询服务端恒回对象表（空为 {}），null 体是
+        // 非预期 shape，仍按 B8-P2-8 抛错保留旧表，不静默清空。
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, "null") }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getFavorites("https://example.com") }
+        }
+    }
+
+    @Test
+    fun `getPlayRecords converts server 1-based index to local 0-based`() {
+        // D8-P1-2 读侧：服务端 index 是 1 基（第 1 集 = 1），本地模型是
+        // 0 基——返回的记录统一减 1，否则服务端断点续播全集对不上。
+        val body = """{"agg+1": {"title":"片一","source_name":"源","cover":"","index":1,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123},
+            "agg+2": {"title":"片二","source_name":"源","cover":"","index":2,"total_episodes":12,"play_time":6,"total_time":120,"save_time":124}}"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com") }
+        assertEquals(0, records.getValue("agg+1").index)
+        assertEquals(1, records.getValue("agg+2").index)
+    }
+
+    @Test
+    fun `getPlayRecords clamps dirty zero index to zero`() {
+        // D8-P1-2 读侧兜底：服务端脏记录 index=0（网页端亦有）减 1 不得
+        // 变成 -1，钳到 0。
+        val body = """{"agg+1": {"title":"片一","source_name":"源","cover":"","index":0,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123}}"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com") }
+        assertEquals(0, records.getValue("agg+1").index)
+    }
+
+    @Test
+    fun `savePlayRecord posts 1-based index`() {
+        // D8-P1-2 写侧：本地第 1 集（index=0）发给服务端时必须是 1，
+        // 否则 POST 校验 index < 1 即 400、断点永远存不上。
+        val postedBody = AtomicReference("")
+        val (client, _, _) = countingClient { request ->
+            request.body?.let { body -> postedBody.set(Buffer().also { body.writeTo(it) }.readUtf8()) }
+            responseFor(request, 200, """{"success": true}""")
+        }
+        val ok = runBlocking {
+            api(client).savePlayRecord(
+                "https://example.com",
+                "agg+1",
+                PlayRecord(title = "片一", source_name = "源", index = 0, total_episodes = 10, play_time = 5, total_time = 100, save_time = 123),
+            )
+        }
+        assertTrue(ok)
+        assertTrue(postedBody.get().contains("\"index\":1"))
+    }
+
+    @Test
+    fun `record index conversion is inverse with clamping`() {
+        // D8-P1-2 纯逻辑：写 +1 / 读 -1 互逆；脏值钳制（写侧 ≥1、读侧 ≥0）。
+        assertEquals(1, MoonTvApi.toServerRecordIndex(0))
+        assertEquals(2, MoonTvApi.toServerRecordIndex(1))
+        assertEquals(0, MoonTvApi.toLocalRecordIndex(1))
+        assertEquals(1, MoonTvApi.toLocalRecordIndex(2))
+        assertEquals(0, MoonTvApi.toLocalRecordIndex(0))
+        assertEquals(0, MoonTvApi.toLocalRecordIndex(-3))
+        assertEquals(1, MoonTvApi.toServerRecordIndex(-5))
+    }
+
+    @Test
+    fun `getPlayRecords without key wraps single object with derived key`() {
+        // D8-P2-5：与 getFavorites 统一口径——整表查询遇单对象时按派生键
+        // 包成单条表（不经 lenient 解码得空表丢记录）；index 同时按 1 基换算。
+        val body = """{"title":"片一","source_name":"源","cover":"","index":3,"total_episodes":10,"play_time":5,"total_time":100,"save_time":123}"""
+        val (client, _, _) = countingClient { request -> responseFor(request, 200, body) }
+        val records = runBlocking { api(client).getPlayRecords("https://example.com") }
+        assertEquals(1, records.size)
+        assertEquals("源+title:片一", records.keys.single())
+        assertEquals(2, records.values.single().index)
     }
 }
