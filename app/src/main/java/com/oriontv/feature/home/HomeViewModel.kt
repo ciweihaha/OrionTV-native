@@ -41,6 +41,13 @@ class HomeViewModel @Inject constructor(
     private var generation = 0
 
     /**
+     * M14：上次全量刷新用的 API 地址——设置里换源后回首页，ON_RESUME 只调
+     * refreshRecent()（最近播放行），其他行仍是旧源内容；回页时比对地址，
+     * 变了就走全量 refresh()，没变才只刷最近播放行。
+     */
+    private var lastLoadedBaseUrl: String? = null
+
+    /**
      * C5-P2-4：P1-4 的焦点锚点原来是 ViewModel 里的普通变量。导航轨切走
      * （popUpTo(Home) 弹掉首页）后 ViewModel 被清，只靠内存留不住；
      * 再切回来新建的 ViewModel 从头开始，焦点回到分类栏顶部（收藏页
@@ -87,12 +94,14 @@ class HomeViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isLoading = true)
                 val serverConfigured = settingsRepository.isServerConfigured()
                 if (!serverConfigured) {
+                    lastLoadedBaseUrl = null
                     _uiState.value = HomeUiState(serverConfigured = false)
                     return@launch
                 }
                 val baseUrl = settingsRepository.currentApiBaseUrl()
                 val rows = loadRows(baseUrl)
                 if (gen != generation) return@launch // 迟到结果丢弃
+                lastLoadedBaseUrl = baseUrl
                 _uiState.value = HomeUiState(
                     serverConfigured = true,
                     rows = rows,
@@ -107,6 +116,22 @@ class HomeViewModel @Inject constructor(
                     error = "加载失败，请检查网络或服务器地址",
                 )
             }
+        }
+    }
+
+    /**
+     * 回页刷新（M14，供 HomeScreen 的 ON_RESUME 调用）：源地址没变时只刷
+     * “最近播放”行（断点续播刚看完要立刻出现）；设置里换了源地址回来时
+     * 全量 refresh()，否则首页各行仍是旧源内容、必须重进页面才刷新。
+     */
+    fun onPageResumed() {
+        viewModelScope.launch {
+            // 复测修正：DataStore 读失败按地址未变处理（跳过本次回页刷新，下次
+            // 回页再比对）——旧写法 getOrDefault("") 会把读失败当成“地址变空”，
+            // 每次回页都误触发一次全量 refresh()（还可能闪一下加载失败）。
+            val current = runCatching { settingsRepository.currentApiBaseUrl() }.getOrNull()
+                ?: return@launch
+            if (current != lastLoadedBaseUrl) refresh() else refreshRecent()
         }
     }
 

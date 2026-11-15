@@ -84,11 +84,11 @@ fun HomeScreen(
     val rowListStates = remember { mutableMapOf<String, LazyListState>() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
-    // 返回首页时刷新“最近播放”行（刚看完的断点要立刻出现）。
+    // 返回首页时刷新：源地址没变只刷“最近播放”行，换源后全量刷新（M14）。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshRecent()
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.onPageResumed()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
