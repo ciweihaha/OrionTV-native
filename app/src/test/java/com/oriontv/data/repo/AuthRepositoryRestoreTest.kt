@@ -397,4 +397,104 @@ class AuthRepositoryRestoreTest {
             assertEquals("1", settings.marker)
         }
     }
+
+    @Test
+    fun `shouldAutoShowLoginModal only when restore failed and not dismissed`() {
+        // D8-P2-1 纯逻辑：恢复成功 / 已退出 / 恢复期间有人手动登入 /
+        // 用户本会话已手动关过框，四种情况都不自动弹。
+        assertTrue(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = true, dismissedByUser = false))
+        assertFalse(shouldAutoShowLoginModal(restored = true, loggedOut = false, epochUnchanged = true, dismissedByUser = false))
+        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = true, epochUnchanged = true, dismissedByUser = false))
+        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = false, dismissedByUser = false))
+        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = true, dismissedByUser = true))
+    }
+
+    @Test
+    fun `dismissed login modal is not reopened by later 401`() {
+        // D8-P2-1：用户手动关掉登录框后，过期会话下再有服务端调用 401，
+        // 恢复再次失败也不得把框再弹出来；用户主动进登录入口后，节流重置。
+        val api = FakeAuthApi(
+            loginResults = ArrayDeque(
+                listOf(
+                    MoonTvApi.LoginResult.WrongCredentials,
+                    MoonTvApi.LoginResult.WrongCredentials,
+                    MoonTvApi.LoginResult.WrongCredentials,
+                    MoonTvApi.LoginResult.WrongCredentials,
+                ),
+            ),
+        )
+        val repo = repository(api)
+        runBlocking {
+            // 第一次 401：恢复失败，弹框。
+            assertFalse(api.onUnauthorized?.invoke()!!)
+            assertTrue(repo.showLoginModal.value)
+            // 用户手动关掉。
+            repo.hideLogin()
+            assertFalse(repo.showLoginModal.value)
+            // 第二次 401：恢复又失败，不得再弹。
+            assertFalse(api.onUnauthorized?.invoke()!!)
+            assertFalse(repo.showLoginModal.value)
+            // 用户主动进登录入口（showLogin）再关掉：节流重置后又被关掉，
+            // 第三次 401 仍不得弹。
+            repo.showLogin()
+            assertTrue(repo.showLoginModal.value)
+            repo.hideLogin()
+            assertFalse(api.onUnauthorized?.invoke()!!)
+            assertFalse(repo.showLoginModal.value)
+        }
+    }
+
+    @Test
+    fun `login success clears dismiss memory so later 401 shows modal again`() {
+        // D8-P2-1 的另一半：登录成功后，之前的手动关闭记忆失效——新会话
+        // 过期时自动弹框恢复。
+        val api = FakeAuthApi(
+            // 注意消耗顺序：第一次 401 的恢复耗 1 个；随后的手动登录须走
+            // 队列空时的默认 Success，所以这里只放 1 个。
+            loginResults = ArrayDeque(
+                listOf(
+                    MoonTvApi.LoginResult.WrongCredentials,
+                ),
+            ),
+        )
+        val repo = repository(api)
+        runBlocking {
+            assertFalse(api.onUnauthorized?.invoke()!!)
+            assertTrue(repo.showLoginModal.value)
+            repo.hideLogin()
+            assertFalse(repo.showLoginModal.value)
+            // 手动登录成功（loginResults 已空，Fake 默认回 Success）。
+            assertTrue(repo.login("user", "pass").isSuccess)
+            assertTrue(repo.isLoggedIn.value)
+            // 新会话下再 401、恢复失败：应重新弹框。
+            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.WrongCredentials))
+            assertFalse(api.onUnauthorized?.invoke()!!)
+            assertTrue(repo.showLoginModal.value)
+        }
+    }
+
+    @Test
+    fun `login completing after logout does not revive session`() {
+        // D8-P2-6：登录 POST 在途时用户点了退出，登录成功返回时不得把
+        // 已退出的会话置回 true，也不得把刚清掉的凭据/标记重存一遍。
+        val gate = CompletableDeferred<MoonTvApi.LoginResult>()
+        val api = FakeAuthApi(loginGate = gate)
+        val settings = FakeAuthSettings(marker = "")
+        val store = FakeCredentialStore()
+        val repo = repository(api, settings, store)
+        runBlocking {
+            val loginJob = async { repo.login("user", "pass") }
+            api.loginStarted.await()
+            repo.logout()
+            assertFalse(repo.isLoggedIn.value)
+            gate.complete(MoonTvApi.LoginResult.Success)
+            val result = loginJob.await()
+            assertTrue(result.isFailure)
+            assertFalse(repo.isLoggedIn.value)
+            assertFalse(repo.showLoginModal.value)
+            // 凭据与标记保持退出后的干净状态，未被登录重存。
+            assertEquals(null, store.saved)
+            assertEquals("", settings.marker)
+        }
+    }
 }
