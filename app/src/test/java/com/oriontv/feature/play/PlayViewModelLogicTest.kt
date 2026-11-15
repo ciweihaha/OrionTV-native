@@ -361,4 +361,15 @@ class PlayViewModelLogicTest {
         assertFalse(PlayViewModel.shouldSeekToNewPosition(0L, 30_000L))
         assertFalse(PlayViewModel.shouldSeekToNewPosition(30_000L, 30_000L))
     }
+
+    @Test
+    fun `resumed page reclaims playback only when ownership was stolen`() {
+        // A17-P2-1：只补“被抢走”一种情形——无错误态、且自己已不是播放器
+        // 所有者时重开当前集；仍是所有者（用户暂停后去详情页再回）不续播，
+        // 错误页不重开、仍走“重试”。
+        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = true))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = false))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = true))
+    }
 }

@@ -328,6 +328,23 @@ class PlayViewModel @Inject constructor(
         if (searchInterrupted && _uiState.value.current == null && searchJob?.isActive != true) {
             startSearch()
         }
+        // A17-P2-1：回页时复核播放器归属——看片中途深链压入详情页、再从该页
+        // 播另一部压入新播放页，新页 onCleared() 停播并清掉播放项后返回本页时，
+        // pendingStart 为空、searchInterrupted 为假，旧实现什么都不做，轮询
+        // 因 !isCurrentOwner 直接跳过、OK 调 play() 是空操作，只能退出重进。
+        // 只补“被抢走”一种情形：有当前集、无错误态、且自己已不是所有者时
+        // 重开当前集；不用 !isPlaying 作门控——用户暂停后去详情页再回时自己
+        // 仍是所有者，不会误把暂停的片自动续播；错误页仍走“重试”；起点走
+        // resolveSwitchStartMs（A15-P2-1/A16-P2-1 同款），播完态从 0 播。
+        val state = _uiState.value
+        val current = state.current
+        if (current != null && shouldReclaimPlayback(state.error == null, playerManager.isCurrentOwner(playbackToken))) {
+            launchStartEpisode(
+                current,
+                state.episodeIndex,
+                resolveSwitchStartMs(playerManager.isEnded, state.positionMs.takeIf { it > 0 }),
+            )
+        }
     }
 
     /** 开播时读一次开关（autoSkipIntro / 片头时长 / 下一集预告），轮询只读缓存。 */
@@ -1373,6 +1390,15 @@ class PlayViewModel @Inject constructor(
          */
         internal fun resolveSwitchStartMs(isEnded: Boolean, positionMs: Long?): Long? =
             if (isEnded) 0L else positionMs
+
+        /**
+         * A17-P2-1：回页时是否应重开当前集（可单测）——只补“被抢走”一种情形：
+         * 无错误态、且自己已不是播放器所有者。有无当前集由调用方凭 current
+         * != null 另行判断。不用 !isPlaying 作门控：用户暂停后去详情页再回时
+         * 自己仍是所有者，不会误把暂停的片自动续播；错误页仍走“重试”。
+         */
+        internal fun shouldReclaimPlayback(noError: Boolean, isCurrentOwner: Boolean): Boolean =
+            noError && !isCurrentOwner
 
         /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；
