@@ -104,7 +104,10 @@ class DetailRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            return@coroutineScope preferredResults
+            // B14-P2-3：资源列表拉取失败时直接返回首选源结果——其余三条路
+            // 都走了 dedupeBySource，这里漏了：searchDetail 随后
+            // onUpdate(merged, true) 原样发出，同源 chip 会重复出现。
+            return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults)
         }
         val semaphore = Semaphore(DetailSearchLogic.SEARCH_CONCURRENCY_LIMIT)
         val deferred = resources.take(30).map { site ->

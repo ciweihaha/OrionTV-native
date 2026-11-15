@@ -40,4 +40,30 @@ class ApiUrlPolicyTest {
         assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("example.com"))
         assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("http://"))
     }
+
+    @Test
+    fun `https without host is invalid`() {
+        // B14-P2-5：https 分支旧实现直接放行，`https://` 空地址可保存。
+        assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("https://"))
+        assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("https://:8080"))
+        assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("https://exa mple.com"))
+        assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("https://[::1"))
+        // 合法 https 仍通过（含 IPv6 字面地址）。
+        assertEquals(ApiUrlPolicy.Check.Https, ApiUrlPolicy.check("https://example.com"))
+        assertEquals(ApiUrlPolicy.Check.Https, ApiUrlPolicy.check("https://[2001:db8::1]"))
+        assertEquals(ApiUrlPolicy.Check.Https, ApiUrlPolicy.check("https://[::1]:8080/api"))
+    }
+
+    @Test
+    fun `ipv6 literal host is judged whole`() {
+        // B14-P2-5：IPv6 字面地址按 [...] 取完整 host 再判本地——旧实现按 :
+        // 截断后无点、一律当成本地，公网 IPv6 被当成局域网、不提示明文风险。
+        assertEquals(ApiUrlPolicy.Check.PlainHttpPublic, ApiUrlPolicy.check("http://[2001:db8::1]"))
+        assertEquals(ApiUrlPolicy.Check.PlainHttpPublic, ApiUrlPolicy.check("http://[2001:db8::1]:8080/api"))
+        assertEquals(ApiUrlPolicy.Check.PlainHttpLocal, ApiUrlPolicy.check("http://[::1]:8080"))
+        assertEquals(ApiUrlPolicy.Check.PlainHttpLocal, ApiUrlPolicy.check("http://[fe80::1]"))
+        assertEquals(ApiUrlPolicy.Check.PlainHttpLocal, ApiUrlPolicy.check("http://[fc00::1]"))
+        assertEquals(ApiUrlPolicy.Check.PlainHttpLocal, ApiUrlPolicy.check("http://[fd12::1]"))
+        assertEquals(ApiUrlPolicy.Check.Invalid, ApiUrlPolicy.check("http://[2001:db8::1"))
+    }
 }

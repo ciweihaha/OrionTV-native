@@ -257,11 +257,23 @@ class MoonTvApiTest {
     @Test
     fun `getDoubanData encodes type parameter`() {
         val (client, _, lastUrl) = countingClient { request ->
-            responseFor(request, 200, """{"code":1,"list":[]}""")
+            responseFor(request, 200, """{"code":200,"list":[]}""")
         }
         runBlocking { api(client).getDoubanData("https://example.com", "电影", "动作") }
         assertTrue(lastUrl.get().contains("type=%E7%94%B5%E5%BD%B1"))
         assertFalse(lastUrl.get().contains("type=电影"))
+    }
+
+    @Test
+    fun `getDoubanData rejects non-200 code`() {
+        // B14-P2-4：成功 code 恒为 200（服务端 /api/douban 约定，见
+        // getDoubanData 注释）；非 200 即抛错走占位行，不当“没内容”静默丢行。
+        val (client, _, _) = countingClient { request ->
+            responseFor(request, 200, """{"code":500,"message":"豆瓣侧失败","list":[]}""")
+        }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).getDoubanData("https://example.com", "电影", "热门") }
+        }
     }
 
     // 第 3 轮收尾 B-P2-8：服务端写操作解码失败默认 false，不再当成功。

@@ -195,7 +195,16 @@ class RemoteInputManager @Inject constructor() {
                 withContext(NonCancellable) {
                     startMutex.withLock {
                         starting = false
+                        // B14-P2-6：先读停服标志再清零——停服请求落在发布点
+                        // 之后、finally 清零之前时，旧实现无条件清掉、请求被丢，
+                        // 服务漏跑（stop() 的协程在 IO 线程，发布点读标志与
+                        // finally 之间虽无挂起点、但跨线程可交错，finally 里
+                        // withContext 的挂起点更放大了窗口）；为真时补一次
+                        // stopLocked()。stop() 那路只置了标志、并未停服，不会
+                        // 重复停；stopLocked() 幂等，持 startMutex 调符合其约定。
+                        val stopNow = stopRequestedDuringStart
                         stopRequestedDuringStart = false
+                        if (stopNow) stopLocked()
                     }
                 }
             }

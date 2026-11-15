@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
 /** 切到后台时的动作（纯决策，可单测；见 MainActivityLeaveHintTest）。 */
@@ -64,11 +65,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             // B9-P2-1：DataStore 流读失败不让协程未捕获崩溃；失败即停止订阅、
             // 沿用默认值 false（后台播放开关默认关）。
+            // B14-P2-8：取消原样抛出——旧 catch (e: Exception) 连取消一起吞，
+            // 每次正常退出还打一条误导性的“后台播放开关订阅失败”警告日志。
             try {
                 settingsRepository.backgroundPlayback.collect { enabled ->
                     backgroundPlaybackCached = enabled
                     playerManager.backgroundPlaybackEnabled = enabled
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "后台播放开关订阅失败，用默认值：${e.message}")
             }
@@ -123,8 +128,15 @@ class MainActivity : ComponentActivity() {
         remoteInputStopJob = null
         lifecycleScope.launch {
             // B9-P2-1：DataStore 读失败不让协程未捕获崩溃；失败即跳过本次恢复。
-            val enabled = runCatching { settingsRepository.remoteInputEnabled.first() }
-                .getOrDefault(false)
+            // B14-P2-8：取消原样抛出——runCatching 会连取消一起吞，与全仓
+            // “取消原样抛出”约定不一致。
+            val enabled = try {
+                settingsRepository.remoteInputEnabled.first()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                false
+            }
             if (enabled) {
                 remoteInputManager.start()
             }

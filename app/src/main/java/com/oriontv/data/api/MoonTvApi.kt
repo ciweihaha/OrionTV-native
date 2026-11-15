@@ -170,7 +170,13 @@ class MoonTvApi @Inject constructor(
         val url = "${baseUrl.trimEnd('/')}/api/douban?type=${URLEncoder.encode(type, "UTF-8")}" +
             "&tag=${URLEncoder.encode(tag, "UTF-8")}&pageSize=$pageSize&pageStart=$pageStart"
         val body = execute(Request.Builder().url(url).get().build())
-        json.decodeFromString<DoubanResponse>(body)
+        val parsed = json.decodeFromString<DoubanResponse>(body)
+        // B14-P2-4：按 agg 同款校验成功 code——服务端 /api/douban 成功时
+        // code 恒为 200（服务端源码 route.ts 全部 6 处 code: 均为 200；
+        // 豆瓣侧失败时服务端走兜底链，仍回 HTTP 200 + code 200 + 空 list，
+        // 或 HTTP 4xx/5xx；非 200 即抛错走占位行，不当“没内容”静默丢行。
+        if (parsed.code != 200) throw IOException("豆瓣返回异常：code=${parsed.code}")
+        parsed
     }
 
     // ---- 搜索 ----

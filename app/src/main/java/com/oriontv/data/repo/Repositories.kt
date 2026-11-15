@@ -280,6 +280,23 @@ class FavoritesRepository @Inject constructor(
     )
 }
 
+/**
+ * 单条断点查询的缓存合并（纯函数，可单测，B14-P2-7）：服务端忽略 ?key=
+ * 回整表（条数大于 1 或含非请求键）时整体替换——plus 合并会把已删记录
+ * 幽灵复活（缓存里删掉的键又被整表带回来）；只有真正单条回表
+ * （仅含请求键）才合并，不把全表缓存冲成一条（D7-P2-7）。
+ */
+internal fun mergePlayRecordLookup(
+    cached: Map<String, PlayRecord>?,
+    returned: Map<String, PlayRecord>,
+    key: String,
+): Map<String, PlayRecord> =
+    if (returned.size > 1 || returned.keys.any { it != key }) {
+        returned
+    } else {
+        cached?.plus(returned) ?: returned
+    }
+
 @Singleton
 class PlayRecordsRepository @Inject constructor(
     private val db: AppDatabase,
@@ -327,8 +344,10 @@ class PlayRecordsRepository @Inject constructor(
                 // 一条记录全表拉取；服务端忽略参数回整表时按 key 取值仍正确。
                 // 注意：单条回表不得整体覆盖 lastGoodRecords（会把全表缓存
                 // 冲成一条），只做合并；失败时仍用旧缓存里的断点兜底。
+                // B14-P2-7：整表回表（条数大于 1 或含非请求键）时整体替换——
+                // plus 合并会把已删记录幽灵复活；只有真正单条回表才合并。
                 moonTvApi.getPlayRecords(baseUrl, key).also {
-                    lastGoodRecords = lastGoodRecords?.plus(it) ?: it
+                    lastGoodRecords = mergePlayRecordLookup(lastGoodRecords, it, key)
                     // B12-P2-6：单条查询成功不碰 _loadFailed——它本是“全表拉取
                     // 失败”标记，只由 getAllWithKeys() 维护；单条成功会清掉全表
                     // 失败标记，首页 stale 提示被误清（失败分支同理，见下）。

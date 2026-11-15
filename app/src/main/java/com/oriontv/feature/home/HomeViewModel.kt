@@ -49,6 +49,18 @@ class HomeViewModel @Inject constructor(
     private var recentGeneration = 0
 
     /**
+     * B14-P2-2：refresh() 写态时推进的行版本——refreshRecent 落态前复核：
+     * 先启动的 refresh() 在 refreshRecent 加载期间跑完写了新行时，旧快照的
+     * 合并必须丢弃。B13-P2-2 的双代次守卫只拦得住 refresh() 在 refreshRecent
+     * 加载期间才开始的情况（generation 在 refresh() 开始时 +1，落态前
+     * genAtStart != generation 能发现），先启动的 refresh() 完成时
+     * genAtStart == generation 仍成立、旧快照照样覆盖新行。
+     * 只由 refresh() 写新行时推进，refreshRecent 只快照、不推进——
+     * 推进会让 refresh() 误判迟到丢掉整屏（B13-P2-2 的教训）。
+     */
+    private var rowsVersion = 0
+
+    /**
      * C5-P2-4：P1-4 的焦点锚点原来是 ViewModel 里的普通变量。导航轨切走
      * （popUpTo(Home) 弹掉首页）后 ViewModel 被清，只靠内存留不住；
      * 再切回来新建的 ViewModel 从头开始，焦点回到分类栏顶部（收藏页
@@ -95,12 +107,16 @@ class HomeViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isLoading = true)
                 val serverConfigured = settingsRepository.isServerConfigured()
                 if (!serverConfigured) {
+                    // B14-P2-2：清行也是写态，推进版本（见 rowsVersion 注释）。
+                    rowsVersion++
                     _uiState.value = HomeUiState(serverConfigured = false)
                     return@launch
                 }
                 val baseUrl = settingsRepository.currentApiBaseUrl()
                 val rows = loadRows(baseUrl)
                 if (gen != generation) return@launch // 迟到结果丢弃
+                // B14-P2-2：写新行时推进版本——先启动的 refreshRecent 落态前复核。
+                rowsVersion++
                 _uiState.value = HomeUiState(
                     serverConfigured = true,
                     rows = rows,
@@ -127,6 +143,10 @@ class HomeViewModel @Inject constructor(
         // 冷启动时与 init 的 refresh() 并发，推进会让 refresh() 误判迟到、
         // 丢掉整屏（B11-P2-2 只修了合并原子性，代次守卫这里补上）。
         val genAtStart = generation
+        // B14-P2-2：再快照行版本——先启动的 refresh() 在本次加载期间跑完
+        // 写了新行时，genAtStart == generation 仍成立、上面一道守卫拦不住，
+        // 靠行版本复核丢弃旧快照；同样只快照、不推进。
+        val rowsVersionAtStart = rowsVersion
         viewModelScope.launch {
             // P2-11（第 5 轮）：加载失败时不删旧行——以前先删行、失败后不补回，
             // 一次瞬时失败就让首页丢一行，直到下次 refresh()。
@@ -144,7 +164,14 @@ class HomeViewModel @Inject constructor(
             }
             // B13-P2-2：落态前复核双代次——有更新的 refreshRecent 已启动，或
             // refresh() 在此期间跑完写了新行时，旧快照不再合并。
-            if (recentGen != recentGeneration || genAtStart != generation) return@launch
+            // B14-P2-2：再复核行版本——先启动的 refresh() 在此期间跑完写了
+            // 新行时，上面两道代次都拦不住（见 rowsVersion 注释）。
+            if (!shouldApplyRecentRow(
+                    recentGen, recentGeneration,
+                    genAtStart, generation,
+                    rowsVersionAtStart, rowsVersion,
+                )
+            ) return@launch
             // B11-P2-2：行合并放进 _uiState.update { … } 的 lambda 内做、
             // 对最新态原子合并——之前先读 _uiState.value.rows 再赋值，与
             // refresh() 并发时旧行快照会覆盖新行（冷启动首屏加载期间离页
@@ -227,6 +254,23 @@ class HomeViewModel @Inject constructor(
         moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
             .list.orEmpty().map(::mapDoubanItem)
 }
+
+/**
+ * refreshRecent 落态前是否应合并旧快照（可单测，B14-P2-2）：三代次全过才合并——
+ * refreshRecent 自身代次（防两次并发 refreshRecent）、共享 generation
+ * （防 refresh() 在本次加载期间才开始）、行版本（防 refresh() 在本次加载
+ * 前已开始、期间跑完写了新行——B13-P2-2 的双代次守卫只拦得住前一种）。
+ * 行版本只由 refresh() 写态时推进，refreshRecent 只快照、不推进。
+ */
+internal fun shouldApplyRecentRow(
+    recentGen: Int,
+    recentGeneration: Int,
+    genAtStart: Int,
+    generation: Int,
+    rowsVersionAtStart: Int,
+    rowsVersion: Int,
+): Boolean = recentGen == recentGeneration && genAtStart == generation &&
+    rowsVersionAtStart == rowsVersion
 
 /**
  * “最近播放”行合并（可单测，B11-P2-2）：去掉旧的最近播放行、新行插到首位；

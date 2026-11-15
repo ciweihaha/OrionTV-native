@@ -24,14 +24,34 @@ object ApiUrlPolicy {
         val url = rawUrl.trim()
         if (url.isEmpty()) return Check.Invalid
         val lower = url.lowercase()
-        if (lower.startsWith("https://")) return Check.Https
-        if (!lower.startsWith("http://")) return Check.Invalid
-        val host = lower.removePrefix("http://")
-            .substringBefore("/")
-            .substringBefore(":")
-            .substringBefore("?")
-        if (host.isEmpty()) return Check.Invalid
+        val isHttps = when {
+            lower.startsWith("https://") -> true
+            lower.startsWith("http://") -> false
+            else -> return Check.Invalid
+        }
+        // B14-P2-5：https 分支同样取 host 判空/合法——旧实现 https 直接放行，
+        // `https://` 空地址可保存（设置页只拦 Invalid）；IPv6 字面地址按 [...]
+        // 取完整 host，不按 : 截断（`http://[2001:db8::1]` 旧实现截成 `[2001`
+        // 当成本地）。
+        val host = extractHost(lower.substringAfter("://"))
+        if (host.isEmpty() || host.any { it.isWhitespace() }) return Check.Invalid
+        if (isHttps) return Check.Https
         return if (isLocalHost(host)) Check.PlainHttpLocal else Check.PlainHttpPublic
+    }
+
+    /**
+     * 从 authority（scheme 之后的部分）取 host：IPv6 字面地址按 [...] 取完整
+     * host（含括号，供 [isLocalHost] 去括号判断）；未闭合的 `[` 即非法；
+     * 其余按 : 截端口、按 / 与 ? 截路径。
+     */
+    internal fun extractHost(authority: String): String {
+        val hostPort = authority.substringBefore("/").substringBefore("?")
+        if (hostPort.startsWith("[")) {
+            val end = hostPort.indexOf(']')
+            if (end < 0) return ""
+            return hostPort.substring(0, end + 1)
+        }
+        return hostPort.substringBefore(":")
     }
 
     /**
@@ -42,6 +62,19 @@ object ApiUrlPolicy {
         val h = host.lowercase().trim().trim('[', ']')
         if (h == "localhost" || h == "::1") return true
         if (h.endsWith(".local")) return true
+        // B14-P2-5：IPv6 字面地址（取完整 host 后才到这里）：含 : 即 IPv6，
+        // 只有回环 ::1、链路本地 fe80::/10、唯一本地 fc00::/7 算本地；
+        // 公网地址（如 2001:db8::1）旧实现经 substringBefore(":") 截断后
+        // 无点、一律当成本地。未压缩全写 ::1（0:0:0:0:0:0:0:1）同样算回环。
+        if (h.contains(':')) {
+            if (h == "0:0:0:0:0:0:0:1") return true
+            val first = h.substringBefore(":")
+            if (first.isEmpty()) return false
+            val firstGroup = first.toIntOrNull(16) ?: return false
+            if (firstGroup in 0xfe80..0xfebf) return true
+            if (firstGroup in 0xfc00..0xfdff) return true
+            return false
+        }
         if (!h.contains('.')) return true
         val parts = h.split(".")
         if (parts.size == 4 && parts.all { it.toIntOrNull() != null }) {

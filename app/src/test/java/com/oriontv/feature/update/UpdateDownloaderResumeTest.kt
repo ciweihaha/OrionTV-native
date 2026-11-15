@@ -1,6 +1,8 @@
 package com.oriontv.feature.update
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -18,9 +20,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.cancellation.CancellationException
 
 /** downloadApk 断点续传测试（D-P1-5）：中途停顿从断点续下，不从零重下。 */
 class UpdateDownloaderResumeTest {
@@ -95,6 +101,69 @@ class UpdateDownloaderResumeTest {
             assertEquals(2, getCalls.get())
             assertEquals(listOf(null, "bytes=400-"), rangeHeaders)
             assertTrue(dest.readBytes().contentEquals(full))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /** 读到一半永久停顿的响应体（模拟弱网停顿）：读阻塞在 latch 上，关流时放行并抛错。 */
+    private class StalledBody(private val bytes: ByteArray) : ResponseBody() {
+        override fun contentLength() = bytes.size.toLong()
+        override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
+        private val releaseLatch = CountDownLatch(1)
+        override fun source(): BufferedSource {
+            val buffer = Buffer().write(bytes)
+            return object : ForwardingSource(buffer) {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    // 停满 30 秒才放行（模拟 60 秒读超时内的停顿；无修复时取消
+                    // 要等它放行才停，测试断言 10 秒内停下以区分）。
+                    if (!releaseLatch.await(30, TimeUnit.SECONDS)) {
+                        throw SocketTimeoutException("stall")
+                    }
+                    throw IOException("stream closed")
+                }
+
+                override fun close() {
+                    releaseLatch.countDown()
+                    super.close()
+                }
+            }.buffer()
+        }
+    }
+
+    @Test
+    fun `cancelling download interrupts stalled body read`() {
+        // B14-P2-1：取消下载后最长 60 秒才停——体读取阶段取消只靠每 64KB
+        // 读完后的 ensureActive() 生效，阻塞读本身停满读超时；修法在拷贝循环
+        // 外挂 invokeOnCancellation 关响应体流，中断 socket 读。
+        val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
+        try {
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.method == "HEAD") {
+                    Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", full.size.toString())
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    responseFor(request, 200, StalledBody(full))
+                }
+            }.build()
+            val downloader = UpdateDownloader(client)
+            val dest = File(dir, "OrionTV_v2.0.1.apk")
+            val elapsedMs = runBlocking {
+                val deferred = async(Dispatchers.IO) {
+                    downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                }
+                delay(500) // 让下载进入阻塞读
+                val start = System.currentTimeMillis()
+                deferred.cancel()
+                val thrown = runCatching { deferred.await() }.exceptionOrNull()
+                assertTrue(thrown is CancellationException)
+                System.currentTimeMillis() - start
+            }
+            assertTrue("取消后 ${elapsedMs}ms 才停", elapsedMs < 10_000)
         } finally {
             dir.deleteRecursively()
         }

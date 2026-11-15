@@ -100,4 +100,18 @@ class HomeFocusRestoreTest {
         assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 0, serverConfigured = false))
         assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 1, serverConfigured = true))
     }
+
+    @Test
+    fun `recent row applies only when all three generations match`() {
+        // B14-P2-2：三代次全过才合并——自身代次、共享 generation、行版本。
+        // 行版本专防先启动的 refresh() 在本次加载期间跑完写了新行：
+        // 此时 genAtStart == generation 仍成立，双代次守卫拦不住。
+        assertTrue(shouldApplyRecentRow(1, 1, 5, 5, 3, 3))
+        // 更新的 refreshRecent 已启动
+        assertFalse(shouldApplyRecentRow(1, 2, 5, 5, 3, 3))
+        // refresh() 在本次加载期间才开始
+        assertFalse(shouldApplyRecentRow(1, 1, 5, 6, 3, 3))
+        // 先启动的 refresh() 在本次加载期间跑完写了新行
+        assertFalse(shouldApplyRecentRow(1, 1, 5, 5, 3, 4))
+    }
 }
