@@ -76,6 +76,9 @@ fun HomeScreen(
     // 回栈后分类选择不重置（原 remember 会丢）。
     var selectedCategory by rememberSaveable { mutableStateOf(HomeCategory.RECENT.title) }
     val firstChipRequester = remember { FocusRequester() }
+    // C21-P2-1：首载失败时错误页“重试”按钮的焦点锚点（详情页 C4-P1-4 同款范式；
+    // 之前失败页焦点落在首 chip 上，“重试”须多按一次下键才到）。
+    val retryRequester = remember { FocusRequester() }
     // C4-P0-1：未配置空态“去设置”按钮的焦点锚点（空态分支在焦点请求前 return，
     // 首装无焦点、遥控失灵；锚点与请求都放在 return 之前）。
     val goSettingsRequester = remember { FocusRequester() }
@@ -183,7 +186,14 @@ fun HomeScreen(
         val wasEmpty = rowsWereEmpty
         rowsWereEmpty = uiState.rows.isEmpty()
         if (!viewModel.initialFocusDone) {
-            firstChipRequester.requestFocus()
+            // C21-P2-1：首载失败（有错误且行空）时落“重试”而非首 chip——
+            // 首 chip 此时是唯一的可用操作之外的落点，用户须多按一次下键
+            // 才能重试；重试按钮尚未组合时用重试版请求（本页其他落焦同款门控）。
+            if (shouldFocusHomeRetry(uiState.error, uiState.rows)) {
+                retryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+            } else {
+                firstChipRequester.requestFocus()
+            }
             viewModel.initialFocusDone = true
             restoreDone = true
         } else if (!restoreDone) {
@@ -203,7 +213,13 @@ fun HomeScreen(
         if (globalModalOpen) return@LaunchedEffect
         if (focusRestoreTick > 0) {
             if (!viewModel.initialFocusDone) {
-                firstChipRequester.requestFocus()
+                // C21-P2-1：effect A 因弹窗跳过时首载失败也走这条路——弹窗关闭后
+                // tick 恢复仍须落“重试”而非首 chip，否则又回到旧行为。
+                if (shouldFocusHomeRetry(uiState.error, uiState.rows)) {
+                    retryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+                } else {
+                    firstChipRequester.requestFocus()
+                }
                 viewModel.initialFocusDone = true
                 restoreDone = true
             } else {
@@ -276,7 +292,11 @@ fun HomeScreen(
                         ) {
                             Text(text = errorMessage ?: "", style = OrionTextStyles.Body)
                             Spacer(modifier = Modifier.height(24.dp))
-                            SecondaryButton(text = "重试", onClick = { viewModel.refresh() })
+                            SecondaryButton(
+                                text = "重试",
+                                onClick = { viewModel.refresh() },
+                                modifier = Modifier.preferredFocus(retryRequester),
+                            )
                         }
                     }
                 }

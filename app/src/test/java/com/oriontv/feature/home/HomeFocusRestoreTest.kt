@@ -93,6 +93,17 @@ class HomeFocusRestoreTest {
     }
 
     @Test
+    fun `first load failure focuses retry button`() {
+        // C21-P2-1：首载失败（有错误且行空）时落焦“重试”而非首 chip；
+        // 有行时不抢（行内失败留占位行），无错误时也不抢。
+        val rows = listOf(row("热门剧集", item("agg", "2")))
+        assertTrue(shouldFocusHomeRetry(error = "网络错误", rows = emptyList()))
+        assertFalse(shouldFocusHomeRetry(error = "网络错误", rows = rows))
+        assertFalse(shouldFocusHomeRetry(error = null, rows = emptyList()))
+        assertFalse(shouldFocusHomeRetry(error = null, rows = rows))
+    }
+
+    @Test
     fun `unconfigured empty state recovers focus on tick`() {
         // C12-P1-6：未配置空态不在 tick 恢复覆盖内（effect B 在 early return
         // 之后）；更新卡片关闭后 tick +1、仍未配置时落焦“去设置”，已配置时不动作。

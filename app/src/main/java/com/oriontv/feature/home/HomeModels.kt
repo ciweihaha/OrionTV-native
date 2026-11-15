@@ -182,6 +182,17 @@ internal fun shouldRecoverFocusAfterRetry(
 ): Boolean = rowsWereEmpty && hasRows && restoreDone
 
 /**
+ * C21-P2-1：首页首载失败时是否应落焦错误页“重试”按钮（纯函数，可单测）——
+ * 有错误且行空时唯一的可用操作就是“重试”，落首 chip 须多按一次下键；
+ * 有行时（行内失败留占位行、B-P2-20）不抢，正常走首 chip/保存卡片恢复。
+ * effect A 的 !initialFocusDone 分支与 effect B 的首进分支共用。
+ */
+internal fun shouldFocusHomeRetry(
+    error: String?,
+    rows: List<HomeRow>,
+): Boolean = error != null && rows.isEmpty()
+
+/**
  * C12-P1-6：首页未配置空态是否应在 tick 时落焦“去设置”（纯函数，可单测）——
  * 空态分支在 effect B 声明之前 return，tick 恢复到不了空态；更新卡片关闭后
  * tick +1、仍未配置时落焦空态按钮，已配置时空态根本不在组合里、不动作。
