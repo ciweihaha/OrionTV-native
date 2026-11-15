@@ -270,8 +270,15 @@ class UpdateDownloaderResumeTest {
      * 的停顿）。体被关掉时放行阻塞的读并抛错——与真实 OkHttp 关响应体断
      * socket 的行为同款。source() 只建一个实例（真实 ResponseBody 的
      * source() 是同一源）：关体关的必须是读正在用的那个源。
+     *
+     * [stallTimeoutMs] 是停顿兜底：无修复时取消递送不到阻塞的读，读会等满
+     * 它后返回 -1、下载“正常”下完（0 字节）。取消测试用 60 秒（与真实读
+     * 超时一致）：之前用 10 秒时，CI 负载下测试线程唤醒延迟，10 秒兜底
+     * 可能在 5 秒 withTimeout 之前先到期、下载先“正常”完成，join 正常
+     * 返回、thrown 为空——不是取消机制的问题，是测试自身的竞态；60 秒
+     * 让 withTimeout 永远先到，下载不可能在取消前“正常”完成。
      */
-    private class StallingBody : ResponseBody() {
+    private class StallingBody(private val stallTimeoutMs: Long = 10_000L) : ResponseBody() {
         override fun contentLength() = 1024L
         override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
 
@@ -288,11 +295,9 @@ class UpdateDownloaderResumeTest {
             return cachedSource ?: object : Source {
                 override fun read(sink: Buffer, byteCount: Long): Long {
                     readStarted.countDown()
-                    // 停顿 10 秒兜底：无修复时取消递送不到阻塞的读，读会等满
-                    // 10 秒后返回 -1、下载“正常”下完（0 字节），外面的
-                    // withTimeout(5 秒) 先抛超时取消异常——断言据此区分
-                    // “取消生效”与“超时兜底”。有修复时关体立即放行，远不到兜底。
-                    release.await(10, TimeUnit.SECONDS)
+                    // 有修复时关体立即放行，远不到兜底；无修复时等满兜底后
+                    // 返回 -1，外面的 withTimeout(5 秒) 先抛超时取消异常。
+                    release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
                     if (closed) throw IOException("body closed")
                     return -1
                 }
@@ -356,7 +361,10 @@ class UpdateDownloaderResumeTest {
         // Dispatchers.Unconfined 下取消递送语义不同，不是生产形态，不测它。
         val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
         try {
-            val body = StallingBody()
+            // 停顿兜底 60 秒（与真实读超时一致）：见 StallingBody 注释，
+            // 10 秒兜底会在 CI 线程延迟下先于 5 秒 withTimeout 到期、
+            // 让下载“正常”完成，是测试竞态而非取消机制问题。
+            val body = StallingBody(stallTimeoutMs = 60_000L)
             val client = OkHttpClient.Builder().addInterceptor { chain ->
                 val request = chain.request()
                 if (request.method == "HEAD") {
@@ -374,7 +382,7 @@ class UpdateDownloaderResumeTest {
             // 断言一律放在 runBlocking 外面、各自独立一行：挂起 lambda 里的
             // 断言失败时堆栈只报 runBlocking 行，分不清是哪一环；放外面后
             // 失败行号直接指明卡点。joinMs 的分段：<8 秒且 thrown 为空
-            // = 读立即回 -1（假体问题）；>=8 秒 = 10 秒停顿兜底先到期
+            // = 读立即回 -1（假体问题）；>=8 秒 = 停顿兜底先到期
             //（取消未递送或测试线程被饿死）；5 秒左右且为超时异常 = 取消
             // 未递送到阻塞的读。
             val readEntered: Boolean
