@@ -91,6 +91,14 @@ class DetailViewModel @Inject constructor(
                 FavoriteState.NOT_FAVORITE -> FavoriteButtonState(isFavorite = false, unknown = false)
                 FavoriteState.UNKNOWN -> FavoriteButtonState(isFavorite = false, unknown = true)
             }
+
+        /**
+         * 第 7 轮跟进 D-P2-13：toggle 失败后重读的收藏态落点（可单测）——重读
+         * 成功以服务端实态为准（数据层写后校验分叉时已先按实态更新 lastKnown
+         * 再抛错，重读读到的就是实态）；重读本身失败时保留切换前旧态，不二次崩溃。
+         */
+        internal fun resolveFavoriteAfterToggleFailure(reRead: Boolean?, previous: Boolean): Boolean =
+            reRead ?: previous
     }
 
     fun init(source: String, id: String, title: String) {
@@ -242,7 +250,21 @@ class DetailViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _uiState.value = _uiState.value.copy(favoriteError = nextToastEvent("收藏失败，请检查网络后重试"))
+                // 第 7 轮跟进 D-P2-13：失败时重读一次 isFavorite()，让 UI 显示
+                // 服务端实态——数据层写后校验分叉时已先按服务端实态更新 lastKnown
+                // 再抛错，重读读到的就是实态；重读本身失败时保留切换前旧态，
+                // 不二次崩溃（见 resolveFavoriteAfterToggleFailure）。
+                val reRead: Boolean? = try {
+                    favoritesRepository.isFavorite(currentKey)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                _uiState.value = _uiState.value.copy(
+                    isFavorite = resolveFavoriteAfterToggleFailure(reRead, state.isFavorite),
+                    favoriteError = nextToastEvent("收藏失败，请检查网络后重试"),
+                )
             } finally {
                 favoriteToggleGuard.release()
                 _uiState.update { it.copy(isFavoriteToggling = false) }

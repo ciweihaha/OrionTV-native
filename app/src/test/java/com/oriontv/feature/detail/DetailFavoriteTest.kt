@@ -25,4 +25,22 @@ class DetailFavoriteTest {
         assertFalse(unknown.isFavorite)
         assertTrue(unknown.unknown)
     }
+
+    @Test
+    fun `toggle failure re-read wins over previous state`() {
+        // 第 7 轮跟进 D-P2-13：toggle 失败后重读 isFavorite()，UI 显示服务端
+        // 实态——写后校验分叉时数据层已先按实态更新 lastKnown 再抛错，重读
+        // 读到的就是实态：加收藏分叉（服务端仍无）→ 显示未收藏；删收藏分叉
+        //（服务端仍有）→ 显示已收藏。
+        assertFalse(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = false, previous = true))
+        assertTrue(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = true, previous = false))
+    }
+
+    @Test
+    fun `toggle failure keeps previous state when re-read itself fails`() {
+        // 第 7 轮跟进 D-P2-13：重读本身失败时保留切换前旧态，不二次崩溃、
+        // 不凭空翻转 UI。
+        assertTrue(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = null, previous = true))
+        assertFalse(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = null, previous = false))
+    }
 }
