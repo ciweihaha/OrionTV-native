@@ -210,6 +210,14 @@ class UpdateDownloader @Inject constructor(
                         }
                     }
                 }
+                // D8-P2-2：成功返回前再查一次取消。实测表明取消可能在
+                // 拷贝循环的异常路径上被吞掉（读只进 1 次且因关体抛错、
+                // 无重试、GET 只发 1 次，join 却正常返回——三种收尾写法
+                // resumeWithException / 直接 throw / 不截获直抛都走不通，
+                // 吞没点在 suspendCancellableCoroutine 与 withContext 的
+                // 交界处，静态推断无法定位）。无论吞没点在哪，已取消的
+                // 下载绝不能当成成功返回：这里再查一次，取消即抛 CE。
+                currentCoroutineContext().ensureActive()
                 return@withContext destFile
             } catch (e: UpdateDownloadException) {
                 // 超限不重试（再下也一样大）。
