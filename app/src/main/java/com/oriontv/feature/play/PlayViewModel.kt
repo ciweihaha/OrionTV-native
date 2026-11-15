@@ -944,10 +944,6 @@ class PlayViewModel @Inject constructor(
         }
     }
 
-    fun seekBy(deltaMs: Long) {
-        seekTo(playerManager.currentPositionMs + deltaMs)
-    }
-
     /** 跳过片头：跳到片头结束点（手动标记优先，否则默认时长）。 */
     fun skipIntro() {
         val target = _uiState.value.introEndMs
