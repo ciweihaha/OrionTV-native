@@ -594,7 +594,9 @@ class LiveViewModel @Inject constructor(
         when (val action = controller.appendDigit(digit)) {
             is DigitAction.Buffer -> {
                 _uiState.update { it.copy(digitBuffer = action.text) }
-                showToast("输入频道号：${action.text}")
+                // 第 9 轮 P2-6：缓冲分支不再发 Toast——LiveScreen 按 digitBuffer
+                // 常驻显示回显（随缓冲清掉而消失）；再发 Toast 会与回显在同一
+                // 位置叠出两条相同文案，且 Toast 3 秒比缓冲 1500ms 多活一倍。
                 armDigitCommit()
             }
             is DigitAction.SwitchTo -> {

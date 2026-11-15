@@ -94,14 +94,22 @@ fun PlayerControls(
     onOpenSources: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var countdown by remember(showNextEpisode) { mutableIntStateOf(3) }
+    // 第 9 轮 P2-3：remember 的 key 加 isEnded——只记 showNextEpisode 时，
+    // 播完态倒计时走到 1 后在片尾窗口内快退（isEnded 真→假、预告卡保留），
+    // 倒计时冻结在 1 不重置；重播到片尾再次 STATE_ENDED 后从 1 继续走，
+    // 1 秒就自动切集、还约 10 秒一直显示“1 秒后自动播放”。isEnded 翻转
+    // 即重置回 3：真→假（离开播完态）重置，假→真（再次播完）同样重置，
+    // 都是新一轮 3 秒倒计时的起点；播完前卡已出现时倒计时本就冻结在 3，
+    // 假→真那次重置无可见变化。
+    var countdown by remember(showNextEpisode, isEnded) { mutableIntStateOf(3) }
     // A8-P1-1（第 8 轮，取代 A6-P1-1 的“正在播或已播完”）：倒计时只在播完态走——
     // 预告卡在剩 10 秒时就出现，旧谓词让倒计时边播边走，约 3 秒后自动切集，
     // 本集最后约 7 秒被吞掉；现在播完前倒计时冻结在 3 秒，STATE_ENDED 后才走 3 秒切集。
     // 暂停期间 / 抽屉打开时同样冻结，不在用户挑集/暂停时强制切集。
     // LaunchedEffect 的 key 含 isPlaying、isEnded 与 drawerOpen：
-    // 状态翻转会重启本协程，但 countdown 经 remember(showNextEpisode)
-    // 保留当前值，不会重置回 3；预告关闭（showNextEpisode 变 false）时直接返回。
+    // 状态翻转会重启本协程；countdown 平时经 remember 保留当前值（暂停/
+    // 抽屉打开导致的重启不重置），只有 isEnded 翻转时才随 remember 的 key
+    // 重置回 3（第 9 轮 P2-3）；预告关闭（showNextEpisode 变 false）时直接返回。
     LaunchedEffect(showNextEpisode, isPlaying, isEnded, drawerOpen) {
         if (showNextEpisode) {
             while (countdown > 0) {
