@@ -501,7 +501,9 @@ fun LiveScreen(
                                 if (uiState.channels.isEmpty()) {
                                     false // 空态按钮自带焦点，不抢
                                 } else if (shouldRetryOnOk(uiState.playbackFailed, uiState.failCount)) {
-                                    viewModel.retryCurrent() // 失败过且未耗尽，或 GiveUp：OK 重试当前台
+                                    viewModel.retryCurrent() // H11-C2：第 11 轮——注释与函数实际语义对齐：
+                                    // 只在失败页已出（自动处理耗尽）时 OK 才重试；“失败过且未耗尽”
+                                    // 时 OK 应开面板，不是重试（见 shouldRetryOnOk 的 KDoc）。
                                     true
                                 } else {
                                     viewModel.openPanel()
