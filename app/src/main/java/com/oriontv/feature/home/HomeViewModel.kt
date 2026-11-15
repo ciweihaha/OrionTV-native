@@ -14,6 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
@@ -126,10 +127,11 @@ class HomeViewModel @Inject constructor(
             } catch (_: Exception) {
                 return@launch
             }
-            val rows = _uiState.value.rows.toMutableList()
-            rows.removeAll { it.title == HomeCategory.RECENT.title }
-            if (recent != null) rows.add(0, recent)
-            _uiState.value = _uiState.value.copy(rows = rows)
+            // B11-P2-2：行合并放进 _uiState.update { … } 的 lambda 内做、
+            // 对最新态原子合并——之前先读 _uiState.value.rows 再赋值，与
+            // refresh() 并发时旧行快照会覆盖新行（冷启动首屏加载期间离页
+            // 再回，首页只剩“最近播放”一行）。
+            _uiState.update { current -> current.copy(rows = mergeRecentRow(current.rows, recent)) }
         }
     }
 
@@ -207,6 +209,19 @@ class HomeViewModel @Inject constructor(
         } catch (_: Exception) {
             emptyList()
         }
+}
+
+/**
+ * “最近播放”行合并（可单测，B11-P2-2）：去掉旧的最近播放行、新行插到首位；
+ * recent 为 null（确实没有播放记录）时只删旧行，不动其他行。
+ * 调用方须在 _uiState.update { … } 的 lambda 内调它（对最新态原子合并），
+ * 不能先读 _uiState.value.rows 再赋值——与 refresh() 并发时旧行快照会覆盖新行。
+ */
+internal fun mergeRecentRow(existing: List<HomeRow>, recent: HomeRow?): List<HomeRow> {
+    val rows = existing.toMutableList()
+    rows.removeAll { it.title == HomeCategory.RECENT.title }
+    if (recent != null) rows.add(0, recent)
+    return rows
 }
 
 data class HomeUiState(

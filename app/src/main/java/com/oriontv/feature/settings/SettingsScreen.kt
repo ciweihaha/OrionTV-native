@@ -62,7 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** 设置左菜单（ui-design.md §5.7）：源地址 / 播放设置 / 远程输入 / 检查更新 / 关于。 */
+/** 设置左菜单（ui-design.md §5.7）：源地址 / 播放设置 / 远程输入 / 检查更新 / 关于 / 登录。 */
 private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "检查更新", "关于")
 
 /**
@@ -73,6 +73,9 @@ private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "
  * 源地址：API + M3U 两行输入，保存立即生效并清除登录态（保存按钮未改时不可点）；
  * 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画开关 + 片头时长；
  * 远程输入：开关 + 服务状态 + 二维码 + 配对码；检查更新：当前版本 + 检查按钮 + 更新卡片。
+ * 登录：B11-P1-1 手动登录/退出登录入口（之前全仓唯一的 showLogin()/logout()
+ * 调用方是换源地址保存成功，登录弹窗点“取消”后进程内无手动再弹入口，
+ * 已登录用户想退出/换账号也只能走改源地址的破坏性旁路）。
  */
 @Composable
 fun SettingsScreen(
@@ -87,6 +90,9 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
+    // B11-P1-1：登录态——左菜单末项按它切换“登录/退出登录”文案。
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
+    val settingsMenu = SettingsMenu + loginMenuLabel(isLoggedIn)
     // C5-P2-5：selectedMenu 原来是 remember——进程重建/切走再回后回到 0，
     // 与焦点恢复（focusRestoreTick 用 menuRequesters[selectedMenu]）对不上；
     // 改 rememberSaveable，首进焦点也落 menuRequesters[selectedMenu]。
@@ -94,9 +100,9 @@ fun SettingsScreen(
     // C6-P2-4：selectedMenu 经 rememberSaveable 恢复后未钳制——将来菜单缩减
     // （如某项下线），恢复出的旧下标越界，menuRequesters[selectedMenu] 直接
     // 崩溃；读侧一律走钳制后的 menuIndex，写侧（onClick）只产生合法下标。
-    val menuIndex = selectedMenu.coerceIn(0, (SettingsMenu.size - 1).coerceAtLeast(0))
+    val menuIndex = selectedMenu.coerceIn(0, (settingsMenu.size - 1).coerceAtLeast(0))
     var showQrModal by remember { mutableStateOf(false) }
-    val menuRequesters = remember { List(SettingsMenu.size) { FocusRequester() } }
+    val menuRequesters = remember { List(settingsMenu.size) { FocusRequester() } }
     val rightRequester = remember { FocusRequester() }
     val qrTriggerRequester = remember { FocusRequester() }
     // 二维码弹窗关闭后焦点还给触发点（P1-5）。
@@ -187,7 +193,7 @@ fun SettingsScreen(
             ) {
                 Text(text = "设置", style = OrionTextStyles.PageTitle)
                 Spacer(modifier = Modifier.height(16.dp))
-                SettingsMenu.forEachIndexed { index, label ->
+                settingsMenu.forEachIndexed { index, label ->
                     SettingsMenuItem(
                         label = label,
                         selected = menuIndex == index,
@@ -253,6 +259,14 @@ fun SettingsScreen(
                         firstRequester = rightRequester,
                     )
                     4 -> AboutSettings(firstRequester = rightRequester)
+                    // B11-P1-1：登录/退出登录入口——文案按登录态切换，样式与
+                    // 其他 section 一致（标题 + 说明 + 主按钮）。
+                    5 -> LoginSettings(
+                        isLoggedIn = isLoggedIn,
+                        onLogin = { viewModel.showLogin() },
+                        onLogout = { viewModel.logout() },
+                        firstRequester = rightRequester,
+                    )
                 }
             }
         }
@@ -730,6 +744,37 @@ private fun UpdateSettings(
     }
 }
 
+/** 登录/退出登录（B11-P1-1）：手动入口——之前登录弹窗点“取消”后进程内
+ * 无手动再弹入口，已登录用户想退出/换账号也只能走改源地址的破坏性旁路。 */
+@Composable
+private fun LoginSettings(
+    isLoggedIn: Boolean,
+    onLogin: () -> Unit,
+    onLogout: () -> Unit,
+    firstRequester: FocusRequester,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(
+            text = if (isLoggedIn) "退出登录" else "登录",
+            style = OrionTextStyles.SectionTitle,
+        )
+        Text(
+            text = if (isLoggedIn) {
+                "当前已登录。退出后需重新登录才能使用账号功能。"
+            } else {
+                "登录你的账号。登录态过期时会自动弹出登录框。"
+            },
+            style = OrionTextStyles.Body,
+            color = OrionColors.TextSecondary,
+        )
+        PrimaryButton(
+            text = if (isLoggedIn) "退出登录" else "登录",
+            onClick = if (isLoggedIn) onLogout else onLogin,
+            modifier = Modifier.focusRequester(firstRequester),
+        )
+    }
+}
+
 /** 关于：版本与包名。 */
 @Composable
 private fun AboutSettings(firstRequester: FocusRequester) {
@@ -755,6 +800,10 @@ private fun AboutSettings(firstRequester: FocusRequester) {
         Text(text = "Kotlin + Compose for TV + Media3 原生重写。", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
     }
 }
+
+/** 登录菜单项文案（可单测，B11-P1-1）：按登录态切换“登录/退出登录”。 */
+internal fun loginMenuLabel(isLoggedIn: Boolean): String =
+    if (isLoggedIn) "退出登录" else "登录"
 
 /** 设置页返回键动作（第 7 轮 P2-2，纯决策，可单测）。 */
 internal enum class SettingsBackAction {

@@ -40,4 +40,11 @@ class SettingsBackLogicTest {
             settingsBackAction(showUpdateCard = true, showQrModal = true),
         )
     }
+
+    @Test
+    fun `login menu label follows login state`() {
+        // B11-P1-1：设置页末项按登录态切换“登录/退出登录”。
+        assertEquals("登录", loginMenuLabel(isLoggedIn = false))
+        assertEquals("退出登录", loginMenuLabel(isLoggedIn = true))
+    }
 }

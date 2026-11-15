@@ -199,7 +199,16 @@ class RemoteInputManager @Inject constructor() {
                     }
                 }
             }
-            // 启动期间用户又开了：按最新意图重起一次（取消不重起）。
+            // B11-P2-3（已核实：不是死代码，别删）：启动期间用户又开了时
+            // 按最新意图重起一次（取消不重起）。可达路径是“关→开”发生在
+            // 启动进行中：stop() 已置 desiredRunning=false 并让停服协程把
+            // stopRequestedDuringStart 置真，随后 start() 又把 desiredRunning
+            // 置回 true、因 starting 为真直接返回；本轮启动随后失败
+            //（catch 里因 stopRequestedDuringStart 为真不写 error）或走
+            // stopNow 分支停服，finally 里 desiredRunning 为真、isRunning
+            // 为假、error 为空，重起是唯一能兑现这次“开”意图的路径——
+            // stop() 的意图复核只管“不该停时不停”，不管重起。正常成功/
+            // 正常失败/取消时条件恒假，不会多余重起。
             if (!cancelled && desiredRunning && !_state.value.isRunning && _state.value.error == null) {
                 start()
             }

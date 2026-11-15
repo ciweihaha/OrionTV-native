@@ -146,7 +146,10 @@ class UpdateViewModel @Inject constructor(
                         }
                         // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉，
                         // 否则重启后恢复又把失效包复活。
-                        downloadedApkStore.clear()
+                        // B11-P2-1：附属持久化失败不推翻主流程——版本已确认是
+                        // 最新，clear() 抛错只记日志，不进外层 catch 的“检查失败”。
+                        runCatching { downloadedApkStore.clear() }
+                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
                     }
                     UpdateService.isSkippedVersion(latest, skipVersion) -> {
                         _uiState.update {
@@ -163,7 +166,9 @@ class UpdateViewModel @Inject constructor(
                             )
                         }
                         // 第 7 轮 P2-5：同上，跳过版本的持久化记录同步清掉。
-                        downloadedApkStore.clear()
+                        // B11-P2-1：同上，附属写失败只记日志、不报“检查失败”。
+                        runCatching { downloadedApkStore.clear() }
+                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
                     }
                     else -> {
                         val size = downloader.headApkSizeBytes(UpdateService.downloadUrl(latest))
@@ -288,7 +293,11 @@ class UpdateViewModel @Inject constructor(
                         }
                         // 第 7 轮 P2-5：下载完成即持久化路径 + 版本，进程重启
                         // 后恢复复用，不用重新下载。
-                        downloadedApkStore.save(dest.absolutePath, latest)
+                        // B11-P2-1：附属持久化失败不推翻主流程——下载已完成、
+                        // 校验已通过，save() 抛错只记日志，不把已下好的包报成
+                        // “下载失败”（B9-P2-2 同款，不同调用点）。
+                        runCatching { downloadedApkStore.save(dest.absolutePath, latest) }
+                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录保存失败：${it.message}") }
                         // 第 6 轮 P2-2：下载完成时卡片若已被“稍后”/返回键关掉，要重新
                         // 弹出给安装入口，否则下好的包没有任何入口能再打开“立即安装”
                         //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
@@ -323,7 +332,11 @@ class UpdateViewModel @Inject constructor(
                         )
                     }
                     // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
-                    downloadedApkStore.clear()
+                    // B11-P2-1：同款——这里已在 catch 分支里，clear() 再抛错
+                    // 会直接逃出 launch、变成 viewModelScope 未捕获异常崩应用；
+                    // 附属写失败只记日志。
+                    runCatching { downloadedApkStore.clear() }
+                        .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
                 }
             } catch (e: Exception) {
                 if (downloadGen == downloadGeneration) {
@@ -337,7 +350,9 @@ class UpdateViewModel @Inject constructor(
                         )
                     }
                     // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
-                    downloadedApkStore.clear()
+                    // B11-P2-1：同上，catch 分支里的附属写失败只记日志、不崩溃。
+                    runCatching { downloadedApkStore.clear() }
+                        .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
                 }
             } finally {
                 if (downloadGen == downloadGeneration) downloadJob = null

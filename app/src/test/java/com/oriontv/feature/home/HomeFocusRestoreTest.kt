@@ -44,4 +44,38 @@ class HomeFocusRestoreTest {
         assertNull(findSavedCard(rows, null))
         assertNull(findSavedCard(emptyList(), key))
     }
+
+    @Test
+    fun `recent row merge replaces old recent row at top`() {
+        // B11-P2-2：新“最近播放”行插到首位，旧行去掉，其他行不动、顺序不变。
+        val rows = listOf(
+            row("最近播放", item("agg", "1")),
+            row("热门剧集", item("agg", "2")),
+            row("电影", item("agg", "3")),
+        )
+        val recent = row("最近播放", item("agg", "9"))
+        val merged = mergeRecentRow(rows, recent)
+        assertEquals(listOf("最近播放", "热门剧集", "电影"), merged.map { it.title })
+        assertEquals(listOf("9"), merged[0].items.map { it.id })
+        assertEquals(listOf("2"), merged[1].items.map { it.id })
+    }
+
+    @Test
+    fun `recent row merge with no records only removes the old row`() {
+        // B11-P2-2：确实没有播放记录时只删旧行，不动其他行。
+        val rows = listOf(
+            row("热门剧集", item("agg", "2")),
+            row("最近播放", item("agg", "1")),
+            row("电影", item("agg", "3")),
+        )
+        val merged = mergeRecentRow(rows, null)
+        assertEquals(listOf("热门剧集", "电影"), merged.map { it.title })
+    }
+
+    @Test
+    fun `recent row merge inserts at top when there was no recent row`() {
+        val rows = listOf(row("热门剧集", item("agg", "2")))
+        val merged = mergeRecentRow(rows, row("最近播放", item("agg", "9")))
+        assertEquals(listOf("最近播放", "热门剧集"), merged.map { it.title })
+    }
 }

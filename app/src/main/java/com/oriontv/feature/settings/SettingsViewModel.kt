@@ -45,6 +45,30 @@ class SettingsViewModel @Inject constructor(
     /** 远程输入服务状态（设置页远程输入 section 直接读）。 */
     val remoteInputState: StateFlow<RemoteInputState> = remoteInputManager.state
 
+    /** 登录态（设置页“登录/退出登录”入口用，B11-P1-1）。 */
+    val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
+
+    /** 手动登录：弹全局登录弹窗（B11-P1-1）。 */
+    fun showLogin() = authRepository.showLogin()
+
+    /**
+     * 手动退出登录（B11-P1-1）：远程登出失败只记日志，本地会话在
+     * AuthRepository.logout() 的 finally 里已清干净（与
+     * AuthViewModel.logout() 同款接法）；无论远程成败，本地都已退出。
+     */
+    fun logout() {
+        viewModelScope.launch {
+            try {
+                authRepository.logout()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("SettingsViewModel", "退出登录远程登出失败（本地会话已清理）：${e.message}")
+            }
+            _uiState.update { it.copy(toast = nextToastEvent("已退出登录")) }
+        }
+    }
+
     init {
         viewModelScope.launch {
             // B6-P2-9：combine/collect 加 try/catch——DataStore 流抛错时旧实现
