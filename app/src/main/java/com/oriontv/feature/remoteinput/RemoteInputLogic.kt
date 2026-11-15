@@ -161,9 +161,7 @@ class PairingGate(
      */
     @Synchronized
     fun check(clientIp: String, code: String, expectedCode: String): Boolean {
-        // B4-P2-25：拿不到 IP 时不再全进 "unknown" 同一桶——不同连接
-        // 共用一个计数会互相锁定；用唯一键单独计数，失败不聚合、不共享锁定。
-        val ip = clientIp.ifBlank { "unknown:" + java.util.UUID.randomUUID().toString() }
+        val ip = ipKey(clientIp)
         val now = nowMs()
         val state = attemptsByIp[ip]
         if (state != null) {
@@ -178,6 +176,36 @@ class PairingGate(
             attemptsByIp.remove(ip)
             return true
         }
+        recordFailureLocked(ip, now)
+        return false
+    }
+
+    /**
+     * B15-P1-1：错码记一次失败（供 [RemoteInputRouter.isPairingValid] 在
+     * matchesPairingCode 失败时调用——之前错码直接 403、从不进 check()，
+     * 失败计数永不累加，“同一 IP 连续失败 5 次锁定 60 秒”是死代码）。
+     * 锁定期内不记数、不延长锁定；过期/清零态先清旧条再记，与 check() 的
+     * 失败分支同款记账（含 P2-24 淘汰）。成功仍走 check() 清零。
+     */
+    @Synchronized
+    fun recordFailure(clientIp: String) {
+        val ip = ipKey(clientIp)
+        val now = nowMs()
+        val state = attemptsByIp[ip]
+        if (state != null) {
+            if (now < state.lockoutUntil) return
+            if (state.failures == 0 || now - state.lastFailureAt > RemoteInputLogic.FAILURE_WINDOW_MS) {
+                attemptsByIp.remove(ip)
+            }
+        }
+        recordFailureLocked(ip, now)
+    }
+
+    /**
+     * 失败记账（调用方已持锁、已做锁定与过期复核）：计数 +1，满 5 次锁定
+     * 60 秒并清零计数；超跟踪上限时先清过期条、仍超限再淘汰最旧一条。
+     */
+    private fun recordFailureLocked(ip: String, now: Long) {
         val failures = (attemptsByIp[ip]?.failures ?: 0) + 1
         if (failures >= RemoteInputLogic.MAX_PAIRING_ATTEMPTS) {
             attemptsByIp[ip] = IpState(
@@ -201,8 +229,14 @@ class PairingGate(
                 .minByOrNull { it.value.lastFailureAt }
                 ?.key?.let { attemptsByIp.remove(it) }
         }
-        return false
     }
+
+    /**
+     * B4-P2-25：拿不到 IP 时不再全进 "unknown" 同一桶——不同连接
+     * 共用一个计数会互相锁定；用唯一键单独计数，失败不聚合、不共享锁定。
+     */
+    private fun ipKey(clientIp: String): String =
+        clientIp.ifBlank { "unknown:" + java.util.UUID.randomUUID().toString() }
 
     @Synchronized
     fun clear() = attemptsByIp.clear()
@@ -409,7 +443,12 @@ class RemoteInputRouter(
         val code = headers.entries.firstOrNull {
             it.key.equals("x-pairing-code", ignoreCase = true)
         }?.value.orEmpty()
-        if (!matchesPairingCode(code)) return false
+        if (!matchesPairingCode(code)) {
+            // B15-P1-1：错码先记一次失败再返回 403——之前错码直接 return false，
+            // 从不进 PairingGate.check()，失败计数永不累加、“5 次锁定 60 秒”是死代码。
+            pairingGate.recordFailure(clientIp)
+            return false
+        }
         // 失败计数与锁定仍走 PairingGate：期望码取实际匹配的那一个（当前码
         // 或宽限期内的上一轮码），否则宽限期内的旧码会被 gate 的比较挡掉。
         val expected = if (RemoteInputLogic.timingSafeEqual(code, pairingCode)) {

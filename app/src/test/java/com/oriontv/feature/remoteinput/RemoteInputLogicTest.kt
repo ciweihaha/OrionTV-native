@@ -97,6 +97,68 @@ class RemoteInputLogicTest {
     }
 
     @Test
+    fun `pairing gate recordFailure counts toward lockout`() {
+        // B15-P1-1：错码分支调 recordFailure 记数——之前只有 check() 记数，
+        // 而错码根本到不了 check()，锁定是死代码。
+        var now = 1_000_000L
+        val gate = PairingGate(nowMs = { now })
+        repeat(4) { gate.recordFailure("1.2.3.4") }
+        // 4 次未锁定，正确码仍通过、并清零计数。
+        assertTrue(gate.check("1.2.3.4", "1234", "1234"))
+        repeat(5) { gate.recordFailure("1.2.3.4") }
+        // 第 5 次失败后锁定：锁定期内正确码也被拒。
+        assertFalse(gate.check("1.2.3.4", "1234", "1234"))
+        // 其它 IP 不受影响。
+        assertTrue(gate.check("5.6.7.8", "1234", "1234"))
+        // 60 秒锁定期过后恢复。
+        now += 61_000L
+        assertTrue(gate.check("1.2.3.4", "1234", "1234"))
+    }
+
+    @Test
+    fun `wrong pairing codes lock ip after 5 attempts via router`() {
+        // B15-P1-1（路由级）：错码握手 5 次即锁定同一 IP——之前错码在
+        // isPairingValid 里直接 403、从不进 PairingGate，锁定永不生效。
+        var now = 1_000_000L
+        var handshakes = 0
+        val router = RemoteInputRouter(
+            pairingGate = PairingGate(nowMs = { now }),
+            onHandshake = { handshakes++ },
+            nowMs = { now },
+        )
+        router.rotatePairingCode()
+        val code = router.pairingCode
+        // 错码保证与真码不同（真码随机，万一撞上 "0000" 就换一个）。
+        val wrongCode = if (code == "0000") "0001" else "0000"
+        repeat(5) {
+            val bad = router.handle(
+                "POST", "/handshake", mapOf("X-Pairing-Code" to wrongCode), "{}", "1.2.3.4",
+            )
+            assertEquals(403, bad.statusCode)
+        }
+        assertEquals(0, handshakes)
+        // 锁定期内正确码也被拒。
+        val locked = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(403, locked.statusCode)
+        assertEquals(0, handshakes)
+        // 其它 IP 不受影响。
+        val other = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "5.6.7.8",
+        )
+        assertEquals(200, other.statusCode)
+        assertEquals(1, handshakes)
+        // 60 秒锁定期过后恢复（码 5 分钟有效期未过）。
+        now += 61_000L
+        val ok = router.handle(
+            "POST", "/handshake", mapOf("X-Pairing-Code" to code), "{}", "1.2.3.4",
+        )
+        assertEquals(200, ok.statusCode)
+        assertEquals(2, handshakes)
+    }
+
+    @Test
     fun `router serves pairing page handshake and message`() {
         var received: String? = null
         var handshakes = 0
