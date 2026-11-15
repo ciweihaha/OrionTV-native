@@ -6,6 +6,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -307,6 +308,47 @@ class UpdateDownloaderResumeTest {
     }
 
     @Test
+    fun `stalled body read blocks until body is closed`() {
+        // 诊断探针（不取消）：只确认停顿的 read() 真的会堵住下载。若 read()
+        // 立即回 -1，下载会立刻“成功”，取消测试的失败就与取消机制无关。
+        val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
+        try {
+            val body = StallingBody()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.method == "HEAD") {
+                    Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", "1024")
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    responseFor(request, 200, body)
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.IO)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            var stillRunning = false
+            runBlocking {
+                val job = async(Dispatchers.IO) {
+                    downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                }
+                assertTrue(body.readStarted.await(10, TimeUnit.SECONDS))
+                delay(3_000)
+                stillRunning = job.isActive
+                job.cancel()
+                // 收尾：取消后最多等 15 秒让任务收尾（10 秒停顿兜底），
+                // 不让 runBlocking 挂住整个测试任务。
+                withTimeoutOrNull(15_000) { job.join() }
+            }
+            assertTrue("停顿的体读应堵住下载（3 秒后仍在跑）", stillRunning)
+            assertTrue(dest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `cancel during stalled body read stops promptly`() {
         // D8-P2-2：服务端停顿、read() 阻塞时取消下载，必须立即停（关体断读），
         // 不等 60 秒读超时；取消后残文件保留，下次可断点续传。
@@ -331,15 +373,20 @@ class UpdateDownloaderResumeTest {
             val dest = File(dir, "OrionTV_v2.0.0.apk")
             // 断言一律放在 runBlocking 外面、各自独立一行：挂起 lambda 里的
             // 断言失败时堆栈只报 runBlocking 行，分不清是哪一环；放外面后
-            // 失败行号直接指明卡点（没进体读 / 没抛取消异常 / 超时兜底）。
+            // 失败行号直接指明卡点。joinMs 的分段：<8 秒且 thrown 为空
+            // = 读立即回 -1（假体问题）；>=8 秒 = 10 秒停顿兜底先到期
+            //（取消未递送或测试线程被饿死）；5 秒左右且为超时异常 = 取消
+            // 未递送到阻塞的读。
             val readEntered: Boolean
             val thrown: CancellationException?
+            var joinMs = -1L
             runBlocking {
                 // 下载跑在 IO 线程：阻塞的 read() 占一条线程，主线程仍可取消。
                 val job = async(Dispatchers.IO) {
                     downloader.downloadApk("https://example.com/orionTV.apk", dest)
                 }
                 readEntered = body.readStarted.await(10, TimeUnit.SECONDS)
+                val cancelAt = System.nanoTime()
                 job.cancel()
                 // 同 ApiClientTest 的 D7-P2-4 写法：5 秒护栏内 join 应以
                 // 下载自身的 CancellationException 返回；若取消递送不到，
@@ -350,8 +397,10 @@ class UpdateDownloaderResumeTest {
                 } catch (e: CancellationException) {
                     e
                 }
+                joinMs = (System.nanoTime() - cancelAt) / 1_000_000
             }
             assertTrue("下载应在 10 秒内进入体读", readEntered)
+            assertTrue("join 应在 8 秒内返回（否则是 10 秒停顿兜底）", joinMs < 8_000)
             assertNotNull("取消的下载应抛 CancellationException", thrown)
             assertTrue(
                 "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
