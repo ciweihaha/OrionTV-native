@@ -173,4 +173,61 @@ class LiveScreenLogicTest {
         assertFalse(shouldFocusPanelRow(panelOpen = true, epgDialogOpen = true))
         assertFalse(shouldFocusPanelRow(panelOpen = false, epgDialogOpen = false))
     }
+
+    @Test
+    fun `live root left right keys intercept only when all closed and root focused`() {
+        // C13-P1-1：面板/EPG/确认框全关且焦点在根部时左/右恒为切线路——预览拦截，
+        // 未被消费的 KeyDown 会先走空间导航移走焦点，再也到不了 KeyUp 的 changeLine。
+        assertTrue(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionLeft, rootFocused = true,
+            ),
+        )
+        assertTrue(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionRight, rootFocused = true,
+            ),
+        )
+        // 面板/EPG/确认框任一打开时不拦（containment 那条管）
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = true, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionLeft, rootFocused = true,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = true, exitConfirmOpen = false,
+                key = Key.DirectionRight, rootFocused = true,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = true,
+                key = Key.DirectionLeft, rootFocused = true,
+            ),
+        )
+        // 焦点在失败页/空态按钮上时不拦：左/右是按钮行内移动
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionLeft, rootFocused = false,
+            ),
+        )
+        // 上/下不是切线路，不拦
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionUp, rootFocused = true,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveLineKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionDown, rootFocused = true,
+            ),
+        )
+    }
 }

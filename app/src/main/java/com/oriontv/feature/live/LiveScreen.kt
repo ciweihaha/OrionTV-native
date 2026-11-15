@@ -130,6 +130,25 @@ internal fun shouldContainLiveFocusKey(
         (panelOpen && key == Key.DirectionLeft && (!groupRowFocused || groupFirstChipFocused))
 
 /**
+ * 直播根部左/右键是否由预览拦截（可单测，C13-P1-1）：面板/EPG/退出确认全关、
+ * 且焦点在根部时，左/右恒为切线路——预览阶段拦截，未被消费的 KeyDown 会先
+ * 走空间导航移走焦点（落到导航轨），再也到不了 KeyUp 的 changeLine；KeyUp
+ * 不拦，仍到根 onKeyUp 走 changeLine。
+ * 焦点在失败页/空态按钮上时不拦截：左/右是按钮行内移动（与播放页
+ * shouldInterceptSeekKeys 的 focusOnControls 同款）；blanket 拦截会让
+ * 失败页的“频道面板”按钮遥控不可达。去导航轨的入口走返回→退出确认→首页
+ *（左键“回导航轨”与“切线路”在直播根部无法兼得，取切线路）。
+ */
+internal fun shouldInterceptLiveLineKeys(
+    panelOpen: Boolean,
+    epgDialogOpen: Boolean,
+    exitConfirmOpen: Boolean,
+    key: Key,
+    rootFocused: Boolean,
+): Boolean = !panelOpen && !epgDialogOpen && !exitConfirmOpen && rootFocused &&
+    (key == Key.DirectionLeft || key == Key.DirectionRight)
+
+/**
  * EPG 弹窗焦点陷阱是否应拦截该方向键（可单测，P2-6）：
  * 焦点在首个节目行按上、或在“关闭”按钮按下时拦截，不让焦点移出弹窗落到
  * 背后频道行（OK 会误触选台）；行间移动、末行下移到“关闭”按钮都放行。
@@ -203,6 +222,9 @@ fun LiveScreen(
     // 上时消费左键，分组行内左移放行；默认“不在分组行上”，与旧 blanket 行为一致。
     var panelGroupRowFocused by remember { mutableStateOf(false) }
     var panelGroupFirstChipFocused by remember { mutableStateOf(false) }
+    // C13-P1-1：根部焦点态——左/右切线路的预览拦截只在焦点在根部时启用
+    //（焦点在失败页/空态按钮上时左/右是按钮行内移动，与播放页同款）。
+    var rootFocused by remember { mutableStateOf(false) }
 
     // C5-P1-2：焦点在导航轨上时按返回，根 Box 的 onKeyUp 收不到（焦点不在
     // 本页组合内），旧实现直接走 Activity 默认返回、白白退出直播页。
@@ -307,6 +329,7 @@ fun LiveScreen(
             .background(OrionColors.Background)
             .focusable()
             .focusRequester(rootRequester)
+            .onFocusChanged { rootFocused = it.isFocused }
             .onPreviewKeyEvent { event ->
                 // C7-P1-1/A7-P2-5：面板/EPG 打开时先做焦点 containment——左/右
                 // KeyDown 在隧道阶段消费掉，不让焦点移出面板/弹窗落到导航轨；
@@ -322,6 +345,23 @@ fun LiveScreen(
                         event.key,
                         panelGroupRowFocused,
                         panelGroupFirstChipFocused,
+                    )
+                ) {
+                    return@onPreviewKeyEvent true
+                }
+                // C13-P1-1：面板/EPG/确认框全关且焦点在根部时，左/右 KeyDown 在
+                // 预览阶段消费——未被消费的 KeyDown 会先走空间导航移走焦点，
+                // 再也到不了 KeyUp 的 changeLine；KeyUp 不拦，仍到下面 onKeyUp
+                // 走 changeLine。与面板/EPG 的 containment 不冲突（那两条只在
+                // 面板/EPG 打开时命中，本条只在全关时命中）；上/下换台不受影响
+                //（仍走下面的重复拦截/松键换台）。
+                if (event.type == KeyEventType.KeyDown &&
+                    shouldInterceptLiveLineKeys(
+                        uiState.panelOpen,
+                        uiState.epgDialogChannel != null,
+                        uiState.exitConfirmOpen,
+                        event.key,
+                        rootFocused,
                     )
                 ) {
                     return@onPreviewKeyEvent true
@@ -841,7 +881,12 @@ private fun ChannelPanel(
     // 关闭，根 effect 因面板开着跳过，这里不重跑则焦点无处恢复；tick 变化时
     // 重落当前台行。EPG 弹窗开着时不抢（EPG 自己的落焦 effect 管，关闭后由
     // 下面的 EPG 关闭 effect 把焦点还给面板）。
-    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion, focusRestoreTick) {
+    // C13-P1-4：key 加 filtered.size——★收藏分组里长按取消收藏，聚焦行随
+    // filtered 变化卸载，之前 key 全不变、没有任何 effect 重跑恢复焦点；
+    // 行数变化时重落当前台行/首 chip。用 filtered.size 而不用 uiState.favorites：
+    // 其他分组里点按收藏只改 favorites、不改本组 filtered，重跑会把焦点从
+    // 正在浏览的行 yank 回当前台行；行数只在可见列表形状变化时才变。
+    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion, focusRestoreTick, filtered.size) {
         if (shouldFocusPanelRow(uiState.panelOpen, uiState.epgDialogChannel != null)) {
             if (filtered.isEmpty()) {
                 firstChipRequester.requestFocusWithRetry()

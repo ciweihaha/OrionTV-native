@@ -141,6 +141,14 @@ class DetailViewModel @Inject constructor(
         currentKey = key
         currentTitle = title
         currentId = id
+        // C13-P2-2：切新片时焦点锚点复位——Detail→Detail 深链（launchSingleTop）
+        // 下导航库把栈顶条目原位替换成带新参数的新条目，但新条目复用同一 id 与
+        // ViewModelStore（已按 navigation-runtime 2.9.8 的 launchSingleTopInternal
+        // 与 NavBackStackEntry 拷贝构造字节码核实，替换路径不调 clear），同一
+        // ViewModel 与 SavedStateHandle 存活、focusAnchored 仍是 true；数据到达
+        // effect 被锚点挡住、tick 又不变，焦点无处恢复。复位后数据到达即落
+        // “播放”按钮；同片重复 init 早退，不动锚点。
+        focusAnchored = false
         val gen = ++generation
         searchJob?.cancel()
         // B12-P2-4：切新片时取消在途的收藏切换——toggle() 是翻转操作，旧片

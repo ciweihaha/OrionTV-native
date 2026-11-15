@@ -167,13 +167,16 @@ fun SearchScreen(
     // 都落不上才回搜索框）。
     // C11-P2-1：key 加 globalModalOpen——弹窗开着时跳过抢焦，关闭后 effect
     // 重跑、按当前态（仍在加载落搜索框 / 已失败落错误态按钮）补落焦点。
+    // C13-P2-1：加扫码弹窗门控——C12-P1-5 只给 tick effect 加了，加载/错误
+    // 两个 effect 只有全局弹窗门控；扫码弹窗开着时搜索加载/失败会把焦点抢出
+    // 弹窗。恢复口：扫码弹窗关闭后由它自己的关闭 effect 把焦点还给触发点。
     LaunchedEffect(uiState.isLoading, globalModalOpen) {
-        if (uiState.isLoading && !globalModalOpen) {
+        if (uiState.isLoading && shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) {
             searchRequester.requestFocus()
         }
     }
     LaunchedEffect(uiState.error, globalModalOpen) {
-        if (globalModalOpen) return@LaunchedEffect
+        if (!shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) return@LaunchedEffect
         val error = uiState.error ?: return@LaunchedEffect
         val landed = if (error is SearchError.Empty) {
             changeKeywordRequester.requestFocusWithRetry()
@@ -220,7 +223,9 @@ fun SearchScreen(
     // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
     // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
     // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
-    BackHandler(enabled = showRemoteInputModal) { showRemoteInputModal = false }
+    // C13-P1-2：加全局弹窗门控——同页键盘 handler、扫码弹窗自身、设置页兜底
+    // 都有门控，唯独这处漏了；全局弹窗开着时返回键应先关全局弹窗。
+    BackHandler(enabled = shouldEnableRemoteInputBackHandler(showRemoteInputModal, globalModalOpen)) { showRemoteInputModal = false }
 
     Column(
         modifier = Modifier
@@ -521,3 +526,11 @@ internal fun shouldRunSearchTickRestore(globalModalOpen: Boolean, remoteInputMod
  */
 internal fun shouldEnableKeyboardBackHandler(showKeyboard: Boolean, globalModalOpen: Boolean): Boolean =
     showKeyboard && !globalModalOpen
+
+/**
+ * 扫码弹窗的 BackHandler 是否启用（可单测，C13-P1-2）：扫码弹窗开着且全局
+ * 弹窗未开着时才启用——与键盘 handler 同款谓词结构；之前漏了全局弹窗门控，
+ * 全局弹窗开着时返回键会先关底下的扫码弹窗、而不是先关视觉上在上的全局弹窗。
+ */
+internal fun shouldEnableRemoteInputBackHandler(remoteInputModalOpen: Boolean, globalModalOpen: Boolean): Boolean =
+    remoteInputModalOpen && !globalModalOpen

@@ -74,4 +74,13 @@ class SearchLogicTest {
         assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 2, textLength = 3))
         assertFalse(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 3, textLength = 3))
     }
+
+    @Test
+    fun `remote input back handler yields to global modal`() {
+        // C13-P1-2：扫码弹窗开着且全局弹窗未开着时才启用；全局弹窗开着时
+        // 返回键应先关全局弹窗，而不是先关底下的扫码弹窗。
+        assertTrue(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = true, globalModalOpen = false))
+        assertFalse(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = true, globalModalOpen = true))
+        assertFalse(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = false, globalModalOpen = false))
+    }
 }
