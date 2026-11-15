@@ -164,6 +164,51 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `ended signal is trusted only when player holds this episode`() {
+        // A24-P2-1：A23-P2-2 只门控了位置，没门控播完态——A 集看到一半离页去
+        // 详情页播 B 集，B 集播完（playerManager.isEnded=true）后回 A 页，
+        // 直接并上播放器侧播完态会把 A 集断点续播误判成从 0 重播；重试/换源同款。
+        // state.isEnded 是本页冻结的本集播完态，始终可信，保留并上。
+        val episodeUrl = "https://cdn.example.com/ep3.m3u8"
+        val otherUrl = "https://cdn.example.com/other.m3u8"
+        // 本集在播且播完：从 0 播。
+        assertTrue(
+            PlayViewModel.resolveIsEnded(
+                playerUrl = episodeUrl, episodeUrl = episodeUrl,
+                playerEnded = true, stateEnded = false,
+            ),
+        )
+        // 别页媒体播完：本集中途，续播不断点。
+        assertFalse(
+            PlayViewModel.resolveIsEnded(
+                playerUrl = otherUrl, episodeUrl = episodeUrl,
+                playerEnded = true, stateEnded = false,
+            ),
+        )
+        // 播放器已停（开关关/被别页停掉）+ 本集播完：state 侧冻结为真，从 0 播。
+        assertTrue(
+            PlayViewModel.resolveIsEnded(
+                playerUrl = null, episodeUrl = episodeUrl,
+                playerEnded = false, stateEnded = true,
+            ),
+        )
+        // 播放器已停 + 本集中途：续播不断点。
+        assertFalse(
+            PlayViewModel.resolveIsEnded(
+                playerUrl = null, episodeUrl = episodeUrl,
+                playerEnded = false, stateEnded = false,
+            ),
+        )
+        // 本集在播但未播完：续播。
+        assertFalse(
+            PlayViewModel.resolveIsEnded(
+                playerUrl = episodeUrl, episodeUrl = episodeUrl,
+                playerEnded = false, stateEnded = false,
+            ),
+        )
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。

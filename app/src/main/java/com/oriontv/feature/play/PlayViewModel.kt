@@ -358,7 +358,12 @@ class PlayViewModel @Inject constructor(
             launchStartEpisode(
                 current,
                 state.episodeIndex,
-                resolveSwitchStartMs(playerManager.isEnded || state.isEnded, state.positionMs.takeIf { it > 0 }),
+                // A24-P2-1：isEnded 用 resolveIsEnded 门控——播放器挂着别页已播完的
+                // 媒体时 playerManager.isEnded 为真，但本集并未播完，不能从 0 重播。
+                resolveSwitchStartMs(
+                    resolveIsEnded(playerManager.currentUrl, current.episodes.getOrNull(state.episodeIndex), playerManager.isEnded, state.isEnded),
+                    state.positionMs.takeIf { it > 0 },
+                ),
                 resumePaused = userPaused,
             )
         } else if (shouldResumeAfterLeaveHint(
@@ -1105,7 +1110,11 @@ class PlayViewModel @Inject constructor(
         launchStartEpisode(
             next,
             state.episodeIndex,
-            resolveSwitchStartMs(playerManager.isEnded || state.isEnded, currentEpisodePositionMs()),
+            // A24-P2-1：同上，换源时播放器挂着别页已播完媒体也会误判从 0 播。
+            resolveSwitchStartMs(
+                resolveIsEnded(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex), playerManager.isEnded, state.isEnded),
+                currentEpisodePositionMs(),
+            ),
         )
     }
 
@@ -1188,8 +1197,9 @@ class PlayViewModel @Inject constructor(
                     // 再返回时，错误页挡住 reclaim，两条恢复路都跳过，播放器
                     // 已被停掉（playerManager.isEnded=false），只读它会以片尾
                     // 位置重试、再次判起点溢出、误换源（或重试死循环）。
+                    // A24-P2-1：同上，错误页重试时播放器挂着别页已播完媒体也会误判从 0 播。
                     val startMs = resolveSwitchStartMs(
-                        playerManager.isEnded || state.isEnded,
+                        resolveIsEnded(playerManager.currentUrl, current?.episodes?.getOrNull(state.episodeIndex), playerManager.isEnded, state.isEnded),
                         state.positionMs.takeIf { it > 0 },
                     )
                     launchStartEpisode(current, state.episodeIndex, startMs)
@@ -1557,6 +1567,20 @@ class PlayViewModel @Inject constructor(
             livePositionMs: Long,
             frozenPositionMs: Long,
         ): Long = if (playerUrl != null && playerUrl == episodeUrl) livePositionMs else frozenPositionMs
+
+        /**
+         * A24-P2-1：播完态归属门控（可单测）——playerManager.isEnded 只在播放器
+         * 当前挂着本集媒体时可信；别页媒体播完时它为真，但本集并未播完，直接
+         * 并上会把断点续播误判成从 0 重播（回页重开播/重试/换源三处同款）。
+         * state.isEnded 是本页冻结的本集播完态，始终可信（A23-P2-1/A18-P2-1），
+         * 保留并上。比对依据与 resolveCurrentEpisodePositionMs 同款。
+         */
+        internal fun resolveIsEnded(
+            playerUrl: String?,
+            episodeUrl: String?,
+            playerEnded: Boolean,
+            stateEnded: Boolean,
+        ): Boolean = (playerUrl != null && playerUrl == episodeUrl && playerEnded) || stateEnded
 
         /**
          * A17-P2-1：回页时是否应重开当前集（可单测）——只补“被抢走”一种情形：
