@@ -249,4 +249,15 @@ class LiveScreenLogicTest {
         assertTrue(shouldFocusEpgDialog(globalModalOpen = false))
         assertFalse(shouldFocusEpgDialog(globalModalOpen = true))
     }
+
+    @Test
+    fun `live toast moves up one slot while digit echo is visible`() {
+        // 第 10 轮 L10-P2-1：数字回显与 Toast 同落点时会重叠——回显在时
+        // Toast 再上移 64dp（回显约 48dp 高）；信息条在时基线 160dp，
+        // 否则 48dp；回显本身的落点不变。
+        assertEquals(48, liveToastBottomPaddingDp(showInfoBar = false, digitEchoVisible = false))
+        assertEquals(160, liveToastBottomPaddingDp(showInfoBar = true, digitEchoVisible = false))
+        assertEquals(112, liveToastBottomPaddingDp(showInfoBar = false, digitEchoVisible = true))
+        assertEquals(224, liveToastBottomPaddingDp(showInfoBar = true, digitEchoVisible = true))
+    }
 }
