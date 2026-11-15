@@ -267,6 +267,10 @@ class PlayViewModelLogicTest {
             failedSources = setOf("a"),
             skipIntroVisible = true,
             drawer = PlayDrawer.EPISODES,
+            // A11-P2-1（main 第 11 轮）：缓冲/断点位置同样不能沿用旧值，
+            // 复位时一并清零——rebase 时补进 helper 的两项。
+            bufferedMs = 5000L,
+            breakpointMs = 600_000L,
         )
         val reset = PlayViewModel.resetUiStateForNewKey(
             stale, episodeIndex = 5, positionMs = 0L, title = "新片",
@@ -285,6 +289,8 @@ class PlayViewModelLogicTest {
         assertFalse(reset.skipIntroVisible)
         assertEquals(null, reset.drawer)
         assertEquals(0L, reset.durationMs)
+        assertEquals(0L, reset.bufferedMs)
+        assertEquals(0L, reset.breakpointMs)
     }
 
     @Test
