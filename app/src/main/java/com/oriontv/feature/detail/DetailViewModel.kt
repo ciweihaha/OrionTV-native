@@ -380,10 +380,14 @@ data class DetailUiState(
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
     /**
-     * 第 7 轮跟进 D7-P2-10：收藏态未知（服务端失败且从未查过）——按钮置灰
-     * 禁用，不显示“未收藏”；isFavorite 此时仍为 false（与 isFavorite() 契约一致）。
+     * B25-P2-3：第 7 轮 D7-P2-10 定“UNKNOWN（从未查过）不得画成‘未收藏’”——
+     * 之前默认值 false，init 重置与初始态共用它，首选源结果一到按钮即按
+     * “未收藏”显示且可点，但真正收藏态要等全量搜索跑完（最长 120 秒）
+     * 后才读回；窗口内点按 toggleFavorite() 是读-改-写翻转，会把已收藏
+     * 项反向取消。默认值改 true：读回前按钮置灰禁用（见 DetailScreen），
+     * 读回完成时 mapFavoriteState 已按三态写回，无需改读路径。
      */
-    val isFavoriteUnknown: Boolean = false,
+    val isFavoriteUnknown: Boolean = true,
     /** 第 6 轮 P1-2：收藏切换进行中（防连按；进行中收藏按钮禁用）。 */
     val isFavoriteToggling: Boolean = false,
     /** B-P0-1：收藏切换失败时的一次性提示（2 秒 Toast，UI 消费后清掉）。 */

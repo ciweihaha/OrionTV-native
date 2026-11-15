@@ -45,6 +45,16 @@ class DetailFavoriteTest {
     }
 
     @Test
+    fun `favorite state starts unknown until read back`() {
+        // B25-P2-3：初始态与 init 重置共用 DetailUiState 默认值——之前默认
+        // false（“已知未收藏”），首选源结果一到按钮即按“收藏”显示且可点，
+        // 但真正收藏态要等全量搜索跑完才读回；窗口内点按 toggleFavorite()
+        // 是读-改-写翻转，会把已收藏项反向取消。默认 true，读回前按钮置灰禁用。
+        assertTrue(DetailUiState().isFavoriteUnknown)
+        assertFalse(DetailUiState().isFavorite)
+    }
+
+    @Test
     fun `stale toggle result is not applied to a new title`() {
         // B12-P2-4：切换开始时快照的 key 与代次仍等于当前值时才写态——init()
         // 切新片后旧切换的 toggle() 可能已越过挂起点、取消拦不住，旧片结果
