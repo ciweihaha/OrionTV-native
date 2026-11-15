@@ -33,7 +33,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 
 /** downloadApk 断点续传测试（D-P1-5）：中途停顿从断点续下，不从零重下。 */
@@ -296,9 +295,6 @@ class UpdateDownloaderResumeTest {
         val readReturnedMinusOne = AtomicBoolean(false)
         val readThrew = AtomicBoolean(false)
         val closeCalls = AtomicInteger(0)
-        /** 诊断时序：第一次关体 / 读抛错的 nanoTime（与测试的 cancelAt 对照）。 */
-        val closedAtNanos = AtomicLong(0)
-        val threwAtNanos = AtomicLong(0)
 
         private var cachedSource: BufferedSource? = null
 
@@ -312,7 +308,6 @@ class UpdateDownloaderResumeTest {
                     release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
                     if (closed) {
                         readThrew.set(true)
-                        threwAtNanos.compareAndSet(0, System.nanoTime())
                         throw IOException("body closed")
                     }
                     readReturnedMinusOne.set(true)
@@ -323,7 +318,6 @@ class UpdateDownloaderResumeTest {
 
                 override fun close() {
                     closeCalls.incrementAndGet()
-                    closedAtNanos.compareAndSet(0, System.nanoTime())
                     closed = true
                     release.countDown()
                 }
@@ -442,11 +436,10 @@ class UpdateDownloaderResumeTest {
                 joinMs = (System.nanoTime() - cancelAt) / 1_000_000
             }
             assertTrue("下载应在 10 秒内进入体读", readEntered)
-            // 诊断时序（先于行为断言）：取消必须真的取消了 Job，且关体/读抛错
-            // 必须发生在取消之后；否则下载在取消前已完成，cancel 是空操作。
+            // 诊断（先于行为断言）：cancel() 必须真的取消了 Job，否则下载在
+            // 取消前已完成、cancel 是空操作。（关体/读抛错相对 cancelAt 的时序
+            // 断言已删——随 CI 线程调度抖动，第 13 轮复测与合并轮同代码一过一挂。）
             assertTrue("cancel() 后 Job 应已取消（否则下载在取消前已完成，completed=$completedImmediately）", cancelledImmediately)
-            assertTrue("关体应在取消之后（否则关体者不是取消监听）", body.closedAtNanos.get() > cancelAt)
-            assertTrue("读抛错应在取消之后", body.threwAtNanos.get() > cancelAt)
             // 先断言读的行为本身（失败行号直接说明读干了什么）：
             // 正常取消路径：读进 1 次、因关体抛错、不回 -1。
             assertEquals("读应只进 1 次（无重试）", 1, body.readCalls.get())
