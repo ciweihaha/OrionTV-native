@@ -107,6 +107,10 @@ class HomeViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isLoading = true)
                 val serverConfigured = settingsRepository.isServerConfigured()
                 if (!serverConfigured) {
+                    // H11-C1：第 11 轮——未配置分支补代次守卫：isServerConfigured()
+                    // 是挂起点，陈旧的 refresh 可能在较新 refresh 已写好行之后
+                    // 才恢复、无守卫地清空整屏（成功分支与 catch 分支早已有该守卫）。
+                    if (gen != generation) return@launch
                     // B14-P2-2：清行也是写态，推进版本（见 rowsVersion 注释）。
                     rowsVersion++
                     _uiState.value = HomeUiState(serverConfigured = false)
