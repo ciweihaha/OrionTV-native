@@ -96,8 +96,11 @@ fun SearchScreen(
     var searchTextFieldValue by remember { mutableStateOf(TextFieldValue(uiState.query)) }
     // C10-P2-1：左右键按下前光标位置的快照（同款快照法：光标移动发生在 KeyDown，
     // KeyUp 时读到的已是移动后的位置，按移动后位置判断会误判）。
-    var cursorBeforeLeftMove by remember { mutableStateOf(-1) }
-    var cursorBeforeRightMove by remember { mutableStateOf(-1) }
+    // 第 13 轮跟进（轻微 9）：初值 -1 不是合法光标——右键谓词 cursor < textLength
+    // 在空文本时 -1 < 0 为真、会误消费右键（焦点困在空搜索框出不去）；初值改 0，
+    // 左键谓词 cursor > 0 在 0/-1 下同为 false，行为不变。
+    var cursorBeforeLeftMove by remember { mutableStateOf(0) }
+    var cursorBeforeRightMove by remember { mutableStateOf(0) }
     // 外部改了 query（历史填回、清空、屏上键盘输入）时同步回输入框，光标落行尾。
     LaunchedEffect(uiState.query) {
         if (uiState.query != searchTextFieldValue.text) {
