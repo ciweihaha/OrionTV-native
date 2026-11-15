@@ -95,6 +95,13 @@ class PlayViewModel @Inject constructor(
     private var cachedNextEpisodeOverlayEnabled: Boolean = true
     /** 本片手动标记的片头结束时间（毫秒），null 表示没标过（用默认时长兜底）。 */
     private var markedIntroEndMs: Long? = null
+    /**
+     * M18：主线程写、IO 线程读——init() 在主线程置 currentKey，搜源回调
+     * （searchDetail 的 onUpdate 在 IO 线程内同步回调，见 A11-P2-2）直接读它
+     * 做代际复核；plain var 无可见性保证，旧 key 可能被迟到的回调读到、
+     * 误判为同代。改 @Volatile（与 DetailViewModel 的 B7-P2-7 代次同款）。
+     */
+    @Volatile
     private var currentKey: String = ""
     private var routePositionMs: Long = 0L
     private var initialised = false
@@ -172,8 +179,19 @@ class PlayViewModel @Inject constructor(
                 // launchStartEpisode 消费，不丢起点。
                 val current = _uiState.value.current
                 if (current != null) {
-                    if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
-                        seekTo(positionMs)
+                    // M15：seek 前校验归属——播放器是直播与点播共用的单例，
+                    // 后台复用时本页可能已不是所有者（直播页正播着）；无归属时
+                    // seek 会把直播流移到点播位置（与 handlePlaybackError 的
+                    // A4-P2-9 归属门控同款）。非所有者时不 seek，只把新起点
+                    // 记入 routePositionMs，回页重认领开播时由 startEpisode
+                    // 消费（与搜源中分支同款，不丢起点）。
+                    if (playerManager.isCurrentOwner(playbackToken)) {
+                        if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
+                            seekTo(positionMs)
+                        }
+                    } else {
+                        routePositionMs = positionMs
+                        _uiState.update { it.copy(positionMs = positionMs) }
                     }
                 } else {
                     routePositionMs = positionMs

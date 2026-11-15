@@ -1008,8 +1008,18 @@ private fun EpisodeDrawerContent(
     // C12-P2-4：key 加总集数——抽屉打开时内容晚到（搜源未回，总集数为 0、
     // 当前集尚未组合），Unit  effect 只跑一次、落焦失败回退到根；总集数到达
     // 时重跑，焦点落在当前集上。
+    // 第 13 轮跟进（轻微 4）：内容每次变化（总集数变、换源）都重落焦点——用户
+    // 已在抽屉里移到别的集/分组上时，焦点会被偷回当前集。只落一次：成功才置
+    // 旗标；失败仍调 onFocusFailed() 且不置旗标，下次内容到达可再试（保留
+    // C12-P2-4 晚到内容仍能落焦的意图）；抽屉关闭重组即复位。
+    var focusDone by remember { mutableStateOf(false) }
     LaunchedEffect(totalEpisodes) {
-        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+        if (focusDone) return@LaunchedEffect
+        if (currentRequester.requestFocusWithRetry()) {
+            focusDone = true
+        } else {
+            onFocusFailed()
+        }
     }
     // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
     // 却仍可获焦（焦点视觉上“消失”）；LazyRow 让超出的 chip 能滚到、能获焦。
@@ -1098,8 +1108,17 @@ private fun SourceDrawerContent(
     // 仍失败回退到根。
     // C12-P2-4：key 加源数量——抽屉打开时内容晚到（搜源未回，源列表为空），
     // Unit effect 只跑一次、落焦失败回退到根；源到达时重跑，焦点落在当前源上。
+    // 第 13 轮跟进（轻微 4）：同选集抽屉——源列表每次变化都重落焦点会把用户已
+    // 移开的焦点偷回当前源；只落一次（成功才置旗标，失败仍回退且不置旗标，
+    // 下次源到达可再试；抽屉关闭重组即复位）。
+    var focusDone by remember { mutableStateOf(false) }
     LaunchedEffect(sources.size) {
-        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+        if (focusDone) return@LaunchedEffect
+        if (currentRequester.requestFocusWithRetry()) {
+            focusDone = true
+        } else {
+            onFocusFailed()
+        }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         sources.forEachIndexed { index, (src, srcName) ->
