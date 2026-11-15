@@ -17,6 +17,45 @@ object IntroSkip {
     }
 
     /**
+     * 学习式片头（第 12 轮后补）：agg 接口不给片头时间、HLS 流里也没有章节
+     * 信息，真正的片头只能从用户的行为里学——用户在片头窗口内手动往前跳，
+     * 落点大概率就是这部剧的片头结束点。学一次记到本片的播放器设置里（与
+     * 手动标记同一把键、同一个 introEndTime 字段），下集起自动按学到的点跳。
+     *
+     * 只认“从片头内起跳、越过当前认定结束点”的大跳跃：
+     * - 已有手动标记的不覆盖（显式标记优先）；
+     * - 起点已在认定结束点之外不学——那是正片中途的场景快进，学了会把下集
+     *   的正片开头也跳掉；想改已认定的点请用手动标记（markIntroEnd）；
+     * - 落点等于认定结束点不学——自动跳和胶囊点的就是这个点，不是用户行为；
+     * - 跳跃太小（<30 秒）不学，过滤误触的单次 +10 秒；
+     * - 落点超过 10 分钟不学，那不是片头，是跳到正片中间去了；
+     * - 片长已知时，落点距片尾不到 10 秒不学（与 shouldAutoSkip 同款守卫）。
+     * @param durationMs 片长（毫秒）；<=0 表示未知，不做片尾守卫。
+     */
+    fun shouldLearnIntroEnd(
+        fromMs: Long,
+        toMs: Long,
+        introEndMs: Long,
+        hasMark: Boolean,
+        durationMs: Long = 0L,
+    ): Boolean {
+        if (hasMark) return false
+        if (introEndMs <= 0) return false
+        if (fromMs < 0 || fromMs >= introEndMs) return false
+        if (toMs <= introEndMs) return false
+        if (toMs - fromMs < MIN_LEARN_JUMP_MS) return false
+        if (toMs > MAX_LEARNABLE_INTRO_MS) return false
+        if (durationMs > 0 && toMs >= durationMs - INTRO_SKIP_MIN_REMAINING_MS) return false
+        return true
+    }
+
+    /** 学习式片头：一次手动跳跃至少这么大才算“跳片头”，过滤误触的单次 +10 秒。 */
+    const val MIN_LEARN_JUMP_MS = 30_000L
+
+    /** 学习式片头：落点超过这个值就不是片头了（用户跳到正片中间去了）。 */
+    const val MAX_LEARNABLE_INTRO_MS = 600_000L
+
+    /**
      * 是否该自动跳过片头（可单测）：开关开、片头结束点 >0、当前位置仍在片头内、
      * 本集还没跳过。断点续播位置已过片头（position >= introEnd）的不触发；
      * 有标记用标记，无标记用设置的片头时长，0=不跳（introEndMs==0 即不触发）。
