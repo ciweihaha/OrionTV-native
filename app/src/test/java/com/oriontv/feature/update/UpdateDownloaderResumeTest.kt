@@ -484,6 +484,61 @@ class UpdateDownloaderResumeTest {
     }
 
     @Test
+    fun `cancel during stalled body read stops promptly every time`() {
+        // D8-P2-2 跟进 2：取消挂钩曾是 launch 起的监听协程，取消若抢在它首次
+        // 运行之前到达，finally 里的关体根本不会执行、体读堵满 60 秒兜底——
+        // 单次跑大概率绿、CI 负载下偶发红（main 上累计红 5 次）。修法是同步
+        // 注册 invokeOnCancellation 挂钩：取消到达时在取消线程上当场关体，
+        // 无派发窗口。本测试把同一场景连跑 10 次：旧机制下 10 次里大概率
+        // 至少红一次，新机制每次都应立即停。
+        val dir = Files.createTempDirectory("oriontv-cancel-loop-test").toFile()
+        try {
+            repeat(10) { round ->
+                val body = StallingBody(stallTimeoutMs = 60_000L)
+                val client = OkHttpClient.Builder().addInterceptor { chain ->
+                    val request = chain.request()
+                    if (request.method == "HEAD") {
+                        Response.Builder()
+                            .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                            .header("Content-Length", "1024")
+                            .body(ByteArray(0).toResponseBody(null))
+                            .build()
+                    } else {
+                        responseFor(request, 200, body)
+                    }
+                }.build()
+                val downloader = UpdateDownloader(client, Dispatchers.IO)
+                val dest = File(dir, "OrionTV_v2.0.1-round$round.apk")
+                val thrown: CancellationException?
+                val readStopped: Boolean
+                runBlocking {
+                    val job = async(Dispatchers.IO) {
+                        downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                    }
+                    assertTrue("第 ${round + 1} 次：下载应在 10 秒内进入体读", body.readStarted.await(10, TimeUnit.SECONDS))
+                    job.cancel()
+                    readStopped = body.readFinished.await(15, TimeUnit.SECONDS)
+                    thrown = try {
+                        withTimeout(15_000) { job.await() }
+                        null
+                    } catch (e: CancellationException) {
+                        e
+                    }
+                }
+                assertTrue("第 ${round + 1} 次：取消后 15 秒内停顿的体读应停下（关体未到达）", readStopped)
+                assertTrue("第 ${round + 1} 次：读应因关体抛错", body.readThrew.get())
+                assertNotNull("第 ${round + 1} 次：取消的下载应抛 CancellationException", thrown)
+                assertTrue(
+                    "第 ${round + 1} 次：取消应在 15 秒内生效（不应是 withTimeout 的超时取消异常）",
+                    thrown !is TimeoutCancellationException,
+                )
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `restarts from zero when 206 response lacks Content-Range`() {
         // B8-P2-9：206 缺 Content-Range 头时旧实现直接当续传成功追加，文件写坏、
         // 要到 SHA 校验才暴露；现在删残文件、从头重下。
