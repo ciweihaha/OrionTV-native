@@ -342,4 +342,60 @@ class AggApiTest {
         assertFalse("probe lease should be released after cancel", breaker.isOpen())
     }
 
+    @Test
+    fun `failed probe reopens cooldown instead of instant regrant`() {
+        // 第 13 轮跟进（轻微 7）：快败的探针立即释放租约等于让并发的分类加载
+        // 轮流哄抢——冷却期一过就再授一个探针；失败后重开 60 秒冷却。
+        var now = 0L
+        val breaker = CircuitBreaker(nowMs = { now })
+        repeat(3) { breaker.recordFailure() }
+        assertTrue(breaker.isOpen())
+        now += 61_000 // 越过冷却期，进入半开，授出探针
+        assertFalse(breaker.isOpen())
+        breaker.releaseProbeAfterFailure() // 探针快败（5xx/连接错）
+        assertTrue("failed probe should reopen cooldown", breaker.isOpen())
+        now += 61_000 // 下一个冷却期满，才授新探针
+        assertFalse(breaker.isOpen())
+    }
+
+    @Test
+    fun `failed videoList probe reopens cooldown for next caller`() {
+        // 第 13 轮跟进（轻微 7）：AggApi 级——熔断开闸、冷却期满后，探针
+        // videoList 遇 5xx 快败，下一个调用方应立刻被熔断拒绝（不再发请求），
+        // 而不是马上再拿一个探针去冲服务端。
+        var now = 0L
+        val breaker = CircuitBreaker(nowMs = { now })
+        val (timeoutClient, _) = countingClient { _, _ -> throw SocketTimeoutException("timeout") }
+        val aggTimeout = AggApi(
+            timeoutClient, json, Dispatchers.Unconfined,
+            retryBackoffMs = { 0L },
+            videoListCircuitBreaker = breaker,
+        )
+        repeat(3) {
+            assertThrows(SocketTimeoutException::class.java) {
+                runBlocking { aggTimeout.videoList(1, 1) }
+            }
+        }
+        assertTrue(breaker.isOpen())
+        now += 61_000 // 越过冷却期，进入半开
+        val (fiveXxClient, fiveXxCalls) = countingClient { request, _ ->
+            responseFor(request, 500, "")
+        }
+        val aggProbe = AggApi(
+            fiveXxClient, json, Dispatchers.Unconfined,
+            retryBackoffMs = { 0L },
+            videoListCircuitBreaker = breaker,
+        )
+        assertThrows(IOException::class.java) {
+            runBlocking { aggProbe.videoList(1, 1) }
+        }
+        assertEquals(4, fiveXxCalls.get()) // 探针自身重试 3 次 + 首次 = 4 次请求
+        // 下一个调用方立刻被拒，不再发请求。
+        val thrown = assertThrows(IOException::class.java) {
+            runBlocking { aggProbe.videoList(1, 1) }
+        }
+        assertTrue(thrown.message!!.contains("熔断开启"))
+        assertEquals(4, fiveXxCalls.get())
+    }
+
 }
