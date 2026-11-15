@@ -54,9 +54,9 @@ class SettingsBackLogicTest {
     fun `tick restore skips while qr modal is open`() {
         // C12-P2-5：设置页 tick 恢复无视二维码弹窗——拉回左菜单后弹窗遥控不可达；
         // 弹窗开着时跳过，关闭后由它自己的关闭 effect 把焦点还给触发按钮。
-        assertTrue(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, showQrModal = false))
-        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, showQrModal = true))
-        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 0, showQrModal = false))
+        assertTrue(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, globalModalOpen = false, showQrModal = false))
+        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, globalModalOpen = false, showQrModal = true))
+        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 0, globalModalOpen = false, showQrModal = false))
     }
 
     @Test

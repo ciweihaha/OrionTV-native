@@ -321,6 +321,8 @@ fun OrionNavHost(
                         updateViewModel = updateViewModel,
                         focusRestoreTick = focusRestoreTick,
                         // C11-P2-2：全局弹窗开着时二维码弹窗的返回处理让位。
+                        // Jewel 第 8 轮 P2-8：同一标志也门控设置页 tick 恢复——
+                        // 登录框关闭后更新卡片重现时，卡片挂载抢焦赢，设置页不争。
                         globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }

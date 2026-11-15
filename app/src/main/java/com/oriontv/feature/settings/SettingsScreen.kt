@@ -89,6 +89,8 @@ fun SettingsScreen(
     /**
      * C11-P2-2：全局弹窗（登录/更新卡片）是否正开着——二维码弹窗的返回处理
      * 开着时让位给全局弹窗（见 RemoteInputModal 的 BackHandler 门控）。
+     * Jewel 第 8 轮 P2-8：同一标志也门控 tick 焦点恢复——全局弹窗开着时
+     * tick 恢复让位，不与更新卡片挂载抢焦争胜负（Detail/Live 同款门控范式）。
      */
     globalModalOpen: Boolean = false,
 ) {
@@ -120,8 +122,17 @@ fun SettingsScreen(
     // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。
     // C12-P2-5：二维码弹窗开着时不抢——tick 恢复会把焦点从二维码弹窗里拉回
     // 左菜单；弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
+    // Jewel 第 8 轮 P2-8：全局弹窗开着时让位——登录框关闭后更新卡片重现的那一刻，
+    // 卡片挂载抢主按钮焦点、tick 恢复抢左菜单焦点，两路无确定胜负；卡片/登录框
+    // 是顶层弹窗，焦点归它，设置页 tick 这一轮跳过。卡片随后关闭时 tick 会再 +1，
+    // 那时全局弹窗已关、恢复正常跑，不丢焦点。
+    // 注：当前代码里登录关闭与卡片重现发生在同一帧（showLoginModal 与派生的
+    // showUpdateCard 同一次重组翻转），tick 本来就不会 +1，卡片已是确定胜者；
+    // 这道门控是给帧拆分（两路 StateFlow 分开发射）与“tick 已触发、effect
+    // 执行前又弹出全局弹窗”的窗口兜底，胜负从此有确定答案：全局弹窗赢。
+    // 两道门控取合取：全局弹窗与二维码弹窗任一开着都不抢焦。
     LaunchedEffect(focusRestoreTick) {
-        if (shouldRestoreSettingsFocusOnTick(focusRestoreTick, showQrModal)) {
+        if (shouldRestoreSettingsFocusOnTick(focusRestoreTick, globalModalOpen, showQrModal)) {
             menuRequesters[menuIndex].requestFocus()
         }
     }
@@ -529,6 +540,22 @@ private fun SettingsInputRow(
 internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int): Boolean =
     cursorBeforeMove != 0
 
+/**
+ * NavHost 级弹窗关闭的 tick 是否应把焦点拉回左菜单（可单测）——
+ * 两道门控取合取，任一弹窗开着都不抢：
+ * C12-P2-5：二维码弹窗开着时不抢——焦点在弹窗内，拉回菜单后弹窗遥控不可达；
+ * 弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
+ * Jewel 第 8 轮 P2-8：全局弹窗（登录框/更新卡片）开着时让位，不与更新卡片
+ * 挂载抢焦争胜负；胜负确定：全局弹窗赢。弹窗关闭后 tick 会再 +1，那时再正常恢复。
+ * （两边原先是同名两参谓词：C12 版第二参是 showQrModal，P2-8 版第二参是
+ * globalModalOpen；rebase 时合为三参，否则同签名重复声明无法编译。）
+ */
+internal fun shouldRestoreSettingsFocusOnTick(
+    focusRestoreTick: Int,
+    globalModalOpen: Boolean,
+    showQrModal: Boolean,
+): Boolean = focusRestoreTick > 0 && !globalModalOpen && !showQrModal
+
 /** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画 + 片头时长。 */
 @Composable
 private fun PlaybackSettings(
@@ -856,14 +883,6 @@ internal fun settingsBackAction(showUpdateCard: Boolean, showQrModal: Boolean): 
         showQrModal -> SettingsBackAction.CloseQrModal
         else -> SettingsBackAction.ExitSettings
     }
-
-/**
- * NavHost 级弹窗关闭的 tick 是否应把焦点拉回左菜单（可单测，C12-P2-5）：
- * 二维码弹窗开着时不抢——焦点在弹窗内，拉回菜单后弹窗遥控不可达；
- * 弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
- */
-internal fun shouldRestoreSettingsFocusOnTick(focusRestoreTick: Int, showQrModal: Boolean): Boolean =
-    focusRestoreTick > 0 && !showQrModal
 
 /**
  * 二维码弹窗的兜底 BackHandler 是否启用（可单测，C12-P2-2）：弹窗开着且
