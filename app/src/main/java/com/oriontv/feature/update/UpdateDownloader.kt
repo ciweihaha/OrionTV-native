@@ -9,7 +9,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.invokeOnCancellation
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -169,11 +168,15 @@ class UpdateDownloader @Inject constructor(
                         // executeCancellable 的取消挂钩只在 execute() 调用期间
                         // 有效，响应头回来后挂钩即摘掉；拷贝循环只在每 64KB 块
                         // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
-                        // 最坏要等 60 秒读超时。循环期间挂一个取消挂钩关响应体，
-                        // 中断 socket 读；关流让阻塞的 read() 抛错时，若已取消
-                        // 即按取消收尾（不进重试），否则原样抛错走重试。
-                        val cancelHook = currentCoroutineContext()[Job]?.invokeOnCancellation {
-                            runCatching { body.close() }
+                        // 最坏要等 60 秒读超时。循环期间挂一个完成挂钩：取消时
+                        // （cause 是 CancellationException）关响应体，中断
+                        // socket 读；正常完成时 cause 为 null，不动作。关流让
+                        // 阻塞的 read() 抛错时，若已取消即按取消收尾（不进重试），
+                        // 否则原样抛错走重试。
+                        val cancelHook = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+                            if (cause is CancellationException) {
+                                runCatching { body.close() }
+                            }
                         }
                         try {
                             // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
