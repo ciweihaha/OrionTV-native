@@ -60,9 +60,7 @@ fun VideoCard(
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused?.invoke()
-            }
-            .orionFocus(focused)
-            .width(200.dp),
+            },
     ) {
         Box(
             modifier = Modifier
