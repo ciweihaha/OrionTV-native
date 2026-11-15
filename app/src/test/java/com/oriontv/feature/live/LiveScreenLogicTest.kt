@@ -92,6 +92,63 @@ class LiveScreenLogicTest {
     }
 
     @Test
+    fun `live focus containment lets group row move left inside panel`() {
+        // 第 7 轮 P1-2：面板分组行是横向 LazyRow，左键是行内移动——焦点在分组行
+        // 非首 chip 上时左键放行（向右越过目标分组后能回退），只有焦点不在分组行
+        // 上（频道列表/底部，左键无行内移动），或在首个 chip 上（再左移会出面板）
+        // 时才消费；EPG 弹窗打开时左右仍全拦（弹窗左/右是切台）。
+        assertFalse(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = false, key = Key.DirectionLeft,
+                groupRowFocused = true, groupFirstChipFocused = false,
+            ),
+        )
+        assertTrue(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = false, key = Key.DirectionLeft,
+                groupRowFocused = true, groupFirstChipFocused = true,
+            ),
+        )
+        assertTrue(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = false, key = Key.DirectionLeft,
+                groupRowFocused = false, groupFirstChipFocused = false,
+            ),
+        )
+        // 分组行内右键从不拦（横向移动）；EPG 打开时分组行状态不影响 containment
+        assertFalse(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = false, key = Key.DirectionRight,
+                groupRowFocused = true, groupFirstChipFocused = false,
+            ),
+        )
+        assertTrue(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = true, key = Key.DirectionLeft,
+                groupRowFocused = true, groupFirstChipFocused = false,
+            ),
+        )
+        assertTrue(
+            shouldContainLiveFocusKey(
+                panelOpen = true, epgDialogOpen = true, key = Key.DirectionRight,
+                groupRowFocused = true, groupFirstChipFocused = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `epg trap initial index is unknown while programmes are late`() {
+        // 第 7 轮 P2-10：节目单未到时初始值 -1（未知，陷阱不拦截）——旧实现按
+        // 当时的空节目单取 0，焦点还没入弹窗时按上会被误吞；节目单已到时取
+        // 将要获焦的行（正在播的节目，无则首行）。
+        assertEquals(-1, resolveEpgInitialFocusedIndex(programmesEmpty = true, currentIndex = 0))
+        assertEquals(-1, resolveEpgInitialFocusedIndex(programmesEmpty = true, currentIndex = 5))
+        assertEquals(5, resolveEpgInitialFocusedIndex(programmesEmpty = false, currentIndex = 5))
+        assertEquals(0, resolveEpgInitialFocusedIndex(programmesEmpty = false, currentIndex = -1))
+        assertEquals(0, resolveEpgInitialFocusedIndex(programmesEmpty = false, currentIndex = 0))
+    }
+
+    @Test
     fun `panel favorite star matches any line not just first`() {
         // A8-P2-1：M3U 轮换首线路后收藏的台按 urls[0] 匹配不到、星标消失；
         // 面板行 ★ 应按全部线路匹配（控制器侧第 6 轮已修，面板行漏了）

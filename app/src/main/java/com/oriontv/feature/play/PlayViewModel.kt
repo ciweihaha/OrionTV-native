@@ -385,6 +385,18 @@ class PlayViewModel @Inject constructor(
         val episodeChanged = _uiState.value.current == null ||
             episodeIndex != _uiState.value.episodeIndex
         nextEpisodeDismissedForIndex = -1
+        // 第 7 轮 P2-3：同集换源/自动换源/重试时，新起点仍在片头窗口内也重 arm
+        // 自动跳与胶囊——否则开播早期（仍在片头窗口内）换源后，新源上自动跳
+        // 不触发、胶囊不重现，用户只能手动快进；起点已过片头时不重 arm，
+        // “每集一次”不被换源重置。片长守卫在轮询里按新源片长重算
+        //（maybeAutoSkipIntro 的 shouldAutoSkip，见 watch 项 (b)）。
+        // 注意：只重 arm 自动跳与胶囊；nextEpisodeDismissedForIndex 由上面按
+        // A9-P2-1 每次开播都清（同集重开是新的一次播出，“取消”不带到这一轮），
+        // 换源后立即重弹另有 nextEpisodeShownForIndex 拦着。
+        val resolvedIntroEndMs = IntroSkip.resolveIntroEndMs(
+            settings?.introEndTime,
+            cachedIntroSkipSeconds,
+        )
         if (episodeChanged) {
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
@@ -392,6 +404,9 @@ class PlayViewModel @Inject constructor(
             // A7-P1-1：换集后自动换源次数与失败源集合也要重置——之前只清预告
             // 状态，上一集换源 2 次后下一集首次播错直接报错。
             _uiState.update { it.copy(autoSwitchAttempts = 0, failedSources = emptySet()) }
+        } else if (shouldRearmIntroSkipOnSameEpisode(startPosition, resolvedIntroEndMs)) {
+            introSkippedThisEpisode = false
+            skipIntroCapsule.resetForEpisode()
         }
         userPaused = false
         lastSavedPositionMs = -1L
@@ -420,10 +435,8 @@ class PlayViewModel @Inject constructor(
                 breakpointMs = startPosition,
                 playbackRate = rate,
                 // 手动标记优先，没标过用设置里的默认片头时长兜底（0=不跳）。
-                introEndMs = IntroSkip.resolveIntroEndMs(
-                    settings?.introEndTime,
-                    cachedIntroSkipSeconds,
-                ),
+                // 第 7 轮 P2-3：复用上面算好的 resolvedIntroEndMs，不重复算。
+                introEndMs = resolvedIntroEndMs,
                 // 片尾标记：绝对位置，播到该处提前弹下一集预告。
                 markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 },
                 outroStartMs = settings?.outroStartTime?.takeIf { it > 0 },
@@ -592,15 +605,16 @@ class PlayViewModel @Inject constructor(
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
                 // 标过片尾的，播到片尾标记处就提前出预告。
                 // 用户点过“取消”的本集不再重弹（P1-1）。
-                if (duration > 0 && nextEpisodeShownForIndex != state.episodeIndex &&
-                    shouldShowNextEpisode(
-                        cachedNextEpisodeOverlayEnabled,
+                if (shouldShowNextEpisodeEarly(
+                        nextEpisodeShownForIndex,
                         state.episodeIndex,
+                        duration,
+                        position,
+                        state.outroStartMs,
+                        cachedNextEpisodeOverlayEnabled,
                         state.current?.episodes?.size ?: 0,
                         nextEpisodeDismissedForIndex,
-                    ) &&
-                    (duration - position in 1..10_000 ||
-                        IntroSkip.isAtOutro(position, duration, state.outroStartMs))
+                    )
                 ) {
                     nextEpisodeShownForIndex = state.episodeIndex
                     if (cachedNextEpisodeOverlayEnabled) {
@@ -664,6 +678,10 @@ class PlayViewModel @Inject constructor(
             // 本集再次播完时预告卡还能重弹、自动切下一集。
             // 注意：重播判断直接读 playerManager.isEnded（实态），不读
             // uiState.isEnded——后者是轮询刷新的，暂停竞态下可能 stale。
+            // 第 7 轮 P2-2：重播也要重置 nextEpisodeShownForIndex（与 retry()
+            // 一致）——否则轮询门控以为“本集已出过”，重播后片尾前 10 秒预告
+            // 不再提前出现，只有播完时 onPlaybackEnded 才会再弹卡。
+            nextEpisodeShownForIndex = -1
             _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }
             seekTo(0L)
             playerManager.play()
@@ -681,9 +699,24 @@ class PlayViewModel @Inject constructor(
     }
 
     fun seekTo(positionMs: Long) {
-        val clamped = clampSeekTarget(positionMs, playerManager.durationMs)
+        val duration = playerManager.durationMs
+        val clamped = clampSeekTarget(positionMs, duration)
         playerManager.seekTo(clamped)
-        _uiState.update { it.copy(positionMs = playerManager.currentPositionMs) }
+        // 第 7 轮 P2-1：seek 后按新位置重算预告卡——落点离开片尾窗口（剩 10 秒内
+        // 或已标记片尾处）时清掉，否则预告卡钉屏、“3 秒后自动播放”被冻结误导；
+        // 落点仍在片尾窗口内时保留（轮询门控的 nextEpisodeShownForIndex 已置位，
+        // 清掉也不会重弹）。片长未知时无法重算，不动。
+        val clearNextEpisode = shouldClearNextEpisodeOnSeek(
+            clamped,
+            duration,
+            _uiState.value.outroStartMs,
+        )
+        _uiState.update {
+            it.copy(
+                positionMs = playerManager.currentPositionMs,
+                showNextEpisode = if (clearNextEpisode) false else it.showNextEpisode,
+            )
+        }
     }
 
     fun seekBy(deltaMs: Long) {
@@ -1034,6 +1067,54 @@ class PlayViewModel @Inject constructor(
             backgroundPlaybackEnabled: Boolean,
             playbackStarted: Boolean,
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+        /**
+         * 轮询里片尾前 10 秒预告是否应提前出现（可单测，第 7 轮 P2-2）：
+         * 本集还没出过（nextEpisodeShownForIndex != episodeIndex）、开关开、
+         * 有下一集、没被取消过，且当前位置在片尾窗口内（剩 10 秒或已标记片尾处）。
+         * OK 重播把标记重置为 -1（与 retry() 一致），重播后片尾前 10 秒才能
+         * 再提前出卡；旧重播分支漏了这一重置，重播后只有播完时 onPlaybackEnded
+         * 才会再弹卡。谓词本身与轮询原条件逐项等价，只是抽出来可单测。
+         */
+        internal fun shouldShowNextEpisodeEarly(
+            nextEpisodeShownForIndex: Int,
+            episodeIndex: Int,
+            durationMs: Long,
+            positionMs: Long,
+            outroStartMs: Long?,
+            overlayEnabled: Boolean,
+            episodeCount: Int,
+            dismissedForIndex: Int,
+        ): Boolean =
+            durationMs > 0 && nextEpisodeShownForIndex != episodeIndex &&
+                shouldShowNextEpisode(overlayEnabled, episodeIndex, episodeCount, dismissedForIndex) &&
+                (durationMs - positionMs in 1..END_THRESHOLD_MS ||
+                    IntroSkip.isAtOutro(positionMs, durationMs, outroStartMs))
+
+        /**
+         * seek 后下一集预告卡是否应清掉（可单测，第 7 轮 P2-1）：按新位置重算——
+         * 落点仍在片尾窗口（剩 10 秒内或已标记片尾处）时保留，否则清掉；
+         * 片长未知时无法重算，不动（轮询要求 duration > 0 才出卡，卡出现时片长已知）。
+         */
+        internal fun shouldClearNextEpisodeOnSeek(
+            positionMs: Long,
+            durationMs: Long,
+            outroStartMs: Long?,
+        ): Boolean {
+            if (durationMs <= 0) return false
+            return !(durationMs - positionMs in 1..END_THRESHOLD_MS ||
+                IntroSkip.isAtOutro(positionMs, durationMs, outroStartMs))
+        }
+
+        /**
+         * 同集换源/自动换源/重试时是否应重 arm 自动跳片头与胶囊（可单测，
+         * 第 7 轮 P2-3）：新起点仍在片头窗口内时重 arm——开播早期换源后新源上
+         * 自动跳与胶囊才重现；起点已过片头（或没片头可跳）时不重 arm，
+         * “每集一次”不被换源重置。换集时走另一分支（无条件重置），不在此判定。
+         */
+        internal fun shouldRearmIntroSkipOnSameEpisode(
+            startPositionMs: Long,
+            introEndMs: Long,
+        ): Boolean = introEndMs > 0 && startPositionMs < introEndMs
 
         /**
          * 轮询是否应推进（可单测，P2-9）：在前台、或后台播放开着时都推进；

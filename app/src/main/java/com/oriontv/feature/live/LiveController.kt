@@ -223,11 +223,16 @@ class LiveController(
         // 本轮内再失败，之前记的短暂成功作废：不清零，等下一次稳定播出（P1-6）。
         lastSuccessAtMs = null
         failCount++
-        if (failCount > MAX_AUTO_FAIL) {
-            return LiveErrorAction.GiveUp("连续切换失败，请按上下键手动换台")
-        }
+        // 第 7 轮 P2-9：面板判断提到 GiveUp 之前——旧顺序先判 failCount > 5，
+        // 面板打开时第 6 次失败会绕过 NotifyOnly 置 playbackFailed，失败页
+        // 叠在面板之下还抢焦点（与 C8-P2-3 错误抽屉门控语义一致：面板打开时
+        // 失败只通知、不弹失败页）。计数照常累加，关面板后的下一次失败仍按
+        // 上限停手。
         if (panelOpen) {
             return LiveErrorAction.NotifyOnly("信号异常，请重新选择频道")
+        }
+        if (failCount > MAX_AUTO_FAIL) {
+            return LiveErrorAction.GiveUp("连续切换失败，请按上下键手动换台")
         }
         val channel = currentChannel
         val urlCount = channel?.urls?.size ?: 0

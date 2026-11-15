@@ -143,6 +143,24 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `playback error while panel open never gives up even on sixth failure`() {
+        // 第 7 轮 P2-9：面板判断在 GiveUp 之前——面板打开时第 6 次失败也不弹
+        // 失败页（旧顺序先判 failCount > 5，失败页叠在面板之下还抢焦点）；
+        // 计数照常累加，关面板后的下一次失败仍按上限停手。
+        val c = LiveController(threeChannels)
+        repeat(6) { i ->
+            val action = c.onPlaybackError(panelOpen = true)
+            assertTrue("第 ${i + 1} 次失败仍应只通知", action is LiveErrorAction.NotifyOnly)
+        }
+        assertEquals(6, c.failCount)
+        assertEquals(0, c.currentIndex)
+        // 关面板后下一次失败：计数已超上限，停手
+        val afterClose = c.onPlaybackError(panelOpen = false)
+        assertTrue(afterClose is LiveErrorAction.GiveUp)
+        assertEquals(7, c.failCount)
+    }
+
+    @Test
     fun `playback success only resets after ten seconds stable`() {
         // P1-6：短暂播出不再立即清零；连续稳定播出满 10 秒才清零
         val c = LiveController(threeChannels)

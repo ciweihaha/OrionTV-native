@@ -1,10 +1,58 @@
 package com.oriontv.feature.live
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveViewModelLogicTest {
+
+    private fun channel(name: String, url: String) =
+        M3uParser.Channel(id = url, name = name, urls = listOf(url))
+
+    @Test
+    fun `pending playback tasks do not fire after page paused`() {
+        // 第 7 轮 P1-1：离页后就绪超时/数字键提交/面板定时器到点也不应再播放——
+        // 取消是协作式的，已越过 delay 的任务仍会恢复执行，凭 pagePaused 二次核对。
+        assertTrue(LiveViewModel.shouldFirePendingPlaybackTask(pagePaused = false))
+        assertFalse(LiveViewModel.shouldFirePendingPlaybackTask(pagePaused = true))
+    }
+
+    @Test
+    fun `epg dialog channel is rebuilt from refreshed list`() {
+        // 第 7 轮 P2-12：刷新重建频道对象后，弹窗按新表重建——旧对象继续持着，
+        // indexOfChannel 按身份/（url, name）都匹配不到，标题无台号、切台失效。
+        val old = channel("CCTV-1", "http://a/1.m3u8")
+        val freshSame = channel("CCTV-1", "http://a/1.m3u8")
+        val freshOther = channel("CCTV-5", "http://a/5.m3u8")
+        val current = channel("广东卫视", "http://a/gd.m3u8")
+        val fresh = listOf(freshSame, freshOther, current)
+        // (url, name) 命中 → 新对象（不是旧对象）
+        val rebuilt = LiveViewModel.resolveRefreshedEpgChannel(fresh, old, current)
+        assertTrue(rebuilt === freshSame)
+        // URL 轮换、名字还在 → 按名找回
+        val renamed = LiveViewModel.resolveRefreshedEpgChannel(
+            fresh, channel("CCTV-1", "http://a/new.m3u8"), current,
+        )
+        assertTrue(renamed === freshSame)
+        // 改名、URL 还在 → 按 URL 找回
+        val reUrl = LiveViewModel.resolveRefreshedEpgChannel(
+            fresh, channel("CCTV-1 改版", "http://a/1.m3u8"), current,
+        )
+        assertTrue(reUrl === freshSame)
+        // 新表里完全没了 → 回落到当前播放台，不持旧对象
+        val gone = LiveViewModel.resolveRefreshedEpgChannel(
+            fresh, channel("已下线", "http://a/gone.m3u8"), current,
+        )
+        assertTrue(gone === current)
+        // 新表里没了、当前台也没有 → 返回 null（调用方关闭弹窗）
+        assertEquals(
+            null,
+            LiveViewModel.resolveRefreshedEpgChannel(
+                fresh, channel("已下线", "http://a/gone.m3u8"), null,
+            ),
+        )
+    }
 
     @Test
     fun `panel timer pauses while epg dialog open`() {

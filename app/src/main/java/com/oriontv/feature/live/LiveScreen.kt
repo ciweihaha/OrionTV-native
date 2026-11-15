@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -103,10 +102,22 @@ internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgD
  * 跑到导航轨，返回键绕过“先关面板/弹窗”层级直接退出直播页，EPG 左键切台
  * 也失效。只拦 KeyDown（焦点移动），不拦 KeyUp：KeyUp 仍到根的 onKeyUp 走
  * 切台/关面板逻辑。EPG 打开时面板必然也开着，左键两条都命中，无冲突。
+ * 第 7 轮 P1-2：面板左键改边缘感知（与播放抽屉 C8-P1-2 同款）——分组行是
+ * 横向 LazyRow，左键是行内移动，blanket 消费会把分组 chip 的左移拦死；
+ * 只有焦点不在分组行上（频道列表/底部按钮，左键无行内移动），或在分组行
+ * 首个 chip 上（再左移会出面板）时才消费，行内左移放行。
+ * @param groupRowFocused 焦点是否在面板分组行上（分组 chip 的 onFocusChanged 上报）
+ * @param groupFirstChipFocused 焦点是否在分组行首个 chip 上（行内左移的左缘）
  */
-internal fun shouldContainLiveFocusKey(panelOpen: Boolean, epgDialogOpen: Boolean, key: Key): Boolean =
+internal fun shouldContainLiveFocusKey(
+    panelOpen: Boolean,
+    epgDialogOpen: Boolean,
+    key: Key,
+    groupRowFocused: Boolean = false,
+    groupFirstChipFocused: Boolean = false,
+): Boolean =
     (epgDialogOpen && (key == Key.DirectionLeft || key == Key.DirectionRight)) ||
-        (panelOpen && key == Key.DirectionLeft)
+        (panelOpen && key == Key.DirectionLeft && (!groupRowFocused || groupFirstChipFocused))
 
 /**
  * EPG 弹窗焦点陷阱是否应拦截该方向键（可单测，P2-6）：
@@ -123,6 +134,15 @@ internal fun shouldTrapEpgFocusKey(key: Key, focusedIndex: Int, programmeCount: 
         else -> false
     }
 }
+
+/**
+ * EPG 弹窗焦点陷阱的初始值（可单测，第 7 轮 P2-10）：节目单未到时为 -1（未知，
+ * 陷阱不拦截）——旧实现按当时的空节目单取 0，焦点还没入弹窗、仍在背后频道行
+ * 时按上会被陷阱按“首行”误吞；节目单已到时取将要获焦的行（正在播的节目，
+ * 无则首行）。节目单晚到时落焦 effect 会重跑并把 focusedIndex 设为实际行。
+ */
+internal fun resolveEpgInitialFocusedIndex(programmesEmpty: Boolean, currentIndex: Int): Int =
+    if (programmesEmpty) -1 else currentIndex.coerceAtLeast(0)
 
 /** 直播长按换台节流（P2-7）：按住上/下时每 400ms 最多换一台，免得重复事件
  * 以遥控器原生速率（通常每秒十余次）连续触发 playCurrent、反复重启播放器；
@@ -168,6 +188,11 @@ fun LiveScreen(
     // P2-7：长按上/下换台的状态——某次重复事件换过台时，松手那次 KeyUp 不再多换一台。
     var liveRepeatConsumed by remember { mutableStateOf(false) }
     var lastRepeatChangeMs by remember { mutableLongStateOf(0L) }
+    // 第 7 轮 P1-2：面板分组行焦点状态（分组 chip 的 onFocusChanged 上报，
+    // 见 ChannelPanel）——containment 只在焦点不在分组行上、或在首个 chip
+    // 上时消费左键，分组行内左移放行；默认“不在分组行上”，与旧 blanket 行为一致。
+    var panelGroupRowFocused by remember { mutableStateOf(false) }
+    var panelGroupFirstChipFocused by remember { mutableStateOf(false) }
 
     // C5-P1-2：焦点在导航轨上时按返回，根 Box 的 onKeyUp 收不到（焦点不在
     // 本页组合内），旧实现直接走 Activity 默认返回、白白退出直播页。
@@ -236,6 +261,11 @@ fun LiveScreen(
         uiState.channels.isEmpty(),
         focusRestoreTick,
     ) {
+        // 第 7 轮 P1-2：面板关闭时分组行焦点态复位，不带到下次打开。
+        if (!uiState.panelOpen) {
+            panelGroupRowFocused = false
+            panelGroupFirstChipFocused = false
+        }
         if (uiState.channels.isNotEmpty() && !uiState.panelOpen &&
             uiState.epgDialogChannel == null && !uiState.exitConfirmOpen
         ) {
@@ -270,11 +300,15 @@ fun LiveScreen(
                 // KeyUp 不拦，仍到下面 onKeyUp 走 EPG 切台/关面板逻辑。
                 // 面板打开且焦点已在导航轨上时按返回直接退出的问题也由此根治：
                 // 焦点进不了导航轨，返回键一定先经过根的层级处理。
+                // 第 7 轮 P1-2：面板左键只在边缘时消费（分组行内左移放行，
+                // 见 shouldContainLiveFocusKey）。
                 if (event.type == KeyEventType.KeyDown &&
                     shouldContainLiveFocusKey(
                         uiState.panelOpen,
                         uiState.epgDialogChannel != null,
                         event.key,
+                        panelGroupRowFocused,
+                        panelGroupFirstChipFocused,
                     )
                 ) {
                     return@onPreviewKeyEvent true
@@ -303,6 +337,19 @@ fun LiveScreen(
                 }
             }
             .onKeyUp { event ->
+                // 第 7 轮 P2-11 + A9-P2-4：数字键在任何状态下都走换台——旧实现只在面板/
+                // 弹窗/退出确认全关时处理，弹窗打开时按数字键静默丢弃，用户需
+                // 先关弹窗才能用数字键换台。退出确认打开时先取消确认（按了台号
+                // 就是要继续看），再换台；面板/弹窗打开时先关面板（A9-P2-4 的
+                // “先关弹窗+面板”，closePanel 同时清 epgDialogChannel），
+                // 数字键缓冲/无效号仍有 Toast 反馈，不再无声丢弃。
+                val digit = digitOf(event)
+                if (digit != null) {
+                    if (uiState.exitConfirmOpen) viewModel.dismissExitConfirm()
+                    if (uiState.panelOpen || uiState.epgDialogChannel != null) viewModel.closePanel()
+                    viewModel.appendDigit(digit)
+                    return@onKeyUp true
+                }
                 when {
                     // 退出确认打开时：返回取消确认，其他键交给弹窗按钮。
                     uiState.exitConfirmOpen -> {
@@ -314,7 +361,7 @@ fun LiveScreen(
                         }
                     }
                     // EPG 弹窗打开时：左右切台节目单，OK/返回关闭；上下留给列表焦点。
-                    // A9-P2-4：数字键也换台（先关弹窗+面板，再走 appendDigit）。
+                    // 数字键已在上面统一处理（第 7 轮 P2-11 + A9-P2-4）。
                     uiState.epgDialogChannel != null -> {
                         when (event.key) {
                             Key.DirectionLeft -> {
@@ -329,20 +376,11 @@ fun LiveScreen(
                                 viewModel.closeEpgDialog()
                                 true
                             }
-                            else -> {
-                                val digit = digitOf(event)
-                                if (digit != null) {
-                                    viewModel.closePanel()
-                                    viewModel.appendDigit(digit)
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
+                            else -> false
                         }
                     }
                     // 面板打开时：返回关面板，菜单键打开焦点频道的节目单；其余放行给焦点移动。
-                    // A9-P2-4：数字键也换台（先关面板，再走 appendDigit）。
+                    // 数字键已在上面统一处理（第 7 轮 P2-11 + A9-P2-4）。
                     uiState.panelOpen -> {
                         when (event.key) {
                             Key.Back -> {
@@ -350,12 +388,7 @@ fun LiveScreen(
                                 true
                             }
                             else -> {
-                                val digit = digitOf(event)
-                                if (digit != null) {
-                                    viewModel.closePanel()
-                                    viewModel.appendDigit(digit)
-                                    true
-                                } else if (isMenuKey(event)) {
+                                if (isMenuKey(event)) {
                                     // A4-P2-7：焦点在分组 chip 上时行没消费按键，走到这里；
                                     // focusedChannelIndex 是旧值（上次聚焦的行），用它开 EPG
                                     // 会开到错台，改开当前播放台的节目单。
@@ -368,14 +401,10 @@ fun LiveScreen(
                             }
                         }
                     }
-                    // 面板关闭时：数字键换台、菜单收藏、OK 开面板/重试、上/下换台、左/右切线路。
+                    // 面板关闭时：菜单收藏、OK 开面板/重试、上/下换台、左/右切线路。
+                    // 数字键已在上面统一处理（第 7 轮 P2-11）。
                     else -> {
-                        val digit = digitOf(event)
                         when {
-                            digit != null -> {
-                                viewModel.appendDigit(digit)
-                                true
-                            }
                             isMenuKey(event) -> {
                                 viewModel.toggleFavoriteCurrent()
                                 true
@@ -541,6 +570,12 @@ fun LiveScreen(
                 onToggleFavorite = { viewModel.toggleFavorite(it) },
                 onOpenEpg = { viewModel.openEpgDialog(it) },
                 onRefreshChannels = { viewModel.refreshChannels() },
+                // 第 7 轮 P1-2：分组行焦点态上报，供根部 containment 判断左键
+                // 是行内移动（放行）还是出面板（消费）。
+                onGroupFocusChange = { focused, firstChip ->
+                    panelGroupRowFocused = focused
+                    panelGroupFirstChipFocused = firstChip
+                },
             )
         }
 
@@ -740,6 +775,9 @@ private fun ChannelPanel(
     onOpenEpg: (M3uParser.Channel) -> Unit,
     /** A4-P2-3：面板里的“刷新直播源”入口（强制拉网）。 */
     onRefreshChannels: () -> Unit,
+    /** 第 7 轮 P1-2：分组行焦点态上报（focused=焦点在分组行上，firstChip=在首个 chip 上），
+     * 供根部 containment 判断左键是行内移动还是出面板。 */
+    onGroupFocusChange: (Boolean, Boolean) -> Unit = { _, _ -> },
 ) {
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
@@ -813,7 +851,13 @@ private fun ChannelPanel(
                     selected = uiState.selectedGroup == group,
                     onClick = { onSelectGroup(group) },
                     // C8-P2-2：分组为空时的焦点落点挂首个 chip（分组恒存在）。
-                    modifier = if (index == 0) Modifier.preferredFocus(firstChipRequester) else Modifier,
+                    // 第 7 轮 P1-2：分组行左缘是首个 chip——焦点在行内非首 chip
+                    // 上时左键是行内移动，containment 须放行（见
+                    // shouldContainLiveFocusKey）。
+                    modifier = (if (index == 0) Modifier.preferredFocus(firstChipRequester) else Modifier)
+                        .onFocusChanged {
+                            if (it.isFocused) onGroupFocusChange(true, index == 0)
+                        },
                 )
             }
         }
@@ -865,7 +909,12 @@ private fun ChannelPanel(
                         },
                         epgDialogOpen = uiState.epgDialogChannel != null,
                         onClick = { onSelectChannel(globalIndex) },
-                        onFocus = { onFocusChannel(globalIndex) },
+                        // 第 7 轮 P1-2：焦点进频道行即离开分组行，containment
+                        // 回到“左键无行内移动、应消费”的默认态。
+                        onFocus = {
+                            onGroupFocusChange(false, false)
+                            onFocusChannel(globalIndex)
+                        },
                         onLongPress = { onToggleFavorite(channel) },
                         onMenu = { onOpenEpg(channel) },
                     )
@@ -1059,8 +1108,11 @@ private fun EpgDialog(
     // 注意：落焦用 requestFocusWithRetry（见下），不是固定 delay(100)；
     // 焦点入弹窗前仍在背后频道行上，该窗口内按上下最多只影响背后行一次，
     // 陷阱在焦点入弹窗后生效（窗口期需真机确认）。
+    // 第 7 轮 P2-10：节目单未到时初始值改为 -1（未知，陷阱不拦截）——旧实现
+    // 按当时的空节目单取 0，焦点还没入弹窗时按上会被陷阱按“首行”误吞；
+    // 节目单晚到时下面 effect 重跑落焦，并把 focusedIndex 设为实际行。
     var focusedIndex by remember(channel.url) {
-        mutableIntStateOf(if (programmes.isEmpty()) 0 else currentIndex.coerceAtLeast(0))
+        mutableIntStateOf(resolveEpgInitialFocusedIndex(programmes.isEmpty(), currentIndex))
     }
 
     // 打开 / 切台时滚到正在播的节目并落焦点；无正在播节目时落第一行（plan §3.3 第 2 条）。
@@ -1073,7 +1125,12 @@ private fun EpgDialog(
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)
-            if (!currentRequester.requestFocusWithRetry()) {
+            // 第 7 轮 P2-10：落焦成功即把陷阱位置设为实际行——节目单晚到时
+            // 初始值是 -1（不拦截），只靠行/按钮的 onFocus 回调纠正会在焦点
+            // 已落上、回调尚未跑的窗口里留空档；这里与回调写同一值，不冲突。
+            if (currentRequester.requestFocusWithRetry()) {
+                focusedIndex = idx
+            } else {
                 closeRequester.requestFocusWithRetry()
             }
         } else {

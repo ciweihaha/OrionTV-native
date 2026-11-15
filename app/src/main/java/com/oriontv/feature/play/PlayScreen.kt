@@ -183,6 +183,28 @@ internal fun drawerListFocusEdges(index: Int, count: Int): Pair<Boolean, Boolean
 }
 
 /**
+ * 播放页 OK 是否应触发播放/暂停（可单测，第 7 轮 P2-6）：抽屉打开、控制条
+ * 隐藏、有待定落点时 OK 另有去处（抽屉内按钮/唤出控制条/提交落点）；
+ * 错误页上 OK 也不触发——焦点因“重试”落焦失败回退到根部时，旧分支会在
+ * 错误页后 pokeControls + togglePlayPause。
+ */
+internal fun shouldTogglePlayPauseOnOk(
+    drawerOpen: Boolean,
+    hasPendingPreview: Boolean,
+    controlsVisible: Boolean,
+    hasError: Boolean,
+): Boolean = !drawerOpen && !hasPendingPreview && controlsVisible && !hasError
+
+/**
+ * 选集分组行应滚到的下标（可单测，第 7 轮 P2-7）：只有多分组时才滚，
+ * 目标是选中分组；单分组/空表不滚（-1）。旧实现滚动 effect 的 key 是 Unit，
+ * 抽屉打开期间换源致总集数变化、selectedGroup 重算时滚动不重跑，选中分组
+ * 可能留在可视区外。
+ */
+internal fun resolveGroupScrollIndex(selectedGroup: Int, groupCount: Int): Int =
+    if (groupCount <= 1) -1 else selectedGroup.coerceIn(0, groupCount - 1)
+
+/**
  * 播放页（ui-design.md §5.3）：
  * 全屏视频（Media3 PlayerView）；OK/方向键唤出控制条，5 秒无操作自动隐藏；
  * 左右键移动落点预览（T6/T7：10 秒一步，OK 提交，2 秒无操作自动提交），
@@ -338,7 +360,10 @@ fun PlayScreen(
         } else if (hadError) {
             hadError = false
             errorPendingAfterDrawerClose = false
-            if (!controlsFirstButtonRequester.requestFocus()) rootRequester.requestFocus()
+            // 第 7 轮 P2-8：错误消失后焦点回控制条首选按钮也改 requestFocusWithRetry——
+            // 与错误出现分支（已改重试版）不对称，单次请求在控制条尚未完成组合时
+            // 静默失败，焦点回根，用户需多按一次下键才能进按钮行。
+            if (!controlsFirstButtonRequester.requestFocusWithRetry()) rootRequester.requestFocus()
         }
     }
 
@@ -398,7 +423,10 @@ fun PlayScreen(
     // A6-P1-4 / 第 6 轮 P2-2：key 加 error——错误页出现后若定时器已在跑，
     // 旧协程会被取消，不会在 5 秒到点时把焦点从“重试”按钮抢回根；
     // 到点后也再复核 error==null（双保险）。
-    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error) {
+    // 第 7 轮 P2-5：key 补 previewTargetMs——守卫读它，key 却漏了它；落点在
+    // effect 已起跑后出现时守卫取的是旧值。目前无可达路径（每次 nudge 都先
+    // pokeControls 重启 effect，2 秒提交远小于 5 秒隐藏），属防御性缺口。
+    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error, previewTargetMs) {
         if (shouldAutoHideControls(
                 controlsVisible,
                 uiState.drawer != null,
@@ -685,9 +713,20 @@ fun PlayScreen(
                             // 控制条隐藏时 OK 只唤出，不暂停；错误页上不 poke（P2-2）。
                             if (uiState.error == null) pokeControls()
                             true
-                        } else {
+                        } else if (shouldTogglePlayPauseOnOk(
+                                drawerOpen = uiState.drawer != null,
+                                hasPendingPreview = previewTargetMs >= 0,
+                                controlsVisible = controlsVisible,
+                                hasError = uiState.error != null,
+                            )
+                        ) {
                             pokeControls()
                             viewModel.togglePlayPause()
+                            true
+                        } else {
+                            // 第 7 轮 P2-6：错误页上 OK 只消费、不播放/暂停——
+                            // 焦点因“重试”落焦失败回退到根部时，旧分支会在
+                            // 错误页后 pokeControls + togglePlayPause。
                             true
                         }
                     }
@@ -837,6 +876,8 @@ fun PlayScreen(
                         drawerLeftEdgeFocused = left
                         drawerBottomEdgeFocused = bottom
                     },
+                    // 第 7 轮 P2-4：初始落焦重试耗尽时回退到根，不留在遮罩后的控制条按钮上。
+                    onFocusFailed = { rootRequester.requestFocus() },
                 )
             }
             PlayDrawer.SOURCES -> PlayDrawerPanel(title = "换源") {
@@ -849,6 +890,7 @@ fun PlayScreen(
                         drawerLeftEdgeFocused = left
                         drawerBottomEdgeFocused = bottom
                     },
+                    onFocusFailed = { rootRequester.requestFocus() },
                 )
             }
             PlayDrawer.SPEED -> PlayDrawerPanel(title = "倍速") {
@@ -859,6 +901,7 @@ fun PlayScreen(
                         drawerLeftEdgeFocused = left
                         drawerBottomEdgeFocused = bottom
                     },
+                    onFocusFailed = { rootRequester.requestFocus() },
                 )
             }
             null -> Unit
@@ -903,6 +946,8 @@ private fun EpisodeDrawerContent(
     onSelect: (Int) -> Unit,
     /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
+    /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
+    onFocusFailed: () -> Unit = {},
 ) {
     val currentRequester = remember { FocusRequester() }
     val groups = DetailSearchLogic.episodeGroups(totalEpisodes)
@@ -910,14 +955,24 @@ private fun EpisodeDrawerContent(
         mutableStateOf((currentEpisode / 20).coerceIn(0, (groups.size - 1).coerceAtLeast(0)))
     }
     val (groupStart, groupEnd) = groups.getOrNull(selectedGroup) ?: (1 to totalEpisodes)
-    LaunchedEffect(Unit) { currentRequester.requestFocus() }
+    // 第 7 轮 P2-4：单次 requestFocus 改 requestFocusWithRetry——目标尚未组合
+    // 完成时单次请求静默失败（LazyVerticalGrid 只组合可见项，当前集在首屏外时
+    // 更易失败），焦点留在遮罩后的控制条按钮上，OK 会误触身后按钮；仍失败
+    // 回退到根（与错误页同款）。
+    LaunchedEffect(Unit) {
+        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    }
     // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
     // 却仍可获焦（焦点视觉上“消失”）；LazyRow 让超出的 chip 能滚到、能获焦。
     // 当前集在第 6 组及之后时，打开即滚到选中分组，不让它落在可视区外。
     val groupListState = rememberLazyListState()
-    LaunchedEffect(Unit) {
-        if (groups.size > 1) {
-            groupListState.scrollToItem(selectedGroup.coerceIn(0, groups.size - 1))
+    // 第 7 轮 P2-7：滚动 effect 的 key 由 Unit 改为分组/选中集号相关状态——
+    // 抽屉打开期间换源致总集数变化、selectedGroup 重算时旧 key 不重跑，
+    // 选中分组可能留在可视区外。
+    LaunchedEffect(selectedGroup, groups.size) {
+        val target = resolveGroupScrollIndex(selectedGroup, groups.size)
+        if (target >= 0) {
+            groupListState.scrollToItem(target)
         }
     }
     Column {
@@ -984,9 +1039,15 @@ private fun SourceDrawerContent(
     onSelect: (String) -> Unit,
     /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
+    /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
+    onFocusFailed: () -> Unit = {},
 ) {
     val currentRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { currentRequester.requestFocus() }
+    // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
+    // 仍失败回退到根。
+    LaunchedEffect(Unit) {
+        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         sources.forEachIndexed { index, (src, srcName) ->
             val failed = src in failedSources
@@ -1021,9 +1082,15 @@ private fun SpeedDrawerContent(
     onSelect: (Float) -> Unit,
     /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
+    /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
+    onFocusFailed: () -> Unit = {},
 ) {
     val currentRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { currentRequester.requestFocus() }
+    // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
+    // 仍失败回退到根。
+    LaunchedEffect(Unit) {
+        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
