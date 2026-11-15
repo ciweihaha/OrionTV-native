@@ -220,7 +220,12 @@ class EpgRepository @Inject constructor(
                     val data = fresh.value
                     if (data.programmesByChannel.isEmpty()) {
                         // D9-P2-8：合法空源，按成功处理（不落盘，旧缓存留着）。
-                        EpgLoadDecision(data, loadFailed = false)
+                        // 第 10 轮 D10-P2-1：返回数据时优先用仍新鲜的旧缓存——
+                        // 服务端偶尔吐一次 0 节目空文件时，旧节目单比“当次无节目单”
+                        // 强（P1-5 同款原则）；旧缓存本身也已过期时无可用的节目
+                        // 可回落，返回空表（与之前一致）。loadFailed 仍为 false。
+                        val fallback = cachedData?.takeIf { EpgParser.hasFutureProgramme(it, nowMs) }
+                        EpgLoadDecision(fallback ?: data, loadFailed = false)
                     } else if (shouldSaveFreshEpg(data, nowMs)) {
                         EpgLoadDecision(data, loadFailed = false)
                     } else {
