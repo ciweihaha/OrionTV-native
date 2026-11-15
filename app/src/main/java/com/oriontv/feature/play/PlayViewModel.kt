@@ -616,6 +616,11 @@ class PlayViewModel @Inject constructor(
         if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
+        // A25-P2-1：URL 门控——认领后、挂片前的窗口内播放器仍挂着别页媒体，
+        // 其播完/播错回调只凭归属门控恒为真；不是本集媒体的错误不记失败、
+        // 不换源、不取消在途开播（与 A23-P2-2/A24-P2-1 同款比对）。
+        // 就绪超时/轮询溢出兜底也走这里：挂片前它们读到的时长/位置属于旧媒体。
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, current.episodes.getOrNull(state.episodeIndex))) return
         // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落
         // 错误态——startEpisode 的 shouldStartPlayback 门控已拦住重播（无音频
         // 泄漏），但门控之前的账已算了（failedSources/autoSwitchAttempts 累加、
@@ -682,6 +687,12 @@ class PlayViewModel @Inject constructor(
     private fun onPlaybackEnded() {
         // A4-P2-9：同 handlePlaybackError，不是自己的播放不弹下一集预告。
         if (!playerManager.isCurrentOwner(playbackToken)) return
+        // A25-P2-1：URL 门控（放溢出判断之前——别页媒体的时长也不属于本集）：
+        // 认领后、挂片前的窗口内别页媒体播完不算本集播完，不存断点、
+        // 不弹下一集预告、不删断点。
+        val state = _uiState.value
+        val current = state.current ?: return
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, current.episodes.getOrNull(state.episodeIndex))) return
         // A7-P2-2：起点溢出不是“看完”——新源时长短于开播起点时 ExoPlayer 把
         // seek 钳到片尾、立刻 STATE_ENDED；按播错走一次自动换源（次数上限
         // 内），不断点、不弹下一集预告。
@@ -690,8 +701,6 @@ class PlayViewModel @Inject constructor(
             handlePlaybackError(null, resumeFromStart = true)
             return
         }
-        val state = _uiState.value
-        val current = state.current ?: return
         saveRecordNow()
         // A6-P1-2：看完一集删旧断点——saveRecordNow 只做到“临近片尾不新存”，
         // 之前轮询存下的旧断点（片尾前 10 秒外）还在，重开会从片尾前续播；
@@ -1235,6 +1244,10 @@ class PlayViewModel @Inject constructor(
         if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
+        // A25-P2-1：live 读数同款 URL 门控（onCleared 触发口随之闭合）——
+        // 认领后、挂片前的窗口内播放器仍挂着别页媒体，其位置/时长不能以
+        // 本集 key + 集号存盘（断点污染）。
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, current.episodes.getOrNull(state.episodeIndex))) return
         val position = playerManager.currentPositionMs
         val duration = playerManager.durationMs
         if (duration <= 0 || position <= 0) return
@@ -1555,6 +1568,17 @@ class PlayViewModel @Inject constructor(
             if (isEnded) 0L else positionMs
 
         /**
+         * A25-P2-1：播放器当前挂的媒体是否就是本集（可单测）——A23-P2-2/
+         * A24-P2-1 的 URL 比对抽成共用谓词：startEpisode 把
+         * episodes[episodeIndex] 原样喂给 playUrl，PlayerManager.currentUrl
+         * 即该串；播放器为空媒体时 currentUrl 为 null，算“不是本集”
+         * （无事件可达，调用方直接丢弃）。本集未定（episodeUrl == null）
+         * 时同样算“不是本集”。
+         */
+        internal fun isCurrentEpisodeMedia(playerUrl: String?, episodeUrl: String?): Boolean =
+            playerUrl != null && episodeUrl != null && playerUrl == episodeUrl
+
+        /**
          * A23-P2-2：本集实时位置（可单测）——播放器当前挂的媒体是本集时读
          * live 位置；否则（回页重开播/初载挂起窗口内，播放器仍挂着别页的
          * 媒体）读本页冻结的进度。比对依据：startEpisode 把
@@ -1566,7 +1590,7 @@ class PlayViewModel @Inject constructor(
             episodeUrl: String?,
             livePositionMs: Long,
             frozenPositionMs: Long,
-        ): Long = if (playerUrl != null && playerUrl == episodeUrl) livePositionMs else frozenPositionMs
+        ): Long = if (isCurrentEpisodeMedia(playerUrl, episodeUrl)) livePositionMs else frozenPositionMs
 
         /**
          * A24-P2-1：播完态归属门控（可单测）——playerManager.isEnded 只在播放器
@@ -1580,7 +1604,7 @@ class PlayViewModel @Inject constructor(
             episodeUrl: String?,
             playerEnded: Boolean,
             stateEnded: Boolean,
-        ): Boolean = (playerUrl != null && playerUrl == episodeUrl && playerEnded) || stateEnded
+        ): Boolean = (isCurrentEpisodeMedia(playerUrl, episodeUrl) && playerEnded) || stateEnded
 
         /**
          * A17-P2-1：回页时是否应重开当前集（可单测）——只补“被抢走”一种情形：

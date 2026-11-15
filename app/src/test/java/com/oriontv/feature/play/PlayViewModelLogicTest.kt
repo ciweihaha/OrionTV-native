@@ -209,6 +209,24 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `current episode media matches only this episode url`() {
+        // A25-P2-1：认领后、挂片前的窗口内播放器仍挂着别页媒体——播完/
+        // 播错回调与断点保存只凭归属门控恒为真；URL 比对是唯一能区分
+        // 新旧媒体的门控（A23-P2-2/A24-P2-1 同款，抽成共用谓词）。
+        val episodeUrl = "https://cdn.example.com/ep3.m3u8"
+        val otherUrl = "https://cdn.example.com/other.m3u8"
+        // 本集媒体：处理。
+        assertTrue(PlayViewModel.isCurrentEpisodeMedia(episodeUrl, episodeUrl))
+        // 别页媒体：丢弃。
+        assertFalse(PlayViewModel.isCurrentEpisodeMedia(otherUrl, episodeUrl))
+        // 播放器已停（无媒体）：无事件可达，丢弃。
+        assertFalse(PlayViewModel.isCurrentEpisodeMedia(null, episodeUrl))
+        // 本集未定（current == null）：无从比对，丢弃。
+        assertFalse(PlayViewModel.isCurrentEpisodeMedia(episodeUrl, null))
+        assertFalse(PlayViewModel.isCurrentEpisodeMedia(null, null))
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。
