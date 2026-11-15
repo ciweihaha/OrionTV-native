@@ -5,13 +5,12 @@ import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,6 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * APK 下载器（plan §5.1/§5.5，RN updateService.ts 对照）：
@@ -87,14 +88,14 @@ class UpdateDownloader @Inject constructor(
         destFile: File,
         onProgress: ((written: Long, total: Long) -> Unit)? = null,
     ): File {
-        // D8-P2-2：取消到达标志——监听协程在取消时置位（见下），外层凭它补抛
+        // D8-P2-2：取消到达标志——取消挂钩在取消时置位（见下），外层凭它补抛
         // CE。不用 Job/ensureActive() 判断：实测 withContext 会吞掉内部
         // 抛出的 CE，且外层 ensureActive() 在 Job 已取消时仍不抛（单测时序
         // 诊断证实：cancel() 后 Job.isCancelled 为 true、关体与读抛错均在
-        // 取消之后、无重试、join 快速返回，唯独 join 不抛 CE）；监听协程
+        // 取消之后、无重试、join 快速返回，唯独 join 不抛 CE）；取消挂钩
         // provably 在取消时触发（关体发生在取消后），故以它为准。
-        // copyDone 区分“取消时拷贝已正常完成”与“取消打断了拷贝”：正常完成
-        // 后的 watcher.cancel() 也会进 finally，不能误标为取消。
+        // copyDone 区分“取消时拷贝已正常完成”与“取消打断了拷贝”：拷贝正常
+        // 完成后再取消，挂钩仍可能在 dispose 前的窗口里跑到，不能误标为取消。
         val cancelledDuringCopy = AtomicBoolean(false)
         val copyDone = AtomicBoolean(false)
         val downloaded = coroutineScope {
@@ -184,34 +185,47 @@ class UpdateDownloader @Inject constructor(
                                 // executeCancellable 的取消挂钩只在 execute() 调用期间
                                 // 有效，响应头回来后挂钩即摘掉；拷贝循环只在每 64KB 块
                                 // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
-                                // 最坏要等 60 秒读超时。取消时由监听协程关响应体，中断
+                                // 最坏要等 60 秒读超时。取消时由取消挂钩关响应体，中断
                                 // socket 读；读抛错直接由外层 attempt 的 catch 分流。
-                                // 注意不用 suspendCancellableCoroutine：隔离诊断已证实
+                                // 注意：下载体本身不用 withContext 包起来——隔离诊断已证实
                                 // 吞没点是 withContext 本身（readStreamCapped 在
                                 // withContext 里取消后照常返回、不抛 CE；不带
-                                // withContext 时 CE 正常传出），三种收尾写法
-                                // resumeWithException / 直接 throw / 不截获直抛都
-                                // 走不通——故下载体改用 async + await()（见函数末尾
-                                // 注释），不再用 withContext 包起来。
-                                // 也不能用 Job.invokeOnCompletion 挂钩——它只在任务
-                                // 完成时跑，阻塞的读不返回、任务完不成，挂钩永远等不到
-                                // 触发；也不能在块里调 currentCoroutineContext()（块
-                                // 不是 suspend 上下文），context 先在外面捕获。
+                                // withContext 时 CE 正常传出），故下载体改用 async +
+                                // await()（见函数末尾注释）。但取消挂钩本身用
+                                // suspendCancellableCoroutine 只当载体（见下）：它只挂
+                                // cont.invokeOnCancellation，不当结果通道，返回值与异常
+                                // 都原样出 SCC、由外层 attempt 的 catch 分流，不碰吞 CE
+                                // 的旧坑。
+                                // 挂钩必须是同步注册的取消钩子——不能用 launch 起一个监听
+                                // 协程等 awaitCancellation：launch 只把监听协程派发到 IO
+                                // 池，取消若在它首次运行之前到达，协程体（含 finally 里的
+                                // 关体）根本不会执行（Kotlin 官方文档 Cancellation and
+                                // timeouts：“doesn't guarantee that they start running. If
+                                // they're canceled first, nothing is printed”），关体永远
+                                // 到不了、体读堵满 60 秒兜底——main 上累计红 5 次的真因正是
+                                // 这个派发窗口（第 8 轮跟进 2）。Job.invokeOnCompletion(
+                                // onCancelling = true) 是 internal API，外部用即编译错；
+                                // Job 上也没有公开的 invokeOnCancellation（那是
+                                // CancellableContinuation 的成员函数）。公开且同步的写法
+                                // 是 suspendCancellableCoroutine + cont.invokeOnCancellation
+                                //（与 ApiClient.executeCancellable 同款）：取消到达时在
+                                // 取消线程上当场执行，无派发窗口；也不能在块里调
+                                // currentCoroutineContext()（块不是 suspend 上下文），
+                                // context 先在外面捕获。
                                 val context = currentCoroutineContext()
-                                coroutineScope {
-                                    // 取消监听：父协程取消时一并取消，finally 关体断读。
-                                    // awaitCancellation() 永远挂起，只在取消时以 CE 返回。
-                                    val watcher = launch {
-                                        try {
-                                            awaitCancellation()
-                                        } finally {
-                                            // 取消到达即记下（拷贝已正常完成时不记——正常完成
-                                            // 后的 watcher.cancel() 也会进 finally，不能误标
-                                            // 为取消）；先置标志再关体：读因关体抛错，标志一
-                                            // 定在读抛错之前已置位，外层复核读到它时无竞态。
-                                            if (!copyDone.get()) cancelledDuringCopy.set(true)
-                                            runCatching { body.close() }
-                                        }
+                                // D8-P2-2 跟进 2：SCC 在这里只当取消挂钩的载体，不当结果
+                                // 通道——在当前协程里同步注册 cont.invokeOnCancellation，
+                                // 取消到达时在取消线程上当场跑，先置标志再关体（读因关体
+                                // 抛错，标志一定在读抛错之前已置位，外层复核读到它时无竞
+                                // 态）；拷贝已正常完成时不记（copyDone 守卫）。返回值与
+                                // 异常都经 resume/resumeWithException 原样出 SCC，由外层
+                                // attempt 的 catch 分流（取消时 ensureActive() 再转 CE）。
+                                // 注意：若取消在注册前已到达，invokeOnCancellation 会立即
+                                // 执行挂钩——关体照常发生，不丢取消。
+                                suspendCancellableCoroutine<Unit> { cont ->
+                                    cont.invokeOnCancellation {
+                                        if (!copyDone.get()) cancelledDuringCopy.set(true)
+                                        runCatching { body.close() }
                                     }
                                     try {
                                         // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
@@ -236,8 +250,9 @@ class UpdateDownloader @Inject constructor(
                                                 onProgress?.invoke(written, total)
                                             }
                                         }
-                                    } finally {
-                                        watcher.cancel()
+                                        cont.resume(Unit)
+                                    } catch (e: Throwable) {
+                                        cont.resumeWithException(e)
                                     }
                                 }
                             }
@@ -285,7 +300,7 @@ class UpdateDownloader @Inject constructor(
         // IO 上，调用方（Main）不受影响。这里的 ensureActive() 与监听标志
         // 是辅助复核，已取消的下载绝不能当成成功返回。
         currentCoroutineContext().ensureActive()
-        // D8-P2-2：监听协程置位的取消标志——取消到达时读被关体打断；
+        // D8-P2-2：取消挂钩置位的取消标志——取消到达时读被关体打断；
         // 若 await() 仍未把 CE 传出，这里凭标志补抛 CE。
         if (cancelledDuringCopy.get()) {
             throw CancellationException("下载已取消")
