@@ -405,7 +405,10 @@ class RnMigration @Inject constructor(
             }
         }
         parsed.m3uUrl?.let {
-            if (shouldImportUrlSetting(settingsDataStore.m3uUrl.first(), it)) {
+            // currentRawM3uUrl()：读原始存值（不带默认直播源）——m3uUrl Flow
+            // 在键缺失时返回内置默认值，用它判断会误判“原生侧已配”，旧 RN 端
+            // 的自定义 M3U 永远导不进来。
+            if (shouldImportUrlSetting(settingsDataStore.currentRawM3uUrl(), it)) {
                 settingsDataStore.setM3uUrl(it)
             }
         }
