@@ -224,6 +224,20 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `playback errors are ignored after leaving page unless background continuation`() {
+        // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落错误态——
+        // 重播已被 startEpisode 的门控拦住，但计数与 Toast 在门控之前；门控与开播
+        // 同谓词（前台一律处理，后台只处理已开播过的延续）；离页且后台播放关着时
+        // 只记 pendingStart 待补开播，回页重播当前源。
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertTrue(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
+        assertFalse(PlayViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    }
+
+    @Test
     fun `stale search callback is dropped by key generation`() {
         // 第 8 轮 P2-2：旧搜源回调已在 IO 线程执行中时，init() 清 current 与取消
         // 都拦不住它；凭代际快照丢弃——同键接受、换 key 后旧回调一律丢弃。

@@ -540,6 +540,18 @@ class PlayViewModel @Inject constructor(
         if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
+        // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落
+        // 错误态——startEpisode 的 shouldStartPlayback 门控已拦住重播（无音频
+        // 泄漏），但门控之前的账已算了（failedSources/autoSwitchAttempts 累加、
+        // 自动换源记 pendingStart、最终落错误态）；后台播放开着时按“已开播过的
+        // 延续”放行（与 startEpisode 同谓词）。只记待补开播：回页时
+        // onPageResumed 凭 pendingStart 重播当前源（不记失败、不换源——回页后
+        // 若再失败，在页内走正常自动换源）；不记待补时回页无任何恢复，播放器会
+        // 停在错误态、OK 也无法自愈（play() 不重挂 media item）。
+        if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) {
+            pendingStart = PendingStart(current, state.episodeIndex, playerManager.currentPositionMs.takeIf { it > 0 })
+            return
+        }
         val attempts = state.autoSwitchAttempts
         val failed = state.failedSources + current.source
         if (attempts < MAX_AUTO_SWITCH) {
@@ -1213,6 +1225,18 @@ class PlayViewModel @Inject constructor(
             backgroundPlaybackEnabled: Boolean,
             playbackStarted: Boolean,
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+
+        /**
+         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3）：与开播门控同谓词——
+         * 前台一律处理；后台只处理已开播过的延续（PiP 内断流恢复/自动换源）；
+         * 离页且后台播放关着时不处理（不累加失败计数、不弹 Toast、不落错误态），
+         * 只记 pendingStart 待补开播，回页时 onPageResumed 重播当前源。
+         */
+        internal fun shouldHandlePlaybackError(
+            pageActive: Boolean,
+            backgroundPlaybackEnabled: Boolean,
+            playbackStarted: Boolean,
+        ): Boolean = shouldStartPlayback(pageActive, backgroundPlaybackEnabled, playbackStarted)
         /**
          * 轮询里片尾前 10 秒预告是否应提前出现（可单测，第 7 轮 P2-2）：
          * 本集还没出过（nextEpisodeShownForIndex != episodeIndex）、开关开、

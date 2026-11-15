@@ -361,6 +361,14 @@ class LiveViewModel @Inject constructor(
         // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
         // 点播的错误不能触发直播切台（会抢走点播的播放器）。
         if (!playerManager.isCurrentOwner(playbackToken)) return
+        // 第 8 轮 P2-3：离页后播放器错误回调不推进失败计数、不弹 Toast——
+        // playCurrent 的 shouldStartPlayback 门控已拦住重播（无音频泄漏），
+        // 但门控之前的账已算了（controller.onPlaybackError 推进 failCount/
+        // lineIndex/currentIndex，TryLine/NextChannel 还弹“正在尝试备用线路”
+        // Toast、GiveUp 还置 playbackFailed）；后台播放开着时按“已开播过的
+        // 延续”放行（与 playCurrent 同谓词），回页时 onPageResumed 按
+        // shouldResumePlayback 重开播当前台，不丢恢复。
+        if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
         // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
         stablePlayJob?.cancel()
         val state = _uiState.value
@@ -901,6 +909,18 @@ class LiveViewModel @Inject constructor(
             backgroundPlaybackEnabled: Boolean,
             playbackStarted: Boolean,
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+
+        /**
+         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3）：与开播门控同谓词——
+         * 前台一律处理；后台只处理已开播过的延续（PiP 内断流恢复）；离页且后台
+         * 播放关着时不处理（不推进失败计数、不弹 Toast、不落失败态），回页时
+         * onPageResumed 重开播当前台。
+         */
+        internal fun shouldHandlePlaybackError(
+            pageActive: Boolean,
+            backgroundPlaybackEnabled: Boolean,
+            playbackStarted: Boolean,
+        ): Boolean = shouldStartPlayback(pageActive, backgroundPlaybackEnabled, playbackStarted)
 
         /**
          * 关面板时是否应重播当前台（可单测，A10-P2-3）：信号异常且未在播、

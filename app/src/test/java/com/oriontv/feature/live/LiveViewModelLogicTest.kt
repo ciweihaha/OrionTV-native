@@ -114,6 +114,19 @@ class LiveViewModelLogicTest {
     }
 
     @Test
+    fun `playback errors are ignored after leaving page unless background continuation`() {
+        // 第 8 轮 P2-3：离页后播放器错误回调不推进失败计数、不弹 Toast——重播
+        // 已被 playCurrent 的门控拦住，但计数与 Toast 在门控之前；门控与开播
+        // 同谓词（前台一律处理，后台只处理已开播过的延续）。
+        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
+        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
+        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
+        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
+        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    }
+
+    @Test
     fun `refresh failure is reported when network fails even with cached channels`() {
         // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，只判空
         // 会把失败当成功、静默无事发生；失败标记为真时必须提示
