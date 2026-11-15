@@ -625,6 +625,23 @@ fun LiveScreen(
             }
         }
 
+        // 第 9 轮 P2-6：数字键缓冲回显——digitBuffer 之前只写不读，缓冲态界面
+        // 上无任何回显，唯一反馈是 3 秒 Toast（缓冲 1500ms 就提交，Toast 会比
+        // 缓冲多活一倍、且不跟缓冲走）。缓冲非空时在底部中央常驻显示已输入的
+        // 台号（OrionToast 同款样式、与 Toast 同一落点：信息条在时上移 160dp，
+        // 否则 48dp），随缓冲清掉而消失；缓冲分支不再另发 Toast，免得两条
+        // 相同文案在同一位置叠在一起。台号无效时缓冲已清，仍走 Toast 提示。
+        if (uiState.digitBuffer.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = if (showInfoBar) 160.dp else 48.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                OrionToast(message = "输入频道号：${uiState.digitBuffer}")
+            }
+        }
+
         // 右侧频道面板 420dp，从右滑入 180ms。
         AnimatedVisibility(
             visible = uiState.panelOpen,

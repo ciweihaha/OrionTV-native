@@ -979,6 +979,8 @@ fun PlayScreen(
                         drawerBottomEdgeFocused = bottom
                     },
                     onFocusFailed = { onDrawerFocusFailed() },
+                    globalModalOpen = globalModalOpen,
+                    focusRestoreTick = focusRestoreTick,
                 )
             }
             null -> Unit
@@ -1191,12 +1193,22 @@ private fun SpeedDrawerContent(
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
     /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
     onFocusFailed: () -> Unit = {},
+    /** 第 9 轮 P2-5（与选集/换源抽屉 C14-P1-2/P1-3 同款）：全局弹窗开着时
+     * 不落焦（含回退到根——那同样会偷焦点），关闭后由 tick 重跑补落。
+     * 之前是 LaunchedEffect(Unit) + 无条件落焦：倍速抽屉打开期间全局弹窗
+     * 开、关各一次后，焦点留在已卸载的弹窗按钮上、需用户自行按方向键找回。 */
+    globalModalOpen: Boolean = false,
+    /** 第 9 轮 P2-5：NavHost 级弹窗关闭后 +1。 */
+    focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
     // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
     // 仍失败回退到根。
-    LaunchedEffect(Unit) {
-        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    // 第 9 轮 P2-5：key 加 tick、落焦加全局弹窗门控（与选集/换源抽屉同款）。
+    LaunchedEffect(focusRestoreTick) {
+        if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
+            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+        }
     }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),

@@ -282,6 +282,16 @@ class PlayViewModelLogicTest {
             // 复位时一并清零——rebase 时补进 helper 的两项。
             bufferedMs = 5000L,
             breakpointMs = 600_000L,
+            // 第 9 轮 P2-1：片头/标记/播放态同样不能沿用旧值——搜源期轮询
+            // 会用默认值 90 秒或旧片值在位置 0 跑自动跳与胶囊，控制条还
+            // 会短暂显示旧片的标记文案与旧倍速/播放态。
+            introEndMs = 90_000L,
+            markedIntroEndMs = 45_000L,
+            outroStartMs = 1_200_000L,
+            isPlaying = true,
+            isBuffering = true,
+            playbackRate = 2f,
+            toast = nextToastEvent("旧提示"),
         )
         val reset = PlayViewModel.resetUiStateForNewKey(
             stale, episodeIndex = 5, positionMs = 0L, title = "新片",
@@ -302,6 +312,31 @@ class PlayViewModelLogicTest {
         assertEquals(0L, reset.durationMs)
         assertEquals(0L, reset.bufferedMs)
         assertEquals(0L, reset.breakpointMs)
+        // 第 9 轮 P2-1：片头清 0（不是默认值 90 秒）、标记清掉、播放态复位，
+        // 旧提示也不带到新片搜源期。
+        assertEquals(0L, reset.introEndMs)
+        assertNull(reset.markedIntroEndMs)
+        assertNull(reset.outroStartMs)
+        assertFalse(reset.isPlaying)
+        assertFalse(reset.isBuffering)
+        assertEquals(1f, reset.playbackRate)
+        assertNull(reset.toast)
+    }
+
+    @Test
+    fun `auto skip waits for duration before jumping`() {
+        // 第 9 轮 P2-2：片长未知时暂缓自动跳——慢源上片长晚于首个轮询 tick
+        // 到达，位置 0 + 默认 90 秒片头会直接 seek 到片尾、短片被判“看完一集”。
+        // 轮询每 500ms 再来，片长一出、仍在片头窗口内就跳，不丢跳。
+        assertFalse(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, true, false, durationMs = 0L))
+        assertFalse(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, true, false, durationMs = -1L))
+        // 片长已知：短片守卫仍在（60 秒片 + 90 秒片头不跳），长片正常跳
+        assertFalse(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, true, false, durationMs = 60_000L))
+        assertTrue(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, true, false, durationMs = 1_800_000L))
+        // 片长已知但位置已过片头 / 开关关着 / 本集已跳过 → 不跳
+        assertFalse(PlayViewModel.shouldAutoSkipNow(120_000L, 90_000L, true, false, durationMs = 1_800_000L))
+        assertFalse(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, false, false, durationMs = 1_800_000L))
+        assertFalse(PlayViewModel.shouldAutoSkipNow(0L, 90_000L, true, true, durationMs = 1_800_000L))
     }
 
     @Test

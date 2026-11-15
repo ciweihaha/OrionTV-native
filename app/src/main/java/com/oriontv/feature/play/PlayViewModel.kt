@@ -679,10 +679,17 @@ class PlayViewModel @Inject constructor(
                     startPositionOverflowHandled = true
                     handlePlaybackError(null, resumeFromStart = true)
                 }
-                // 自动跳过片头（每集一次，先于胶囊判断：自动跳开了就不出胶囊）。
-                maybeAutoSkipIntro(position, duration)
-                // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失，每集只出现一次。
-                updateSkipIntroVisibility(position)
+                // 第 9 轮 P2-1（纵深）：搜源/加载期 current 还没回来时，轮询不跑
+                // 自动跳与胶囊——哪怕 introEndMs 仍是旧值/默认值，位置 0 的
+                // inWindow 也恒真；只在已开播（current 非空）后才跑这两路。
+                // startEpisode 会在开播时按新片重算 introEndMs 并重 arm，
+                // 门控不丢任何一集的自动跳/胶囊。
+                if (state.current != null) {
+                    // 自动跳过片头（每集一次，先于胶囊判断：自动跳开了就不出胶囊）。
+                    maybeAutoSkipIntro(position, duration)
+                    // 跳过片头胶囊：进入片头窗口才出现，出现 10 秒后消失，每集只出现一次。
+                    updateSkipIntroVisibility(position)
+                }
                 // 临近播完（剩 10 秒）且有下一集时也出预告（播完兜底在 onPlaybackEnded）；
                 // 标过片尾的，播到片尾标记处就提前出预告。
                 // 用户点过“取消”的本集不再重弹（P1-1）。
@@ -715,10 +722,14 @@ class PlayViewModel @Inject constructor(
      * 每集一次，当前位置仍在片头内且 autoSkipIntro 开时 seek 到片头结束点；
      * 断点续播位置已过片头的不触发；胶囊保留作手动入口。
      * 第 6 轮 P1-2：把片长传进去做守卫——短片遇默认 90 秒兜底不再开播即被送走。
+     * 第 9 轮 P2-2：片长未知（durationMs <= 0）时暂缓自动跳、等片长出了再判——
+     * 轮询每 500ms 会再来，不会丢跳；慢源上片长晚于首个 tick 到达时，旧行为
+     * 会在位置 0 直接 seekTo(90_000)，短片（<100 秒）还没出第一帧就被钳到
+     * 片尾、判成“看完一集”。只动自动跳一路，手动胶囊不受影响。
      */
     private fun maybeAutoSkipIntro(positionMs: Long, durationMs: Long) {
         val state = _uiState.value
-        if (!IntroSkip.shouldAutoSkip(
+        if (!shouldAutoSkipNow(
                 positionMs,
                 state.introEndMs,
                 cachedAutoSkipIntro,
@@ -1135,7 +1146,14 @@ class PlayViewModel @Inject constructor(
          * （skipIntroVisible）、抽屉（drawer）与旧片长（durationMs）会在新搜源
          * 加载期间继续显示在加载动画之上；startEpisode 的状态更新要等搜源回来
          * 才清掉它们。A11-P2-1 补：缓冲/断点位置（bufferedMs/breakpointMs）
-         * 同样清零，旧值残留在新片搜源期。
+         * 同样清零，旧值残留在新片搜源期。第 9 轮 P2-1 补：片头/标记/播放态
+         * （introEndMs/markedIntroEndMs/outroStartMs/isPlaying/isBuffering/
+         * playbackRate/toast）同样不能带到新搜源加载期——否则轮询用默认值
+         * 90 秒（首启）或旧片值（换 key）在位置 0 跑自动跳与胶囊：自动跳开着
+         * 时对空闲播放器发一次 seekTo(90_000)，关着时胶囊浮在加载动画之上；
+         * 控制条按钮还会短暂显示旧片的片头/片尾标记文案与旧倍速/播放态。
+         * introEndMs 清 0（不是默认值 90 秒）：0 即“没片头可跳”，轮询的
+         * inWindow 与 shouldAutoSkip 都不成立；startEpisode 会按新片重算它。
          */
         internal fun resetUiStateForNewKey(
             state: PlayUiState,
@@ -1162,6 +1180,14 @@ class PlayViewModel @Inject constructor(
             durationMs = 0L,
             bufferedMs = 0L,
             breakpointMs = 0L,
+            // 第 9 轮 P2-1：片头/标记/播放态复位（见上面 KDoc）。
+            introEndMs = 0L,
+            markedIntroEndMs = null,
+            outroStartMs = null,
+            isPlaying = false,
+            isBuffering = false,
+            playbackRate = 1f,
+            toast = null,
         )
 
         /**
@@ -1306,6 +1332,23 @@ class PlayViewModel @Inject constructor(
             startPositionMs: Long,
             introEndMs: Long,
         ): Boolean = introEndMs > 0 && startPositionMs < introEndMs
+
+        /**
+         * 本轮询 tick 是否应执行自动跳片头（可单测，第 9 轮 P2-2）：片长未知
+         * （durationMs <= 0）时暂缓——IntroSkip.shouldAutoSkip 的片长守卫
+         * 只在片长已知时生效，未知时放行；慢源上片长晚于首个 tick 到达时，
+         * 位置 0 + 默认 90 秒片头会直接 seek 到片尾、短片被判“看完一集”。
+         * 暂缓不丢跳：轮询每 500ms 再来，片长一出、仍在片头窗口内就跳；
+         * 手动胶囊不走这条谓词，不受影响。
+         */
+        internal fun shouldAutoSkipNow(
+            positionMs: Long,
+            introEndMs: Long,
+            autoSkipEnabled: Boolean,
+            alreadySkipped: Boolean,
+            durationMs: Long,
+        ): Boolean = durationMs > 0 &&
+            IntroSkip.shouldAutoSkip(positionMs, introEndMs, autoSkipEnabled, alreadySkipped, durationMs)
 
         /**
          * 轮询是否应推进（可单测，P2-9）：在前台、或后台播放开着时都推进；
