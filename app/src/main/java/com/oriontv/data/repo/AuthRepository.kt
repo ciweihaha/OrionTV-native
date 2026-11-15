@@ -50,6 +50,15 @@ class AuthRepository @Inject constructor(
     private val restoreMutex = Mutex()
     /** 第 3 轮收尾 B-P2-17：在途恢复由各方共享（见 restoreSession）。 */
     private var restoreDeferred: Deferred<Boolean>? = null
+    /**
+     * 第 13 轮跟进（轻微 2）：登录态写锁——login() 成功写态与 401 回调的
+     * 复核+写态必须原子（B12-P2-9 的双重检查仍在复核与写之间留窗口，手动
+     * 登录可插进来、把刚登进去的会话又写回未登录弹回登录框）；logout()
+     * 开头的已退出标志+退出世代写也走同一把锁。锁内只有内存写与原子操作、
+     * 无 suspend 调用；与 restoreMutex 从不同时持有（401 回调先跑完
+     * restoreSession 才拿这把锁），无死锁风险。
+     */
+    private val loginStateMutex = Mutex()
     /** 恢复/配置重试用的后台作用域（与调用方生命周期解耦，共享恢复不随等待方取消）。 */
     private val restoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** 第 3 轮收尾 B-P1-8：冷启动配置拉取失败后的一次延迟重试任务（只排一个）。 */
@@ -108,13 +117,17 @@ class AuthRepository @Inject constructor(
                 if (!restored && !loggedOut && manualLoginEpoch.get() == epochBefore) {
                     // B12-P2-9：检查-后-写竞态——上面复核与下面写态之间，手动登录
                     // 可能插进来（回调跑在 IO 线程，窗口极窄但真实存在），把刚登
-                    // 进去的会话又写回未登录、弹回登录框；写态前再复核一次代次
-                    // 与已退出标志，变了就不再碰登录态与弹窗。注意：这里不能再
+                    // 进去的会话又写回未登录、弹回登录框。注意：这里不能再
                     // 拿 _isLoggedIn.value 当门控——401 时它本就是 true（正要
                     // 登出的过期会话），门控只能靠代次与 loggedOut。
-                    if (manualLoginEpoch.get() == epochBefore && !loggedOut) {
-                        _isLoggedIn.value = false
-                        _showLoginModal.value = true
+                    // 第 13 轮跟进（轻微 2）：复核与写态放进 loginStateMutex——
+                    // login() 成功写态也走这把锁，手动登录插不进来；锁内仍复核
+                    // 一次代次与已退出标志（锁外第一次复核后、拿锁前也可能已变）。
+                    loginStateMutex.withLock {
+                        if (manualLoginEpoch.get() == epochBefore && !loggedOut) {
+                            _isLoggedIn.value = false
+                            _showLoginModal.value = true
+                        }
                     }
                 }
                 restored
@@ -148,12 +161,17 @@ class AuthRepository @Inject constructor(
                     }
                     // D7-P1-1：显式登录成功清掉已退出标志——退出后重登不受影响，
                     // 在途旧恢复的世代复核仍以 logoutEpoch 为准，不被本标志误拦。
-                    loggedOut = false
-                    // B10-P1-1：手动登录成功推进代次——401 续期回调凭它判断
-                    // 恢复期间是否有人手动登进去了（是则不弹登录框）。
-                    manualLoginEpoch.incrementAndGet()
-                    _isLoggedIn.value = true
-                    _showLoginModal.value = false
+                    // 第 13 轮跟进（轻微 2）：四行写态进 loginStateMutex，与 401
+                    // 回调的复核+写态原子互斥——回调复核通过后、写态前再插不进
+                    // 一次手动登录成功（否则回调的写态会把新会话又写回未登录）。
+                    loginStateMutex.withLock {
+                        loggedOut = false
+                        // B10-P1-1：手动登录成功推进代次——401 续期回调凭它判断
+                        // 恢复期间是否有人手动登进去了（是则不弹登录框）。
+                        manualLoginEpoch.incrementAndGet()
+                        _isLoggedIn.value = true
+                        _showLoginModal.value = false
+                    }
                     Result.success(Unit)
                 }
                 // B4-P1-2：只有 401（或 2xx 但 ok=false）才报“账号或密码错误”。
@@ -188,10 +206,14 @@ class AuthRepository @Inject constructor(
         // 否则 31 秒内退出会被冷启动配置重试悄悄复登，或被在途恢复置回 true。
         // D7-P1-1：先置已退出标志——退出后才启动的恢复（立即恢复 / 31 秒延迟
         // 重试 / 401 回调）采样到的世代已是退出后的，世代守卫拦不住，只能靠标志。
-        loggedOut = true
+        // 第 13 轮跟进（轻微 2）：标志+世代写进 loginStateMutex，与 401 回调的
+        // 复核+写态原子互斥——退出瞬间回调复核通过、写态前再插不进已退出。
+        loginStateMutex.withLock {
+            loggedOut = true
+            logoutEpoch.incrementAndGet()
+        }
         configRetryJob?.cancel()
         configRetryJob = null
-        logoutEpoch.incrementAndGet()
         // B5-P2-3：DataStore 读失败按无地址处理，不让冷启动/登出崩溃。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         try {
