@@ -283,7 +283,17 @@ class LiveViewModel @Inject constructor(
                 val epg = _uiState.value.epg
                 val stale = epg == null ||
                     epg.programmesByChannel.values.none { list -> list.any { it.endAt > now } }
-                if (stale) loadEpg()
+                if (stale) {
+                    // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（读
+                    // epgRepository.loadFailed，与 M3U 刷新失败提示同款文案风格）；
+                    // loadEpg() 失败时回落旧缓存，state.epg 非空即仍在用旧节目单。
+                    // 初始加载不走这里（初始空态仍走现有 loadError）。
+                    loadEpg()
+                    epgRefreshFailedMessage(
+                        epgRepository.loadFailed.value,
+                        _uiState.value.epg != null,
+                    )?.let { showToast(it) }
+                }
             }
         }
     }
@@ -862,6 +872,17 @@ class LiveViewModel @Inject constructor(
          */
         internal fun shouldReportRefreshFailed(freshIsEmpty: Boolean, loadFailed: Boolean): Boolean =
             freshIsEmpty || loadFailed
+
+        /**
+         * 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败的轻提示文案（可单测，与 M3U
+         * 的 shouldReportRefreshFailed 同款接线）：loadFailed 为真才提示；
+         * 有旧节目单可回落时说明“仍用旧节目单”，无旧节目单时只说刷新失败。
+         * 初始加载的失败不走这里（初始空态仍走现有 loadError）。
+         */
+        internal fun epgRefreshFailedMessage(loadFailed: Boolean, hasOldEpg: Boolean): String? =
+            if (!loadFailed) null
+            else if (hasOldEpg) "节目单刷新失败，仍用旧节目单"
+            else "节目单刷新失败"
     }
 }
 

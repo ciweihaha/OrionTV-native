@@ -91,6 +91,23 @@ class LiveViewModelLogicTest {
     }
 
     @Test
+    fun `epg refresh failure toasts only on load failure`() {
+        // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（与 M3U 刷新失败提示
+        // 同款接线）；成功时不提示；有旧节目单可回落时说明“仍用旧节目单”，
+        // 无旧节目单时只说刷新失败；初始加载的失败不走这里。
+        assertEquals(null, LiveViewModel.epgRefreshFailedMessage(loadFailed = false, hasOldEpg = true))
+        assertEquals(null, LiveViewModel.epgRefreshFailedMessage(loadFailed = false, hasOldEpg = false))
+        assertEquals(
+            "节目单刷新失败，仍用旧节目单",
+            LiveViewModel.epgRefreshFailedMessage(loadFailed = true, hasOldEpg = true),
+        )
+        assertEquals(
+            "节目单刷新失败",
+            LiveViewModel.epgRefreshFailedMessage(loadFailed = true, hasOldEpg = false),
+        )
+    }
+
+    @Test
     fun `background playback starts only for a continuation`() {
         // A9-P1-1：前台一律开播；后台只允许已开播过的延续（PiP 内断流恢复、
         // 开关开着的继续播）；从未开播过时后台开播即无窗口后台音频（开关开）
