@@ -378,6 +378,7 @@ class UpdateDownloaderResumeTest {
             // 10 秒兜底会在 CI 线程延迟下先于 5 秒 withTimeout 到期、
             // 让下载“正常”完成，是测试竞态而非取消机制问题。
             val body = StallingBody(stallTimeoutMs = 60_000L)
+            val getCalls = AtomicInteger(0)
             val client = OkHttpClient.Builder().addInterceptor { chain ->
                 val request = chain.request()
                 if (request.method == "HEAD") {
@@ -387,6 +388,7 @@ class UpdateDownloaderResumeTest {
                         .body(ByteArray(0).toResponseBody(null))
                         .build()
                 } else {
+                    getCalls.incrementAndGet()
                     responseFor(request, 200, body)
                 }
             }.build()
@@ -426,6 +428,12 @@ class UpdateDownloaderResumeTest {
             assertEquals("读应只进 1 次（无重试）", 1, body.readCalls.get())
             assertTrue("读应因关体抛错", body.readThrew.get())
             assertTrue("读不应回 -1（回 -1 即下载‘正常’完成）", !body.readReturnedMinusOne.get())
+            // GET 只发 1 次：若发了 2 次，说明读的异常到了 attempt 的 catch
+            // 但 Job 未取消、走了 3 秒退避 + 重试（取消未递送到下载协程）；
+            // 若只 1 次且后面 assertNotNull 失败，说明异常在
+            // suspendCancellableCoroutine/withContext 里被吞、下载直接
+            // “正常”返回。
+            assertEquals("GET 应只发 1 次（无重试）", 1, getCalls.get())
             assertTrue("join 应在 8 秒内返回（否则是停顿兜底）", joinMs < 8_000)
             assertNotNull("取消的下载应抛 CancellationException", thrown)
             assertTrue(
