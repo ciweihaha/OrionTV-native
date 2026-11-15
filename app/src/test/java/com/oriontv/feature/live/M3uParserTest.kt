@@ -225,7 +225,7 @@ class M3uParserTest {
 
     @Test
     fun `mixed case extinf lines parse`() {
-        // D8-P2-4 的另一半：大小写混用的行头同样识别，行内属性按原样取。
+        // D8-P2-4 的另一半：大小写混用的行头同样识别，行内属性名不区分大小写。
         val content = """
             #EXTM3U
             #ExTiNf:-1 tvg-id="cctv1",CCTV1
@@ -235,6 +235,27 @@ class M3uParserTest {
         assertEquals(1, channels.size)
         assertEquals("CCTV1", channels[0].name)
         assertEquals("cctv1", channels[0].tvgId)
+    }
+
+    @Test
+    fun `uppercase attr names parse`() {
+        // S4 补完：属性名大小写不敏感——源写 TVG-LOGO/TVG-ID/GROUP-TITLE
+        // 时旧 extractAttrs 原样取 key，attrs["tvg-logo"] 查不到，台标丢失。
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 TVG-ID="cctv1" TVG-LOGO="http://example.com/cctv1.png" GROUP-TITLE="央视",CCTV1
+            http://example.com/cctv1.m3u8
+            #extinf:-1 Tvg-Id="cctv2" Tvg-Logo="http://example.com/cctv2.png" Group-Title="卫视",CCTV2
+            http://example.com/cctv2.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV2"), channels.map { it.name })
+        assertEquals("cctv1", channels[0].tvgId)
+        assertEquals("http://example.com/cctv1.png", channels[0].logo)
+        assertEquals("央视", channels[0].group)
+        assertEquals("cctv2", channels[1].tvgId)
+        assertEquals("http://example.com/cctv2.png", channels[1].logo)
+        assertEquals("卫视", channels[1].group)
     }
 
     @Test
