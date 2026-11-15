@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,8 +57,13 @@ fun LoginModal(
     error: String? = null,
     modifier: Modifier = Modifier,
 ) {
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    // Jewel 第 9 轮 P2-9：账号/密码改 rememberSaveable——普通 remember 随组合
+    // 处置而丢失，配置变更（旋转/语言切换）或进程重建时已输一半的内容全丢，
+    // 用户得重敲；存档后重建即恢复。密码进存档的权衡：SavedState 与应用已
+    // 有的 CredentialsStore 同属应用私有存储，且只是未提交的瞬态输入态、
+    // 登录成功/弹窗关闭即随组合处置而丢，不作长期保存。
+    var username by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
     var localError by remember { mutableStateOf<String?>(null) }
     val usernameRequester = remember { FocusRequester() }
     val passwordRequester = remember { FocusRequester() }
