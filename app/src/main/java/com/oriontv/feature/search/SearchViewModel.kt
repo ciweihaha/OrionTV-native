@@ -147,6 +147,11 @@ class SearchViewModel @Inject constructor(
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
             _uiState.value = _uiState.value.copy(results = emptyList(), error = null, isLoading = false)
+            // B24-P2-2：空串分支只清内存态、不再存一次，SavedStateHandle 里仍是
+            // 旧结果 JSON + 旧 searchedQuery；恢复时 query 已空、结果非空，不走
+            // 早退，旧结果幽灵复现到空搜索框之下。补存一次（results 引用已变，
+            // 写 "[]"；恢复时因结果为空正常早退，与 clearQuery() 同款顺序）。
+            saveSearchState()
             return
         }
         val gen = ++generation
