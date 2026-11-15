@@ -39,33 +39,8 @@ object OrionColors {
     /** 分隔线：8% 白。 */
     val Divider = Color(0x14FFFFFF)
 
-    // ---- 兼容旧名（新令牌统一映射） ----
-    /** 旧 Panel → 表面。 */
-    val Panel = Surface
-
-    /** 旧 PanelBorder → 分隔线。 */
-    val PanelBorder = Divider
-
-    /** 旧 Primary / Gold → 熔橙品牌色。 */
-    val Primary = Brand
-    val Gold = Brand
-
-    /** 旧 TextSoft → 次文字；TextDim → 弱文字。 */
-    val TextSoft = TextSecondary
-    val TextDim = TextWeak
-
-    /** 旧 Icon → 弱文字。 */
-    val Icon = TextWeak
-
     /** 旧 SurfaceVariant → 浮层。 */
     val SurfaceVariant = Overlay
-
-    /** 旧 Link → 品牌色。 */
-    val Link = Brand
-
-    /** 旧 OnPrimary / OnGold → 深空底文字（金底/橙底上的文字用墨黑）。 */
-    val OnPrimary = Background
-    val OnGold = Background
 
     /** 旧 Error。 */
     val Error = Color(0xFFE57373)

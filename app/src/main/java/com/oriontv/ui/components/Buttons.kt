@@ -128,39 +128,3 @@ fun CategoryChip(
         )
     }
 }
-
-// ---- 兼容旧名（骨架内旧调用点过渡用，M1 逐步替换） ----
-/** 旧通用按钮 → 次按钮样式。 */
-@Composable
-fun StyledButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) = SecondaryButton(text = text, onClick = onClick, modifier = modifier, enabled = enabled)
-
-/** 播放控制条里的媒体按钮，M1 补图标与行为。 */
-@Composable
-fun MediaButton(
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) = SecondaryButton(text = label, onClick = onClick, modifier = modifier)
-
-/** 旧金色主按钮 → 熔橙主按钮。 */
-@Composable
-fun GoldButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) = PrimaryButton(text = text, onClick = onClick, modifier = modifier, enabled = enabled)
-
-/** 旧分类芯片 → CategoryChip。 */
-@Composable
-fun ChipButton(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) = CategoryChip(text = text, selected = selected, onClick = onClick, modifier = modifier)

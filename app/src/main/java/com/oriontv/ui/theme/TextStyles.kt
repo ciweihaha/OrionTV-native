@@ -53,24 +53,4 @@ object OrionTextStyles {
         lineHeight = 10.4.sp,
         color = OrionColors.TextSecondary,
     )
-
-    // ---- 兼容旧名 ----
-    /** 旧 Title 20sp → PageTitle 22sp。 */
-    val Title = PageTitle
-
-    /** 旧 LargeTitle 24sp → PageTitle 22sp。 */
-    val LargeTitle = PageTitle
-
-    /** 旧 Section 15sp 金色 → SectionTitle 18sp。 */
-    val Section = SectionTitle
-
-    /** 旧 Channel 16sp → Body 14sp。 */
-    val Channel = Body
-
-    /** 旧 Subtitle → SectionTitle。 */
-    val Subtitle = SectionTitle
-
-    /** 旧 Caption / Meta 12sp → Small。 */
-    val Caption = Small
-    val Meta = Small
 }

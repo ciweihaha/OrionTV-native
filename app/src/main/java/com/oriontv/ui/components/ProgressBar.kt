@@ -37,10 +37,3 @@ fun BrandProgressBar(
         )
     }
 }
-
-/** 旧名兼容 → BrandProgressBar。 */
-@Composable
-fun GoldProgressBar(
-    fraction: Float,
-    modifier: Modifier = Modifier,
-) = BrandProgressBar(fraction = fraction, modifier = modifier)

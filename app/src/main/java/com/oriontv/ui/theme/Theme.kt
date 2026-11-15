@@ -54,12 +54,6 @@ object OrionDimens {
     /** 内容区安全边距：左右 48dp、上下 32dp（华为智慧屏不过切边）。 */
     val ContentPadding = PaddingValues(horizontal = 48.dp, vertical = 32.dp)
 
-    /** 顶栏/页面左右留白（兼容旧名）。 */
-    val OverscanPadding = PaddingValues(horizontal = 48.dp)
-
-    /** 安全边距 48dp（兼容旧名）。 */
-    val SafeMargin = 48.dp
-
     /** 焦点放大 1.08（ui-design.md §4）。 */
     const val FocusScale = 1.08f
 
