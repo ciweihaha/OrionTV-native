@@ -549,7 +549,13 @@ class PlayViewModel @Inject constructor(
         // 若再失败，在页内走正常自动换源）；不记待补时回页无任何恢复，播放器会
         // 停在错误态、OK 也无法自愈（play() 不重挂 media item）。
         if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) {
-            pendingStart = PendingStart(current, state.episodeIndex, playerManager.currentPositionMs.takeIf { it > 0 })
+            // A16-P2-1：播完态下当前进度即片尾位置，直接记会让回页补开播触发
+            // 起点溢出守卫误判、自动换源并记当前源失效；播完态记 0L 从头播。
+            pendingStart = PendingStart(
+                current,
+                state.episodeIndex,
+                resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs.takeIf { it > 0 }),
+            )
             return
         }
         val attempts = state.autoSwitchAttempts
@@ -569,10 +575,11 @@ class PlayViewModel @Inject constructor(
                 }
                 // A5-P1-5：自动换源也走串行开播入口，不与手动选集并发。
                 // A7-P2-2：起点溢出时从 0 播，不再传已超长的原进度。
+                // A16-P2-1：播完态下当前进度即片尾位置，同款误判（见上）；播完态从 0 播。
                 launchStartEpisode(
                     next,
                     state.episodeIndex,
-                    if (resumeFromStart) 0L else playerManager.currentPositionMs,
+                    if (resumeFromStart) 0L else resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs),
                 )
                 return
             }

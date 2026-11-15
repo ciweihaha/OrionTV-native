@@ -1249,7 +1249,9 @@ private fun EpgDialog(
     // 第 7 轮 P2-10：节目单未到时初始值改为 -1（未知，陷阱不拦截）——旧实现
     // 按当时的空节目单取 0，焦点还没入弹窗时按上会被陷阱按“首行”误吞；
     // 节目单晚到时下面 effect 重跑落焦，并把 focusedIndex 设为实际行。
-    var focusedIndex by remember(channel.url) {
+    // A16-P2-2：key 加 epg——10 分钟 ticker 换表重拉时重算初始行（内容相同
+    // 则 data class 相等不重跑）。
+    var focusedIndex by remember(channel.url, epg) {
         mutableIntStateOf(resolveEpgInitialFocusedIndex(programmes.isEmpty(), currentIndex))
     }
 
@@ -1257,11 +1259,14 @@ private fun EpgDialog(
     // 无节目单时落“关闭”按钮：否则弹窗无可聚焦行，焦点留在面板行上，OK 会误切台。
     // A5-P2-3：effect 键加上 programmes.isEmpty()——节目单晚到（打开时为空、
     // EPG 随后才到）时重跑落点，不再停在“暂无节目单”的关闭按钮上。
+    // A16-P2-2：key 由 programmes.isEmpty() 改为 epg 本身——10 分钟 ticker
+    // 换表重拉（非空→非空）时也重跑落焦/滚动到新表正在播节目行；内容相同
+    // 则 data class 相等不重跑（晚到翻转仍覆盖：null→非空即 key 变化）。
     // C5-P2-1/A5-P2-8：固定 delay(100)+单次请求改 requestFocusWithRetry；
     // 正在播行抢不到时回退到“关闭”按钮。
     // C12-P1-3：key 加 focusRestoreTick——弹窗打开时全局弹窗关闭后重落焦点。
     // C14-P2-1：落焦加全局弹窗门控（节目单晚到时不把焦点偷出全局弹窗）。
-    LaunchedEffect(channel.url, programmes.isEmpty(), focusRestoreTick) {
+    LaunchedEffect(channel.url, epg, focusRestoreTick) {
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)

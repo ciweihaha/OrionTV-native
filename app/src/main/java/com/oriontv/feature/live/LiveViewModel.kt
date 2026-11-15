@@ -300,7 +300,7 @@ class LiveViewModel @Inject constructor(
                     // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（读
                     // epgRepository.loadFailed，与 M3U 刷新失败提示同款文案风格）；
                     // loadEpg() 失败时回落旧缓存，state.epg 非空即仍在用旧节目单。
-                    // 初始加载不走这里（初始空态仍走现有 loadError）。
+                    // A16-P2-3：首启加载与 10 分钟 ticker 刷新都走这里；初始空态仍另有 loadError。
                     loadEpg()
                     epgRefreshFailedMessage(
                         epgRepository.loadFailed.value,
@@ -998,7 +998,7 @@ class LiveViewModel @Inject constructor(
          * 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败的轻提示文案（可单测，与 M3U
          * 的 shouldReportRefreshFailed 同款接线）：loadFailed 为真才提示；
          * 有旧节目单可回落时说明“仍用旧节目单”，无旧节目单时只说刷新失败。
-         * 初始加载的失败不走这里（初始空态仍走现有 loadError）。
+         * A16-P2-3：首启加载与 10 分钟 ticker 刷新都走这里；初始空态仍另有 loadError。
          */
         internal fun epgRefreshFailedMessage(loadFailed: Boolean, hasOldEpg: Boolean): String? =
             if (!loadFailed) null
