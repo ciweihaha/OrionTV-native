@@ -69,8 +69,17 @@ class UpdateViewModel @Inject constructor(
      * 里那路见标志已真直接返回、不等 init 那路跑完，重查会因恢复未完成而误判
      * “从未下载过”、白白重新下载；现第二路 await 等它跑完再读态（已完成的
      * Deferred 立即返回）。与 AuthRepository.restoreDeferred 同款共享恢复。
+     * （Jewel 第 8 轮 P2-3 的 Mutex + 完成后置位方案与此同 race、同保证，
+     * B13-P2-1 的共享 Deferred 已覆盖，rebase 时收敛到此版，不再另设 Mutex。）
      */
     private var restoreDeferred: Deferred<Unit>? = null
+
+    /** Jewel 第 8 轮 P2-1：内存态跳过版本——skipVersion() 的 DataStore 写盘是
+     * 另起协程异步做的，写盘落地前下载恰好跑完，完成分支读到的仍是旧跳过版本，
+     * 刚跳过的版本又弹完成 Toast 并重弹卡片。内存态在 skipVersion() 内同步置位，
+     * 完成分支优先读它；写盘失败时再清掉（与 DataStore 保持一致）。 */
+    @Volatile
+    private var skippedVersionMemory: String? = null
 
     init {
         restoreDeferred = viewModelScope.async { runRestoreDownloadedApk() }
@@ -85,6 +94,8 @@ class UpdateViewModel @Inject constructor(
      * 第 7 轮 P2-5：启动时恢复已下载包——记录存在、文件仍在、文件名与版本
      * 匹配时复用（重查/卡片直接显示“立即安装”，不用重新下载）；否则清记录，
      * 文件存在但对不上号时删掉，不留孤儿包。
+     * （Jewel 第 8 轮 P2-3 的 Mutex 串行化与 B13-P2-1 的共享 Deferred 同 race、
+     * 同保证，rebase 时收敛到 Deferred 版；恢复体本身不变。）
      */
     private suspend fun runRestoreDownloadedApk() {
         // B15-P2-2：两处先单独处理 CancellationException 再走通用失败分支——
@@ -106,12 +117,35 @@ class UpdateViewModel @Inject constructor(
             if (isOrphanDownloadFile(record.path, record.version)) {
                 runCatching { File(record.path).delete() }
             }
-            runCatching { downloadedApkStore.clear() }
-                .onFailure {
-                    if (it is CancellationException) throw it
-                    AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}")
-                }
+            // Jewel 第 8 轮 P2-2：清记录只记日志（B11-P2-1 同款口径）。
+            // B15-P2-2 收敛：助手内遇 CancellationException 原样重抛——
+            // runCatching 会吞掉 CE，取消传不出去；与 main 的同款修复同一意图。
+            clearDownloadedApkRecordQuietly()
         }
+    }
+
+    /** Jewel 第 8 轮 P2-2：已下载包记录的附属写操作只记日志、不进主流程失败分支
+     * （B9-P2-2 同款口径）——下载已完成且 SHA256 已通过，save() 抛错（磁盘满、
+     * DataStore 损坏）不能把一次成功的下载误报成失败、也不能清掉已下载路径；
+     * 同理 checkForUpdate 两次 clear() 抛错不能把成功的“已是最新”检查改写成 error 态。
+     * （save 失败时包仍在磁盘上、校验已通过，只是重启后恢复不到、需重新下载；
+     * 下次下载成功时 cleanOldApkFiles 会清掉它，不留孤儿包。）
+     * B15-P2-2 收敛：取消必须原样抛出——runCatching 会吞掉 CancellationException，
+     * 两助手遇 CE 均重抛（附属写失败仍只记日志、不推翻主流程）。 */
+    private suspend fun saveDownloadedApkRecordQuietly(path: String, version: String) {
+        runCatching { downloadedApkStore.save(path, version) }
+            .onFailure {
+                if (it is CancellationException) throw it
+                AppLog.w("UpdateViewModel", "已下载包记录保存失败（包已下好、校验通过，下次启动恢复不到）：${it.message}")
+            }
+    }
+
+    private suspend fun clearDownloadedApkRecordQuietly() {
+        runCatching { downloadedApkStore.clear() }
+            .onFailure {
+                if (it is CancellationException) throw it
+                AppLog.w("UpdateViewModel", "已下载包记录清理失败：${it.message}")
+            }
     }
 
     /** 当前版本是否低于目标版本。 */
@@ -140,10 +174,14 @@ class UpdateViewModel @Inject constructor(
                 val latest = stripVersionPrefix(aggApi.version())
                 // B9-P2-2：成功后的附属读写失败不进主流程失败分支——版本已拿到，
                 // 检查时间写失败只记日志；跳过版本读失败按“未跳过”走。
+                // Jewel 第 8 轮 P2-1：跳过版本优先读内存态（skipVersion() 同步置位），
+                // 写盘尚未落地的窗口内也按“已跳过”走。
                 runCatching { settingsRepository.setUpdateLastCheckTime(System.currentTimeMillis()) }
                     .onFailure { AppLog.w("UpdateViewModel", "检查时间保存失败：${it.message}") }
-                val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
-                    .getOrDefault("")
+                val skipVersion = resolveSkipVersion(
+                    skippedVersionMemory,
+                    runCatching { settingsRepository.currentUpdateSkipVersion() }.getOrDefault(""),
+                )
                 val current = _uiState.value.currentVersion
                 // 第 7 轮 P2-5：先跑启动恢复（init 里那路可能还没跑完），
                 // 再按恢复出的 downloadedVersion 判同版保留——否则重查
@@ -167,10 +205,9 @@ class UpdateViewModel @Inject constructor(
                         }
                         // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉，
                         // 否则重启后恢复又把失效包复活。
-                        // B11-P2-1：附属持久化失败不推翻主流程——版本已确认是
-                        // 最新，clear() 抛错只记日志，不进外层 catch 的“检查失败”。
-                        runCatching { downloadedApkStore.clear() }
-                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
+                        // Jewel 第 8 轮 P2-2：clear() 抛错只记日志，不把成功的
+                        // “已是最新”检查改写成 error 态（B11-P2-1 同款口径）。
+                        clearDownloadedApkRecordQuietly()
                     }
                     UpdateService.isSkippedVersion(latest, skipVersion) -> {
                         _uiState.update {
@@ -187,9 +224,8 @@ class UpdateViewModel @Inject constructor(
                             )
                         }
                         // 第 7 轮 P2-5：同上，跳过版本的持久化记录同步清掉。
-                        // B11-P2-1：同上，附属写失败只记日志、不报“检查失败”。
-                        runCatching { downloadedApkStore.clear() }
-                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
+                        // Jewel 第 8 轮 P2-2：同上，clear() 抛错只记日志（B11-P2-1 同款口径）。
+                        clearDownloadedApkRecordQuietly()
                     }
                     else -> {
                         val size = downloader.headApkSizeBytes(UpdateService.downloadUrl(latest))
@@ -304,8 +340,13 @@ class UpdateViewModel @Inject constructor(
                     // 不受影响（见下面的重弹分支，同样以未跳过为前提）。
                     // B9-P2-2：同上——下载已完成、校验已通过，跳过版本读失败
                     // 只按“未跳过”走，不把已下好的包报成“下载失败”。
-                    val skipVersion = runCatching { settingsRepository.currentUpdateSkipVersion() }
-                        .getOrDefault("")
+                    // Jewel 第 8 轮 P2-1：优先读内存态跳过版本——skipVersion()
+                    // 的写盘是异步的，写盘落地前下载恰好跑完时，读 DataStore
+                    // 会拿到旧值、刚跳过的版本又弹完成 Toast 并重弹卡片。
+                    val skipVersion = resolveSkipVersion(
+                        skippedVersionMemory,
+                        runCatching { settingsRepository.currentUpdateSkipVersion() }.getOrDefault(""),
+                    )
                     if (shouldNotifyDownloadComplete(latest, skipVersion)) {
                         _uiState.update {
                             it.copy(
@@ -319,11 +360,10 @@ class UpdateViewModel @Inject constructor(
                         }
                         // 第 7 轮 P2-5：下载完成即持久化路径 + 版本，进程重启
                         // 后恢复复用，不用重新下载。
-                        // B11-P2-1：附属持久化失败不推翻主流程——下载已完成、
-                        // 校验已通过，save() 抛错只记日志，不把已下好的包报成
-                        // “下载失败”（B9-P2-2 同款，不同调用点）。
-                        runCatching { downloadedApkStore.save(dest.absolutePath, latest) }
-                            .onFailure { AppLog.w("UpdateViewModel", "已下载记录保存失败：${it.message}") }
+                        // Jewel 第 8 轮 P2-2：save() 抛错只记日志——包已下好且
+                        // 校验通过，不能把一次成功的下载误报成失败、清掉已下载路径
+                        //（B11-P2-1 同款口径，不同调用点）。
+                        saveDownloadedApkRecordQuietly(dest.absolutePath, latest)
                         // 第 6 轮 P2-2：下载完成时卡片若已被“稍后”/返回键关掉，要重新
                         // 弹出给安装入口，否则下好的包没有任何入口能再打开“立即安装”
                         //（之前只发一条 Toast，卡片已关）；用户已“跳过此版”的不弹。
@@ -358,11 +398,11 @@ class UpdateViewModel @Inject constructor(
                         )
                     }
                     // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
-                    // B11-P2-1：同款——这里已在 catch 分支里，clear() 再抛错
-                    // 会直接逃出 launch、变成 viewModelScope 未捕获异常崩应用；
-                    // 附属写失败只记日志。
-                    runCatching { downloadedApkStore.clear() }
-                        .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
+                    // Jewel 第 8 轮 P2-2：clear() 抛错只记日志——旧实现在 catch
+                    // 块里裸调 clear()，抛错会从协程逃逸出去（B11-P2-1 同款：
+                    // 这里已在 catch 分支里，clear() 再抛错会直接逃出 launch、
+                    // 变成 viewModelScope 未捕获异常崩应用）。
+                    clearDownloadedApkRecordQuietly()
                 }
             } catch (e: Exception) {
                 if (downloadGen == downloadGeneration) {
@@ -376,9 +416,8 @@ class UpdateViewModel @Inject constructor(
                         )
                     }
                     // 第 7 轮 P2-5：内存路径清掉时持久化记录同步清掉。
-                    // B11-P2-1：同上，catch 分支里的附属写失败只记日志、不崩溃。
-                    runCatching { downloadedApkStore.clear() }
-                        .onFailure { AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}") }
+                    // Jewel 第 8 轮 P2-2：同上，clear() 抛错只记日志（B11-P2-1 同款）。
+                    clearDownloadedApkRecordQuietly()
                 }
             } finally {
                 if (downloadGen == downloadGeneration) downloadJob = null
@@ -449,6 +488,9 @@ class UpdateViewModel @Inject constructor(
         // 注意 cancelDownload() 不加代次：CE catch 凭现有代次把 downloading
         // 清掉；若在这里 +1 代次，旧任务收尾会被守卫拦住、downloading 永远 true。
         cancelDownload()
+        // Jewel 第 8 轮 P2-1：先同步记内存态，再异步写盘——完成分支优先读
+        // 内存态，不等写盘落地；写盘失败时清掉内存态（跳过没记上，卡片留着可再点一次）。
+        skippedVersionMemory = latest
         viewModelScope.launch {
             try {
                 settingsRepository.setUpdateSkipVersion(latest)
@@ -458,6 +500,7 @@ class UpdateViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
+                skippedVersionMemory = null
                 // B8-P2-2：记跳过失败不静默吞掉、也不关卡——卡片留着，用户可再点一次。
                 _uiState.update { it.copy(toast = nextToastEvent("跳过失败，请重试")) }
             }
@@ -481,6 +524,15 @@ class UpdateViewModel @Inject constructor(
  */
 internal fun shouldNotifyDownloadComplete(latestVersion: String, skippedVersion: String?): Boolean =
     !UpdateService.isSkippedVersion(latestVersion, skippedVersion.orEmpty())
+
+/**
+ * Jewel 第 8 轮 P2-1：完成分支 / 检查分支读跳过版本的口径（纯逻辑，可单测）——
+ * 内存态（skipVersion() 内同步置位）优先于 DataStore 读回的值；写盘尚未落地
+ * 的窗口内也按“已跳过”走，不弹完成 Toast、不重弹卡片。内存态为空时回落到
+ * DataStore 读回的值（写盘失败时内存态会被清掉，与 DataStore 保持一致）。
+ */
+internal fun resolveSkipVersion(memorySkippedVersion: String?, storedSkippedVersion: String): String =
+    memorySkippedVersion ?: storedSkippedVersion
 
 /**
  * 第 6 轮 P2-2：重查时是否保留已下载包——只在已下载包的版本就是本次
