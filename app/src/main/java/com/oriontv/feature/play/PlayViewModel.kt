@@ -177,7 +177,7 @@ class PlayViewModel @Inject constructor(
                 val current = _uiState.value.current
                 if (current != null) {
                     if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
-                        seekTo(positionMs)
+                        seekTo(positionMs, userInitiated = false)
                     }
                 } else {
                     routePositionMs = positionMs
@@ -778,7 +778,7 @@ class PlayViewModel @Inject constructor(
         }
         introSkippedThisEpisode = true
         _uiState.update { it.copy(skipIntroVisible = false) }
-        seekTo(state.introEndMs)
+        seekTo(state.introEndMs, userInitiated = false)
     }
 
     /**
@@ -817,7 +817,7 @@ class PlayViewModel @Inject constructor(
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
             _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }
-            seekTo(0L)
+            seekTo(0L, userInitiated = false)
             playerManager.play()
             userPaused = false
             // 暂停期间就绪超时不触发（P2-6）；恢复播放后若仍在加载，重新起 20 秒超时。
@@ -832,10 +832,17 @@ class PlayViewModel @Inject constructor(
         saveRecordNow()
     }
 
-    fun seekTo(positionMs: Long) {
+    /**
+     * 统一 seek 入口。用户主动 seek（进度条拖动、±10 秒、落点预览提交）走默认
+     * userInitiated=true，片头学习只看这类 seek；程序自己发的 seek（自动跳片头、
+     * 胶囊跳过、重播回 0、深链断点）必须传 false，否则断点续播会被误学成片头。
+     */
+    fun seekTo(positionMs: Long, userInitiated: Boolean = true) {
+        val fromMs = playerManager.currentPositionMs
         val duration = playerManager.durationMs
         val clamped = clampSeekTarget(positionMs, duration)
         playerManager.seekTo(clamped)
+        if (userInitiated) maybeLearnIntroEnd(fromMs, clamped, duration)
         // 第 7 轮 P2-1：seek 后按新位置重算预告卡——落点离开片尾窗口（剩 10 秒内
         // 或已标记片尾处）时清掉，否则预告卡钉屏、“3 秒后自动播放”被冻结误导；
         // 落点仍在片尾窗口内时保留（轮询门控的 nextEpisodeShownForIndex 已置位，
@@ -860,9 +867,45 @@ class PlayViewModel @Inject constructor(
     /** 跳过片头：跳到片头结束点（手动标记优先，否则默认时长）。 */
     fun skipIntro() {
         val target = _uiState.value.introEndMs
-        if (target > 0) seekTo(target)
+        if (target > 0) seekTo(target, userInitiated = false)
         introSkippedThisEpisode = true
         _uiState.update { it.copy(skipIntroVisible = false) }
+    }
+
+    /**
+     * 学习式片头：用户在片头窗口内手动往前跳、落点越过当前认定的片头结束点时，
+     * 把落点记为本片的片头结束点（与手动标记同一把键、同一个 introEndTime
+     * 字段），下集起自动按学到的点跳。只学一次——已有手动标记的不覆盖；写库
+     * 失败不崩溃、内存不谎报（与 markIntroEnd 同款）；学完用现有 toast 提示
+     * 一次，不加新界面元素。
+     */
+    private fun maybeLearnIntroEnd(fromMs: Long, toMs: Long, durationMs: Long) {
+        if (currentKey.isBlank()) return
+        if (!IntroSkip.shouldLearnIntroEnd(
+                fromMs = fromMs,
+                toMs = toMs,
+                introEndMs = _uiState.value.introEndMs,
+                hasMark = markedIntroEndMs != null,
+                durationMs = durationMs,
+            )
+        ) return
+        viewModelScope.launch {
+            try {
+                playerSettingsRepository.update(currentKey) { it.copy(introEndTime = toMs) }
+                markedIntroEndMs = toMs
+                _uiState.update {
+                    it.copy(
+                        introEndMs = toMs,
+                        markedIntroEndMs = toMs,
+                        toast = nextToastEvent("已记住片头，下集自动跳过"),
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("PlayViewModel", "片头学习保存失败：${e.message}")
+            }
+        }
     }
 
     /**
