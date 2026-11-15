@@ -478,11 +478,16 @@ class PlayViewModel @Inject constructor(
             episodeIndex != _uiState.value.episodeIndex
         nextEpisodeDismissedForIndex = -1
         // 第 7 轮 P2-3：同集换源/自动换源/重试时，新起点仍在片头窗口内也重 arm
-        // 自动跳与胶囊——否则开播早期（仍在片头窗口内）换源后，新源上自动跳
-        // 不触发、胶囊不重现，用户只能手动快进；起点已过片头时不重 arm，
-        // “每集一次”不被换源重置。片长守卫在轮询里按新源片长重算
-        //（maybeAutoSkipIntro 的 shouldAutoSkip，见 watch 项 (b)）。
-        // 注意：只重 arm 自动跳与胶囊；nextEpisodeDismissedForIndex 由上面按
+        // 胶囊——否则开播早期（仍在片头窗口内）换源后，新源上胶囊不重现，
+        // 用户只能手动快进；起点已过片头时不重 arm，“每集一次”不被换源重置。
+        // A21-P2-1：自动跳不再重 arm——introSkippedThisEpisode 为真只可能
+        // 来自自动跳已触发或用户点了胶囊，此时起点仍在片头窗口内只能是用户
+        // 主动 seek 回来；重置会在下个轮询（≤500ms）把播放头无操作前移到
+        // 片头结束点。自动跳触发后位置本已在片头结束点，重 arm 条件根本不
+        // 成立，所以旧的重置在良性场景下是空操作，只在“用户故意回片头”时
+        // 生效。片长守卫在轮询里按新源片长重算（maybeAutoSkipIntro 的
+        // shouldAutoSkip，见 watch 项 (b)）。
+        // 注意：只重 arm 胶囊（A21-P2-1：自动跳不再重 arm）；nextEpisodeDismissedForIndex 由上面按
         // A9-P2-1 每次开播都清（同集重开是新的一次播出，“取消”不带到这一轮），
         // 换源后立即重弹另有 nextEpisodeShownForIndex 拦着。
         val resolvedIntroEndMs = IntroSkip.resolveIntroEndMs(
@@ -497,7 +502,10 @@ class PlayViewModel @Inject constructor(
             // 状态，上一集换源 2 次后下一集首次播错直接报错。
             _uiState.update { it.copy(autoSwitchAttempts = 0, failedSources = emptySet()) }
         } else if (shouldRearmIntroSkipOnSameEpisode(startPosition, resolvedIntroEndMs)) {
-            introSkippedThisEpisode = false
+            // A21-P2-1：只重现胶囊（P2-3 的本意），不重置 introSkippedThisEpisode——
+            // “每集自动跳一次”：重置会让用户故意 seek 回片头窗口内的位置在下个
+            // 轮询被再次自动跳走（暂停态也一样）。换集与 OK 重播分支的重置是新
+            // 一次观看，不动。
             skipIntroCapsule.resetForEpisode()
         }
         // A19-P2-2：reclaim 恢复暂停态时保持 userPaused=true（就绪超时门控
@@ -888,7 +896,9 @@ class PlayViewModel @Inject constructor(
     /**
      * 学习式片头：用户在片头窗口内手动往前跳、落点越过当前认定的片头结束点时，
      * 把落点记为本片的片头结束点（与手动标记同一把键、同一个 introEndTime
-     * 字段），下集起自动按学到的点跳。只学一次——已有手动标记的不覆盖；写库
+     * 字段），下集起按学到的点跳——自动跳开关开着时自动跳，关着时只驱动
+     * 胶囊手动跳（A21-P2-2：Toast 文案按 cachedAutoSkipIntro 选，不承诺
+     * 不会发生的事）。只学一次——已有手动标记的不覆盖；写库
      * 失败不崩溃、内存不谎报（与 markIntroEnd 同款）；学完用现有 toast 提示
      * 一次，不加新界面元素。
      */
@@ -910,7 +920,14 @@ class PlayViewModel @Inject constructor(
                     it.copy(
                         introEndMs = toMs,
                         markedIntroEndMs = toMs,
-                        toast = nextToastEvent("已记住片头，下集自动跳过"),
+                        toast = nextToastEvent(
+                            // A21-P2-2：自动跳是否发生由 cachedAutoSkipIntro 门控
+                            //（shouldAutoSkipNow → IntroSkip.shouldAutoSkip 要求
+                            // autoSkipEnabled）；开关关着时学到的点只驱动胶囊手动
+                            // 跳，不说“下集自动跳过”。
+                            if (cachedAutoSkipIntro) "已记住片头，下集自动跳过"
+                            else "已记住片头（可在设置里开启自动跳过）",
+                        ),
                     )
                 }
             } catch (e: CancellationException) {
