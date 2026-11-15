@@ -31,6 +31,7 @@ import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -289,22 +290,34 @@ class UpdateDownloaderResumeTest {
         @Volatile
         var closed = false
 
+        /** 诊断计数：读进了几次、回 -1 还是抛错、关了几次。 */
+        val readCalls = AtomicInteger(0)
+        val readReturnedMinusOne = AtomicBoolean(false)
+        val readThrew = AtomicBoolean(false)
+        val closeCalls = AtomicInteger(0)
+
         private var cachedSource: BufferedSource? = null
 
         override fun source(): BufferedSource {
             return cachedSource ?: object : Source {
                 override fun read(sink: Buffer, byteCount: Long): Long {
+                    readCalls.incrementAndGet()
                     readStarted.countDown()
                     // 有修复时关体立即放行，远不到兜底；无修复时等满兜底后
                     // 返回 -1，外面的 withTimeout(5 秒) 先抛超时取消异常。
                     release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
-                    if (closed) throw IOException("body closed")
+                    if (closed) {
+                        readThrew.set(true)
+                        throw IOException("body closed")
+                    }
+                    readReturnedMinusOne.set(true)
                     return -1
                 }
 
                 override fun timeout(): Timeout = Timeout.NONE
 
                 override fun close() {
+                    closeCalls.incrementAndGet()
                     closed = true
                     release.countDown()
                 }
@@ -408,7 +421,12 @@ class UpdateDownloaderResumeTest {
                 joinMs = (System.nanoTime() - cancelAt) / 1_000_000
             }
             assertTrue("下载应在 10 秒内进入体读", readEntered)
-            assertTrue("join 应在 8 秒内返回（否则是 10 秒停顿兜底）", joinMs < 8_000)
+            // 先断言读的行为本身（失败行号直接说明读干了什么）：
+            // 正常取消路径：读进 1 次、因关体抛错、不回 -1。
+            assertEquals("读应只进 1 次（无重试）", 1, body.readCalls.get())
+            assertTrue("读应因关体抛错", body.readThrew.get())
+            assertTrue("读不应回 -1（回 -1 即下载‘正常’完成）", !body.readReturnedMinusOne.get())
+            assertTrue("join 应在 8 秒内返回（否则是停顿兜底）", joinMs < 8_000)
             assertNotNull("取消的下载应抛 CancellationException", thrown)
             assertTrue(
                 "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
