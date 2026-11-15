@@ -28,7 +28,7 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 主按钮 = 熔橙底 + 墨黑文字；次按钮 = 表面底 + 主文字；
  * chip = 胶囊（999dp），选中 = 品牌底 + 白字，未选中 = 表面底 + 灰字；
  * 焦点统一三件套（放大 1.08 + 2dp 品牌描边 + 阴影 8dp）。
- * 按键只处理 KeyUp（§4），长按 OK 快捷由 M1 接 LongPressGuard。
+ * 按键只处理 KeyUp（§4）；长按快捷由各组件内联实现（如直播频道行）。
  */
 
 private val Capsule = RoundedCornerShape(OrionDimens.CapsuleRadius)

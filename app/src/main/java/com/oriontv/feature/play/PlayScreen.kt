@@ -97,6 +97,14 @@ internal fun shouldRestoreRootFocusOnTick(focusRestoreTick: Int, drawerOpen: Boo
     focusRestoreTick > 0 && !drawerOpen
 
 /**
+ * 抽屉内容晚到时是否应落焦点到当前项（可单测，C14-P1-2/C14-P1-3）：
+ * 选集总集数 0→N、换源源列表 0→N 时 effect 重跑落焦，全局弹窗开着时不抢——
+ * 否则焦点被偷出登录/更新弹窗；弹窗关闭后由 key 里的 tick 重跑补落。
+ */
+internal fun shouldFocusDrawerOnContentArrival(globalModalOpen: Boolean): Boolean =
+    !globalModalOpen
+
+/**
  * 控制条 5 秒无操作是否应自动隐藏（可单测，P2-2，第 6 轮修订）：
  * 控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
  * 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
@@ -920,6 +928,8 @@ fun PlayScreen(
                     },
                     // 第 7 轮 P2-4：初始落焦重试耗尽时回退到根，不留在遮罩后的控制条按钮上。
                     onFocusFailed = { rootRequester.requestFocus() },
+                    globalModalOpen = globalModalOpen,
+                    focusRestoreTick = focusRestoreTick,
                 )
             }
             PlayDrawer.SOURCES -> PlayDrawerPanel(title = "换源") {
@@ -933,6 +943,8 @@ fun PlayScreen(
                         drawerBottomEdgeFocused = bottom
                     },
                     onFocusFailed = { rootRequester.requestFocus() },
+                    globalModalOpen = globalModalOpen,
+                    focusRestoreTick = focusRestoreTick,
                 )
             }
             PlayDrawer.SPEED -> PlayDrawerPanel(title = "倍速") {
@@ -994,6 +1006,14 @@ private fun EpisodeDrawerContent(
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
     /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
     onFocusFailed: () -> Unit = {},
+    /**
+     * C14-P1-2：全局弹窗（登录/更新卡片）是否正开着——内容晚到（总集数
+     * 0→N）时落焦 effect 重跑，无门控会把焦点从全局弹窗偷回抽屉；开着时
+     * 不落焦（含回退到根——那同样会偷焦点），关闭后由 tick 重跑补落。
+     */
+    globalModalOpen: Boolean = false,
+    /** C14-P1-2：NavHost 级弹窗关闭后 +1——内容晚到时弹窗开着跳过，关闭后重跑补落。 */
+    focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
     val groups = DetailSearchLogic.episodeGroups(totalEpisodes)
@@ -1008,8 +1028,12 @@ private fun EpisodeDrawerContent(
     // C12-P2-4：key 加总集数——抽屉打开时内容晚到（搜源未回，总集数为 0、
     // 当前集尚未组合），Unit  effect 只跑一次、落焦失败回退到根；总集数到达
     // 时重跑，焦点落在当前集上。
-    LaunchedEffect(totalEpisodes) {
-        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    // C14-P1-2：key 加 tick、落焦加全局弹窗门控——内容晚到时全局弹窗开着，
+    // 无条件落焦会把焦点偷出弹窗；弹窗关闭后 tick 重跑补落。
+    LaunchedEffect(totalEpisodes, focusRestoreTick) {
+        if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
+            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+        }
     }
     // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
     // 却仍可获焦（焦点视觉上“消失”）；LazyRow 让超出的 chip 能滚到、能获焦。
@@ -1092,14 +1116,21 @@ private fun SourceDrawerContent(
     onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
     /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
     onFocusFailed: () -> Unit = {},
+    /** C14-P1-3：与选集抽屉同款——全局弹窗开着时内容晚到不落焦，关闭后由 tick 重跑补落。 */
+    globalModalOpen: Boolean = false,
+    /** C14-P1-3：NavHost 级弹窗关闭后 +1。 */
+    focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
     // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
     // 仍失败回退到根。
     // C12-P2-4：key 加源数量——抽屉打开时内容晚到（搜源未回，源列表为空），
     // Unit effect 只跑一次、落焦失败回退到根；源到达时重跑，焦点落在当前源上。
-    LaunchedEffect(sources.size) {
-        if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+    // C14-P1-3：key 加 tick、落焦加全局弹窗门控（与选集抽屉同款）。
+    LaunchedEffect(sources.size, focusRestoreTick) {
+        if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
+            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+        }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         sources.forEachIndexed { index, (src, srcName) ->

@@ -228,4 +228,12 @@ class PlayScreenLogicTest {
         assertFalse(shouldRestoreRootFocusOnTick(focusRestoreTick = 1, drawerOpen = true))
         assertFalse(shouldRestoreRootFocusOnTick(focusRestoreTick = 0, drawerOpen = false))
     }
+
+    @Test
+    fun `drawer content arrival does not steal focus while global modal open`() {
+        // C14-P1-2/C14-P1-3：选集总集数 0→N、换源源列表 0→N 时 effect 重跑落焦，
+        // 全局弹窗开着时不落焦（含回退到根——那同样会偷焦点），关闭后由 tick 重跑补落。
+        assertTrue(shouldFocusDrawerOnContentArrival(globalModalOpen = false))
+        assertFalse(shouldFocusDrawerOnContentArrival(globalModalOpen = true))
+    }
 }

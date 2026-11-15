@@ -47,8 +47,3 @@ fun Modifier.orionFocus(
             shape = shape,
         )
 }
-
-/** 焦点描边（不需要阴影/放大的小组件用，如 chip 内层）。 */
-@Composable
-fun focusBorderColor(focused: Boolean): Color =
-    if (focused) OrionColors.Brand else Color.Transparent

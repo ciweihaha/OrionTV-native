@@ -7,29 +7,22 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.theme.OrionColors
-import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
 
 /**
@@ -73,30 +66,5 @@ fun LoadingAnimation(
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = message, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
         }
-    }
-}
-
-/** 设置页的 Section 卡片容器：表面底 + 16dp 圆角 + 分隔线边框。 */
-@Composable
-fun SectionCard(
-    title: String,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
-            .background(OrionColors.Surface)
-            .border(
-                width = 1.dp,
-                color = OrionColors.Divider,
-                shape = RoundedCornerShape(OrionDimens.PanelCornerRadius),
-            )
-            .padding(16.dp),
-    ) {
-        Text(text = title, style = OrionTextStyles.SectionTitle)
-        Spacer(modifier = Modifier.height(12.dp))
-        content()
     }
 }

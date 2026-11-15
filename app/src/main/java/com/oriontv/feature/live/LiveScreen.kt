@@ -107,6 +107,23 @@ internal fun shouldFocusPanelRow(panelOpen: Boolean, epgDialogOpen: Boolean): Bo
     panelOpen && !epgDialogOpen
 
 /**
+ * 失败页落焦 effect 是否应落焦点到“重试”按钮（可单测，A14-P2-1 = C14-P1-1）：
+ * 面板关闭且全局弹窗未打开时才落——面板关闭时根 effect（key 含 panelOpen）
+ * 重跑会把焦点抢回根部，失败页自身的 effect key 只有 tick、面板开关时不重跑，
+ * “频道面板”按钮遥控不可达；key 加 panelOpen、面板关闭时重跑补落（面板
+ * 打开时面板 effect 后跑获胜，不抢）；全局弹窗开着时不抢，关闭后由 tick 重跑补落。
+ */
+internal fun shouldFocusFailedOverlay(panelOpen: Boolean, globalModalOpen: Boolean): Boolean =
+    !panelOpen && !globalModalOpen
+
+/**
+ * EPG 弹窗落焦 effect 是否应落焦点（可单测，C14-P2-1）：节目单晚到
+ * （empty→non-empty 翻转）时重跑落焦，全仓唯一没有全局弹窗门控的数据到达型
+ * 落焦 effect——全局弹窗开着时不抢，关闭后由 key 里的 tick 重跑补落。
+ */
+internal fun shouldFocusEpgDialog(globalModalOpen: Boolean): Boolean = !globalModalOpen
+
+/**
  * 直播页焦点 containment 是否应在预览阶段消费该 KeyDown（可单测，C7-P1-1 /
  * A7-P2-5 同源）：面板打开时左键、EPG 弹窗打开时左/右键——焦点经空间导航会
  * 跑到导航轨，返回键绕过“先关面板/弹窗”层级直接退出直播页，EPG 左键切台
@@ -570,6 +587,7 @@ fun LiveScreen(
                 },
                 onOpenPanel = { viewModel.openPanel() },
                 globalModalOpen = globalModalOpen,
+                panelOpen = uiState.panelOpen,
                 focusRestoreTick = focusRestoreTick,
             )
         }
@@ -648,6 +666,7 @@ fun LiveScreen(
                 epg = uiState.epg,
                 nowMs = uiState.nowMs,
                 onClose = { viewModel.closeEpgDialog() },
+                globalModalOpen = globalModalOpen,
                 focusRestoreTick = focusRestoreTick,
             )
         }
@@ -743,12 +762,25 @@ private fun PlaybackFailedOverlay(
      * EmptyState 同款：挂载时本 effect 在根 effect 之后跑、按钮获胜；
      * 弹窗关闭时两者都重跑、按钮后跑获胜；面板开关时本 effect 不重跑，
      * 与改前一致（面板开着时面板 effect 管焦点，关面板时根 effect 恢复）。
+     * A14-P2-1（= C14-P1-1）：上面“关面板时根 effect 恢复”正是残留窗口——
+     * 失败页仍在时关面板，焦点被根 effect 抢回根部；key 再加 panelOpen，
+     * 面板关闭时重跑补落“重试”按钮（组合顺序上本 effect 在根 effect 之后跑、
+     * 按钮获胜；面板打开时本 effect 也重跑但守卫跳过，面板 effect 后跑获胜，
+     * 不抢；面板 15 秒定时器自动关面板走 closePanel、同一路径）。
+     * closePanel 同时清 epgDialogChannel，面板关闭时 EPG 不可能还开着，
+     * 不存在“面板关了、EPG 还在、却被本 effect 抢焦”的路径。
      */
     focusRestoreTick: Int = 0,
+    /** A14-P2-1：面板是否开着——开着时失败页不落焦，交给面板 effect。 */
+    panelOpen: Boolean = false,
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(focusRestoreTick) { if (!globalModalOpen) requester.requestFocusWithRetry() }
+    LaunchedEffect(focusRestoreTick, panelOpen) {
+        if (shouldFocusFailedOverlay(panelOpen, globalModalOpen)) {
+            requester.requestFocusWithRetry()
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1190,6 +1222,13 @@ private fun EpgDialog(
     epg: EpgParser.EpgData?,
     nowMs: Long,
     onClose: () -> Unit = {},
+    /**
+     * C14-P2-1：全局弹窗（登录/更新卡片）是否正开着——节目单晚到
+     * （empty→non-empty 翻转）时落焦 effect 重跑，无门控会把焦点从全局
+     * 弹窗里偷回节目行；开着时不落焦，关闭后由 key 里的 tick 重跑补落。
+     * 滚动不受门控影响（只动列表位置，不抢焦点）。
+     */
+    globalModalOpen: Boolean = false,
     /** C12-P1-3：NavHost 级弹窗关闭后 +1——EPG 弹窗打开时全局弹窗关闭，
      * 根 effect 因弹窗开着跳过、EPG 自己的落焦 effect 又不重跑，焦点无处恢复；
      * key 加 tick，关闭后重落正在播的节目行。 */
@@ -1221,6 +1260,7 @@ private fun EpgDialog(
     // C5-P2-1/A5-P2-8：固定 delay(100)+单次请求改 requestFocusWithRetry；
     // 正在播行抢不到时回退到“关闭”按钮。
     // C12-P1-3：key 加 focusRestoreTick——弹窗打开时全局弹窗关闭后重落焦点。
+    // C14-P2-1：落焦加全局弹窗门控（节目单晚到时不把焦点偷出全局弹窗）。
     LaunchedEffect(channel.url, programmes.isEmpty(), focusRestoreTick) {
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
@@ -1228,12 +1268,14 @@ private fun EpgDialog(
             // 第 7 轮 P2-10：落焦成功即把陷阱位置设为实际行——节目单晚到时
             // 初始值是 -1（不拦截），只靠行/按钮的 onFocus 回调纠正会在焦点
             // 已落上、回调尚未跑的窗口里留空档；这里与回调写同一值，不冲突。
-            if (currentRequester.requestFocusWithRetry()) {
-                focusedIndex = idx
-            } else {
-                closeRequester.requestFocusWithRetry()
+            if (shouldFocusEpgDialog(globalModalOpen)) {
+                if (currentRequester.requestFocusWithRetry()) {
+                    focusedIndex = idx
+                } else {
+                    closeRequester.requestFocusWithRetry()
+                }
             }
-        } else {
+        } else if (shouldFocusEpgDialog(globalModalOpen)) {
             closeRequester.requestFocusWithRetry()
         }
     }

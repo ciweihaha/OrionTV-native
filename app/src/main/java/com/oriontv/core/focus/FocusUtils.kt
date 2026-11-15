@@ -16,7 +16,8 @@ import kotlinx.coroutines.delay
  *    Compose 的 onKeyEvent 同样只处理 [KeyEventType.KeyUp]，并在真机上核实是否双发。
  * 2. 首选焦点锚点：每个弹窗/页面打开时 requestFocus 到“当前项”，不是第 0 项。
  * 3. 返回后显式恢复位置：NavHost pop 后保存 index + scrollToItem + requestFocus。
- * 4. 长按后松手会跟一次 onClick，需用 1 秒时间窗挡掉（见 [LongPressGuard]）。
+ * 4. 长按后松手会跟一次 onClick，需用 1 秒时间窗挡掉（plan §3.3 的第 8 条：
+ * 首页卡片长按 1000ms、直播卡片长按收藏；各组件内联实现，如直播频道行）。
  */
 object FocusUtils {
 
@@ -54,23 +55,4 @@ suspend fun FocusRequester.requestFocusWithRetry(
         delay(delayMs)
     }
     return false
-}
-
-/**
- * 长按挡误触：长按后松手会跟一次 onClick，用 1 秒时间窗挡掉
- *（plan §3.3 第 8 条：首页卡片长按 1000ms、直播卡片长按收藏）。
- * 注意：播放页长按快进第 5 轮已实现——PlayScreen 在预览阶段拦截重复左/右
- * KeyDown 做连续 10 秒步进（P1-C/P2-10），重复事件一律消费、不推出焦点；
- * 不要再把“播放页没有长按快进”写进这里。
- */
-class LongPressGuard(private val windowMs: Long = 1000L) {
-    private var lastLongPressAtMs: Long = -1L
-
-    fun markLongPress(nowMs: Long) {
-        lastLongPressAtMs = nowMs
-    }
-
-    /** 长按后 1 秒内的点击应被挡掉。 */
-    fun shouldSuppressClick(nowMs: Long): Boolean =
-        lastLongPressAtMs >= 0 && nowMs - lastLongPressAtMs < windowMs
 }

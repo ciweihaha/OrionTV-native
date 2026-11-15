@@ -230,4 +230,23 @@ class LiveScreenLogicTest {
             ),
         )
     }
+
+    @Test
+    fun `failed overlay refocuses only when panel closed and no global modal`() {
+        // A14-P2-1（= C14-P1-1）：失败页仍在时关面板，根 effect 重跑抢回根部，
+        // 失败页 effect key 加 panelOpen、面板关闭时重跑补落“重试”按钮；
+        // 面板打开时交给面板 effect，不抢；全局弹窗开着时不抢，关闭后由 tick 补落。
+        assertTrue(shouldFocusFailedOverlay(panelOpen = false, globalModalOpen = false))
+        assertFalse(shouldFocusFailedOverlay(panelOpen = true, globalModalOpen = false))
+        assertFalse(shouldFocusFailedOverlay(panelOpen = false, globalModalOpen = true))
+        assertFalse(shouldFocusFailedOverlay(panelOpen = true, globalModalOpen = true))
+    }
+
+    @Test
+    fun `epg dialog does not steal focus while global modal open`() {
+        // C14-P2-1：节目单晚到（empty→non-empty）时落焦 effect 重跑，
+        // 全局弹窗开着时不落焦，关闭后由 key 里的 tick 重跑补落。
+        assertTrue(shouldFocusEpgDialog(globalModalOpen = false))
+        assertFalse(shouldFocusEpgDialog(globalModalOpen = true))
+    }
 }
