@@ -385,14 +385,21 @@ class UpdateDownloader @Inject constructor(
             )
         val url = UpdateService.downloadUrl(version)
         downloadApk(url, destFile, onProgress)
-        if (!verifySha256(destFile, expected)) {
+        // B15-P2-1：SHA-256 校验（整包文件读）与旧包清理曾在调用方线程跑——
+        // startDownload 是 viewModelScope.launch（主线程）；只把这两步包进
+        // withContext(ioDispatcher)。下载体本身不动（D8-P2-2：withContext
+        // 会吞掉下载体内抛出的 CancellationException，下载体改用
+        // coroutineScope + async(IO) + await()，不再用 withContext 包起来）。
+        if (!withContext(ioDispatcher) { verifySha256(destFile, expected) }) {
             destFile.delete()
             throw UpdateDownloadException(
                 UpdateError.VerifyFailed,
                 "校验失败：下载文件 SHA256 与官方不一致，拒绝安装",
             )
         }
-        destFile.parentFile?.let { cleanOldApkFiles(it) }
+        destFile.parentFile?.let { dir ->
+            withContext(ioDispatcher) { cleanOldApkFiles(dir) }
+        }
         return destFile
     }
 

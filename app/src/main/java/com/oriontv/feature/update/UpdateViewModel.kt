@@ -87,8 +87,14 @@ class UpdateViewModel @Inject constructor(
      * 文件存在但对不上号时删掉，不留孤儿包。
      */
     private suspend fun runRestoreDownloadedApk() {
+        // B15-P2-2：两处先单独处理 CancellationException 再走通用失败分支——
+        // load()/clear() 都是 suspend，取消时抛 CE；旧写法 catch (_: Exception) /
+        // runCatching 把 CE 一并吞掉，取消传不出去。与同文件其他 runCatching
+        // 附属写一致：附属持久化失败不推翻主流程（B11-P2-1），但取消必须原样抛出。
         val record = try {
             downloadedApkStore.load()
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         } ?: return
@@ -101,6 +107,10 @@ class UpdateViewModel @Inject constructor(
                 runCatching { File(record.path).delete() }
             }
             runCatching { downloadedApkStore.clear() }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    AppLog.w("UpdateViewModel", "已下载记录清理失败：${it.message}")
+                }
         }
     }
 
