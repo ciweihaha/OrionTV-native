@@ -196,7 +196,7 @@ fun HomeScreen(
     var rowsWereEmpty by remember { mutableStateOf(true) }
     // C22-P2-1：key 加 uiState.error——C21-P2-1 的修法在首进分支里查
     // shouldFocusHomeRetry，但首帧组合时 error 仍是 null（refresh() 的
-    // isServerConfigured() 即挂起，失败结果只能在组合之后到达），首进分支
+    // 加载即挂起，失败结果只能在组合之后到达），首进分支
     // 恒走落首 chip、initialFocusDone 置真；错误到达时 rows 是同一空列表
     // 实例、key 比较不变，effect A 确定不重跑。key 加 error 后，错误到达
     // （null 变非 null）即重跑，下面的错误到达分支落“重试”，不论

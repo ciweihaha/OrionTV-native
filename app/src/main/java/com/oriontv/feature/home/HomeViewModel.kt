@@ -115,17 +115,11 @@ class HomeViewModel @Inject constructor(
             try {
                 // P2-8：刷新保留旧行，只置 loading，不闪回“正在加载…”空屏。
                 _uiState.value = _uiState.value.copy(isLoading = true)
-                val serverConfigured = settingsRepository.isServerConfigured()
-                if (!serverConfigured) {
-                    // H11-C1：第 11 轮——未配置分支补代次守卫：isServerConfigured()
-                    // 是挂起点，陈旧的 refresh 可能在较新 refresh 已写好行之后
-                    // 才恢复、无守卫地清空整屏（成功分支与 catch 分支早已有该守卫）。
-                    if (gen != generation) return@launch
-                    // B14-P2-2：清行也是写态，推进版本（见 rowsVersion 注释）。
-                    rowsVersion++
-                    _uiState.value = HomeUiState(serverConfigured = false)
-                    return@launch
-                }
+                // 新装不配服务器也能直接加载首页点播：agg 接口是硬编码直连、
+                // 不需要服务器地址；豆瓣走用户 MoonTV 服务，未配时
+                // loadDouban 直接返回空列表、相关行不展示（不算失败）。
+                // 服务器地址只用于服务端存储/登录与搜索，不是浏览点播必需的，
+                // 不再以 isServerConfigured() 拦在加载之前。
                 val baseUrl = settingsRepository.currentApiBaseUrl()
                 val rows = loadRows(baseUrl)
                 if (gen != generation) return@launch // 迟到结果丢弃
@@ -426,13 +420,16 @@ class HomeViewModel @Inject constructor(
     private suspend fun loadDoubanCategory(category: HomeCategory, baseUrl: String): List<HomeRowItem> =
         loadDouban(category.doubanType ?: "movie", category.doubanTag ?: "热门", baseUrl)
 
-    private suspend fun loadDouban(type: String, tag: String, baseUrl: String): List<HomeRowItem> =
-        // B12-P2-5：豆瓣失败不再吞成空列表——之前失败与“成功返回空”都落到
-        // 空列表，loadCategory 无法区分、行被静默丢弃、无失败占位；现在失败
-        // 即抛错，走 loadRows() 的占位行（“该分类加载失败”），只有成功返回空
-        // 才是真的没内容、行不展示。取消原样抛出（不包进失败里）。
-        moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
+    private suspend fun loadDouban(type: String, tag: String, baseUrl: String): List<HomeRowItem> {
+        // 未配服务器时豆瓣不可用（/api/douban 走用户 MoonTV 服务）——这是“未配置”，
+        // 不是“失败”：直接返回空列表，loadCategory 的空列表即不建行（纯豆瓣行隐藏、
+        // CMS 行的豆瓣回落跳过），不走 loadRows() 的“该分类加载失败”占位行；
+        // 空 baseUrl 拼出的相对 URL 在 OkHttp 层也会直接抛错。配了服务器时失败
+        // 仍按 B12-P2-5 抛错走占位行（下面 getDoubanData 不吞异常）。
+        if (baseUrl.isBlank()) return emptyList()
+        return moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
             .list.orEmpty().map(::mapDoubanItem)
+    }
 }
 
 /**

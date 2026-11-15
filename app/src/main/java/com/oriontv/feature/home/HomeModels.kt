@@ -195,7 +195,7 @@ internal fun shouldFocusHomeRetry(
 /**
  * C22-P2-1：错误在首进落焦之后才到达时是否应落焦错误页“重试”按钮（纯函数，
  * 可单测）——C21-P2-1 的修法只在 effect A 的首进分支里查 shouldFocusHomeRetry，
- * 但首帧组合时 error 仍是 null（refresh() 的 isServerConfigured() 即挂起），
+ * 但首帧组合时 error 仍是 null（refresh() 的加载即挂起），
  * 首进分支恒走落首 chip、initialFocusDone 置真；错误到达时 effect A 的 key
  * 里没有 error、effect B 的 key 也不变，两条路都不重跑。本谓词钉住接线：
  * 同一失败只触发一次（lastErrorFocused 去重，详情页 C4-P1-4 同款；error 清掉

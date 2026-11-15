@@ -58,9 +58,6 @@ class SettingsRepository @Inject constructor(
     suspend fun currentStorageType(): String = storageType.first()
     override suspend fun currentAuthCookies(): String = authCookies.first()
 
-    /** 是否配了服务器地址（首页空态门控用）。 */
-    suspend fun isServerConfigured(): Boolean = currentApiBaseUrl().isNotBlank()
-
     /**
      * server-config 是否从未成功拉取过。
      * B6-P1-2：按独立的“已拉取过”标记判，不按 StorageType 是否为空——
