@@ -271,7 +271,11 @@ private fun DetailScreenContent(
                                     text = if (uiState.isFavorite) "已收藏" else "收藏",
                                     onClick = { viewModel.toggleFavorite() },
                                     // 第 6 轮 P1-2：切换进行中禁用，防连按把收藏态翻回去。
-                                    enabled = !uiState.isFavoriteToggling,
+                                    // 第 7 轮跟进 D7-P2-10：收藏态未知（服务端失败且从未
+                                    // 查过）时也禁用——不把未知画成“未收藏”，也避免在
+                                    // 未知态上误 toggle；禁用态由 SecondaryButton 置灰
+                                    //（alpha 0.4f，不可聚焦）。
+                                    enabled = !uiState.isFavoriteToggling && !uiState.isFavoriteUnknown,
                                 )
                             }
                             Spacer(modifier = Modifier.height(24.dp))
