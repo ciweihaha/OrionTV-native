@@ -250,7 +250,17 @@ class FavoritesRepository @Inject constructor(
                 Log.w("FavoritesRepository", "收藏写后校验拉取失败，沿用写结果：${e.message}")
                 null
             }
-            applyToggleVerification(nowFavorite, verified) { lastKnownFavorites[key] = it }
+            applyToggleVerification(nowFavorite, verified) { verifiedState ->
+                lastKnownFavorites[key] = verifiedState
+                // D9-P2-1：校验发现服务端实态与预期不一致时，先按实态同步
+                // lastGood——否则抛错后一次读失败回落旧表，已删的收藏会复活。
+                lastGoodFavorites = patchLastGoodEntry(lastGoodFavorites, key, favorite, verifiedState)
+            }
+            // D9-P2-1：服务端写成功后同步 lastGood 收藏缓存——校验 GET
+            // 本身失败（verified==null）时上面不跑，仍要按写结果 patch；
+            // 否则随后一次读失败回落旧表时，刚删的收藏“幽灵复活”、刚加
+            // 的收藏缺失。
+            lastGoodFavorites = patchLastGoodEntry(lastGoodFavorites, key, favorite, nowFavorite)
             nowFavorite
         } else {
             val dao = db.favoriteDao()
@@ -303,6 +313,39 @@ internal fun mergePlayRecordLookup(
         returned
     } else {
         cached?.plus(returned) ?: returned
+    }
+
+/**
+ * 第 9 轮 D9-P2-1：服务端写成功后同步 lastGood* 缓存（纯函数，可单测）——
+ * 写成功后不更新，读失败回落旧表时已删项会“幽灵复活”（B14-P2-7 修过整表
+ * 回表的同款，这里是写路径的同款缺口）。写成功即按写结果 patch 对应 key
+ * （加进新值/删掉旧值）；失效缓存（置 null）会丢离线兜底，patch 更优。
+ * 缓存为 null（从未成功拉过）时加项新建单条表、删项保持 null。
+ */
+internal fun <V> patchLastGoodEntry(
+    cached: Map<String, V>?,
+    key: String,
+    value: V?,
+    present: Boolean,
+): Map<String, V>? {
+    if (!present) return cached?.minus(key)
+    if (value == null) return cached
+    return (cached ?: emptyMap()) + (key to value)
+}
+
+/**
+ * 第 9 轮 D9-P2-1：搜索历史的 lastGood 补丁（纯函数，可单测）——新词插
+ * 头部、去重；删词去掉该词；与 getLatest20 的“最新在前”口径一致。
+ */
+internal fun patchLastGoodHistory(
+    cached: List<String>?,
+    keyword: String,
+    present: Boolean,
+): List<String>? =
+    if (present) {
+        listOf(keyword) + (cached.orEmpty() - keyword)
+    } else {
+        cached?.minus(keyword)
     }
 
 @Singleton
@@ -388,6 +431,9 @@ class PlayRecordsRepository @Inject constructor(
         if (serverStorage.useServer) {
             val baseUrl = serverStorage.baseUrl
             val ok = runOrDefault(false) { moonTvApi.savePlayRecord(baseUrl, key, record) }
+            // D9-P2-1：服务端写成功后同步 lastGood——否则读失败回落旧表时，
+            // 刚保存的断点缺失（续播回到旧进度）。
+            if (ok) lastGoodRecords = patchLastGoodEntry(lastGoodRecords, key, record, true)
             if (!ok) Log.w("PlayRecordsRepository", "服务端保存播放记录失败 key=$key")
             return@withLock ok
         }
@@ -415,6 +461,9 @@ class PlayRecordsRepository @Inject constructor(
         if (serverStorage.useServer) {
             val baseUrl = serverStorage.baseUrl
             val ok = runOrDefault(false) { moonTvApi.deletePlayRecord(baseUrl, key) }
+            // D9-P2-1：删成功后同步 lastGood——否则读失败回落旧表时已删
+            // 记录“幽灵复活”（断点续播回到已删的片）。
+            if (ok) lastGoodRecords = patchLastGoodEntry(lastGoodRecords, key, null, false)
             if (!ok) Log.w("PlayRecordsRepository", "服务端删除播放记录失败 key=$key")
             return@withLock ok
         }
@@ -496,9 +545,12 @@ class SearchHistoryRepository @Inject constructor(
         val serverStorage = settingsRepository.currentServerStorageSnapshot()
         if (serverStorage.useServer) {
             val baseUrl = serverStorage.baseUrl
-            return@withLock serverWrite("add:$trimmed") {
+            val ok = serverWrite("add:$trimmed") {
                 moonTvApi.addSearchHistory(baseUrl, trimmed)
             }
+            // D9-P2-1：写成功后同步 lastGood——否则读失败回落旧表时新词缺失。
+            if (ok) lastGoodHistory = patchLastGoodHistory(lastGoodHistory, trimmed, true)
+            return@withLock ok
         }
         db.searchHistoryDao().insert(
             SearchHistoryEntity(keyword = trimmed, saveTime = System.currentTimeMillis()),
@@ -513,9 +565,12 @@ class SearchHistoryRepository @Inject constructor(
         val serverStorage = settingsRepository.currentServerStorageSnapshot()
         if (serverStorage.useServer) {
             val baseUrl = serverStorage.baseUrl
-            return@withLock serverWrite("delete:$keyword") {
+            val ok = serverWrite("delete:$keyword") {
                 moonTvApi.deleteSearchHistory(baseUrl, keyword)
             }
+            // D9-P2-1：删成功后同步 lastGood——否则读失败回落旧表时已删的词复活。
+            if (ok) lastGoodHistory = patchLastGoodHistory(lastGoodHistory, keyword, false)
+            return@withLock ok
         }
         db.searchHistoryDao().deleteByKeyword(keyword)
         true
@@ -526,9 +581,12 @@ class SearchHistoryRepository @Inject constructor(
         val serverStorage = settingsRepository.currentServerStorageSnapshot()
         if (serverStorage.useServer) {
             val baseUrl = serverStorage.baseUrl
-            return@withLock serverWrite("clear") {
+            val ok = serverWrite("clear") {
                 moonTvApi.deleteSearchHistory(baseUrl)
             }
+            // D9-P2-1：清成功后同步 lastGood——否则读失败回落旧表时已清的历史全复活。
+            if (ok) lastGoodHistory = emptyList()
+            return@withLock ok
         }
         db.searchHistoryDao().clearAll()
         true
