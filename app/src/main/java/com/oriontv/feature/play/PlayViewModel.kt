@@ -922,7 +922,14 @@ class PlayViewModel @Inject constructor(
             return
         }
         _uiState.update { it.copy(drawer = null) }
-        launchStartEpisode(next, state.episodeIndex, playerManager.currentPositionMs)
+        // A15-P2-1：播完态（STATE_ENDED）下换源，当前进度即片尾位置；
+        // 直接传给新源会被起点溢出守卫（isStartPositionOverflow）误判为播错、
+        // 自动换到别的源。播完态从 0 播新源。
+        launchStartEpisode(
+            next,
+            state.episodeIndex,
+            resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs),
+        )
     }
 
     fun setPlaybackSpeed(rate: Float) {
@@ -997,7 +1004,14 @@ class PlayViewModel @Inject constructor(
             // 这里只守 init() 那条分支。
             try {
                 if (current != null) {
-                    launchStartEpisode(current, state.episodeIndex, state.positionMs.takeIf { it > 0 })
+                    // A15-P2-1 顺带：错误页不隐含非播完态——起点溢出走自动换源、
+                    // 次数耗尽后同样落错误页，此时播放器仍在 STATE_ENDED，
+                    // state.positionMs 即片尾位置；播完态重试从 0 播。
+                    val startMs = resolveSwitchStartMs(
+                        playerManager.isEnded,
+                        state.positionMs.takeIf { it > 0 },
+                    )
+                    launchStartEpisode(current, state.episodeIndex, startMs)
                 } else {
                     initialised = false
                     // B5-P2-1：拆键统一走 MoonTvApi.splitKey（最后一个 + 切分 + 反转义），
@@ -1301,6 +1315,14 @@ class PlayViewModel @Inject constructor(
          */
         internal fun isStartPositionOverflow(startPositionMs: Long, durationMs: Long): Boolean =
             startPositionMs > 0 && durationMs > 0 && startPositionMs >= durationMs
+
+        /**
+         * A15-P2-1：换源/重试的起点（可单测）：播完态下当前进度即片尾位置，
+         * 传给新源/重试会触发起点溢出守卫、被误判为播错；播完态一律从 0 播。
+         * 未播完时原样传回（null 表示“未指定”，由调用方按断点/路由位置处理）。
+         */
+        internal fun resolveSwitchStartMs(isEnded: Boolean, positionMs: Long?): Long? =
+            if (isEnded) 0L else positionMs
 
         /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；

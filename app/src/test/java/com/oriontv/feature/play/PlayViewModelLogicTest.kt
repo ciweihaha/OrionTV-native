@@ -3,6 +3,7 @@ package com.oriontv.feature.play
 import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -94,6 +95,16 @@ class PlayViewModelLogicTest {
         assertTrue(PlayViewModel.shouldPoll(isForeground = true, backgroundPlaybackEnabled = true))
         assertTrue(PlayViewModel.shouldPoll(isForeground = false, backgroundPlaybackEnabled = true))
         assertFalse(PlayViewModel.shouldPoll(isForeground = false, backgroundPlaybackEnabled = false))
+    }
+
+    @Test
+    fun `resolveSwitchStartMs ended starts from zero otherwise keeps position`() {
+        // A15-P2-1：播完态下当前进度即片尾位置，换源/重试传它会被起点溢出守卫
+        // 误判为播错；播完态一律从 0 播，未播完时原样传回。
+        assertEquals(0L, PlayViewModel.resolveSwitchStartMs(isEnded = true, positionMs = 3_600_000L))
+        assertEquals(0L, PlayViewModel.resolveSwitchStartMs(isEnded = true, positionMs = null))
+        assertEquals(123_000L, PlayViewModel.resolveSwitchStartMs(isEnded = false, positionMs = 123_000L))
+        assertNull(PlayViewModel.resolveSwitchStartMs(isEnded = false, positionMs = null))
     }
 
     @Test

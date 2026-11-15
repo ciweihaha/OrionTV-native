@@ -189,6 +189,14 @@ class LiveViewModel @Inject constructor(
             }
             playCurrent()
             loadEpg()
+            // A15-P2-2：首启 EPG 拉取失败也要轻提示（与 10 分钟 ticker 刷新
+            // 同款 epgRefreshFailedMessage 文案）：loadEpg() 失败回落旧缓存、
+            // state.epg 非空即仍在用旧节目单，有旧缓存时不误报成“无节目单”；
+            // 无旧缓存时只说刷新失败，与“该台真无节目单”可区分（后者不弹提示）。
+            epgRefreshFailedMessage(
+                epgRepository.loadFailed.value,
+                _uiState.value.epg != null,
+            )?.let { showToast(it) }
             startTicker()
         }
     }
