@@ -23,6 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * APK 下载器（plan §5.1/§5.5，RN updateService.ts 对照）：
