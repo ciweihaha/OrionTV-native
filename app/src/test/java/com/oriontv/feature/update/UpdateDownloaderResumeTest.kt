@@ -23,6 +23,7 @@ import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -174,6 +175,62 @@ class UpdateDownloaderResumeTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `cancelling sha256 fetch interrupts stalled body read`() {
+        // D9-P2-6：fetchExpectedSha256 的体读原来是裸循环，executeCancellable
+        // 的取消挂钩在拿到响应头后即摘掉，取消后要等 15 秒读超时才停；现复用
+        // readStreamCapped 的 SCC 挂钩（D8-P2-2 同款机制），取消时关响应体、
+        // 中断 socket 读，体读立即以 CE 收尾。
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            responseFor(chain.request(), 200, StalledBody("abc123".toByteArray()))
+        }.build()
+        val downloader = UpdateDownloader(client)
+        val elapsedMs = runBlocking {
+            val deferred = async(Dispatchers.IO) {
+                downloader.fetchExpectedSha256("https://example.com/orionTV.apk.sha256")
+            }
+            delay(500) // 让取哈希进入阻塞读
+            val start = System.currentTimeMillis()
+            deferred.cancel()
+            val thrown = runCatching { deferred.await() }.exceptionOrNull()
+            assertTrue(thrown is CancellationException)
+            System.currentTimeMillis() - start
+        }
+        assertTrue("取消后 ${elapsedMs}ms 才停", elapsedMs < 10_000)
+    }
+
+    @Test
+    fun `sha256 fetch parses hash and rejects oversize body without retry`() {
+        // D9-P2-6：改用 readStreamCapped 后，正常取哈希与超限（>4KB）行为不变——
+        // 超限是确定性失败，直接回 null，不进 IOException 重试分支。
+        val hash = "a".repeat(64)
+        val okClient = OkHttpClient.Builder().addInterceptor { chain ->
+            responseFor(
+                chain.request(), 200,
+                "$hash  orionTV.apk".toResponseBody("text/plain".toMediaTypeOrNull()),
+            )
+        }.build()
+        val okResult = runBlocking {
+            UpdateDownloader(okClient).fetchExpectedSha256("https://example.com/orionTV.apk.sha256")
+        }
+        assertEquals(hash, okResult)
+
+        val bigCalls = AtomicInteger(0)
+        val bigClient = OkHttpClient.Builder().addInterceptor { chain ->
+            bigCalls.incrementAndGet()
+            responseFor(
+                chain.request(), 200,
+                ByteArray(5000) { 'x'.code.toByte() }
+                    .toResponseBody("text/plain".toMediaTypeOrNull()),
+            )
+        }.build()
+        val bigResult = runBlocking {
+            UpdateDownloader(bigClient).fetchExpectedSha256("https://example.com/orionTV.apk.sha256")
+        }
+        assertNull(bigResult)
+        assertEquals(1, bigCalls.get())
     }
 
     @Test
