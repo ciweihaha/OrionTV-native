@@ -73,10 +73,30 @@ class CircuitBreaker(
      * 释放试探租约（不记失败）：探针请求以非超时原因终态失败时调用——
      * 熔断器的判据只看体超时，这类失败不计数，但也不能占着租约
      * 120 秒才放下一个试探。
+     * 取消（D6-P2-2）与 4xx（B5-P2-4）走这里、立即释放；服务端仍在失败
+     * 的快败（5xx/连接错/体读失败）走 [releaseProbeAfterFailure] 重开冷却，
+     * 否则并发的分类加载会轮流哄抢探针（第 13 轮跟进，轻微 7）。
      */
     @Synchronized
     fun releaseProbe() {
         probeInFlight = false
+    }
+
+    /**
+     * 探针失败后释放租约并重开冷却（第 13 轮跟进，轻微 7）：探针已测出服务端
+     * 仍在失败，立即放行下一个探针等于让并发的分类加载轮流哄抢试探——每次
+     * 快败都把租约还回去，下一个调用方立刻再拿一个探针，单探针退化成串行
+     * 多探针。失败的探针重开标准 60 秒冷却（不记 consecutiveFailures，
+     * 4xx/5xx 不计数的 P0-3 约定不变）；熔断未开时（openedAtMs < 0）不重开，
+     * 普通请求仍正常走。取消仍走 [releaseProbe] 立即释放（D6-P2-2 单测），
+     * 4xx 也是（B5-P2-4）；成功仍走 [recordSuccess] 直接关闭。
+     */
+    @Synchronized
+    fun releaseProbeAfterFailure() {
+        probeInFlight = false
+        if (openedAtMs >= 0) {
+            openedAtMs = nowMs()
+        }
     }
 }
 

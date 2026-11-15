@@ -91,6 +91,10 @@ class AggApi @Inject constructor(
             val response = executeWithRetry(
                 Request.Builder().url(url).get().build(),
                 circuitBreaker = videoListCircuitBreaker,
+                // 第 13 轮跟进（轻微 7）：videoList 的探针终态失败（非超时）后重开
+                // 冷却——并发分类加载会轮流哄抢探针；version 不传（默认 false），
+                // 主端点失败后备用端点仍需立即试探（见 version() 的主备设计）。
+                probeFailureRearmsCooldown = true,
             )
             // D-P1-2：Response 必须关（声明超限先抛那条路之前漏关，5 次可占满每 host 连接池）；
             // D-P1-1：体完整读完才记成功，响应头 200 不先清零。
@@ -99,10 +103,16 @@ class AggApi @Inject constructor(
                     val b = readBodyLimited(it, videoListCircuitBreaker)
                     videoListCircuitBreaker.recordSuccess()
                     b
-                } catch (e: Exception) {
-                    // B5-P2-4：体读失败且不是体超时（体超时已在 readBodyLimited
-                    // 内记失败并清探针）时释放试探租约，免得确定性失败也占着探针。
+                } catch (e: CancellationException) {
+                    // 取消仍立即释放租约（D6-P2-2 单测：取消后下一次 isOpen
+                    // 立即可再拿探针），不重开冷却。
                     videoListCircuitBreaker.releaseProbe()
+                    throw e
+                } catch (e: Exception) {
+                    // 第 13 轮跟进（轻微 7）：体读确定性失败（连接中途断、体超限）
+                    // 是服务端仍在失败的信号——立即释放租约会让并发的分类加载
+                    // 轮流哄抢探针，失败后重开标准 60 秒冷却（不记失败数，P0-3 不变）。
+                    videoListCircuitBreaker.releaseProbeAfterFailure()
                     throw e
                 }
             }
@@ -233,6 +243,10 @@ class AggApi @Inject constructor(
         request: Request,
         timeoutSeconds: Long = ApiClient.DEFAULT_TIMEOUT_SECONDS,
         circuitBreaker: CircuitBreaker,
+        // 第 13 轮跟进（轻微 7）：探针终态失败（非超时）后是否重开冷却——
+        // videoList 为 true（并发分类加载会轮流哄抢探针）；version 为 false
+        // （主端点失败后备用端点仍需立即试探，见 version() 的主备设计）。
+        probeFailureRearmsCooldown: Boolean = false,
     ): okhttp3.Response {
         if (circuitBreaker.isOpen()) {
             throw IOException("agg 熔断开启，60 秒内不再发请求")
@@ -293,8 +307,12 @@ class AggApi @Inject constructor(
         // 只在“请求最终失败且原因为读超时”时计数一次（按请求，不按每次重试尝试；
         // 第 6 轮 fa348ad 只改了判据、仍按尝试计数，一次超时请求会记 4 次直接击穿阈值 3——这里按请求记一次）。
         // B5-P2-4：超时记失败（探针失败立即重开）；非超时终态失败只释放试探租约，不计数。
+        // 第 13 轮跟进（轻微 7）：videoList 的探针失败重开冷却（并发分类加载轮流
+        // 哄抢探针），version 仍立即释放、保备用端点试探。
         if (lastError is IOException && isBodyTimeout(lastError)) {
             circuitBreaker.recordFailure()
+        } else if (probeFailureRearmsCooldown) {
+            circuitBreaker.releaseProbeAfterFailure()
         } else {
             circuitBreaker.releaseProbe()
         }
