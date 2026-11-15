@@ -1,5 +1,6 @@
 package com.oriontv.feature.play
 
+import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -220,6 +221,56 @@ class PlayViewModelLogicTest {
                 overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
             ),
         )
+    }
+
+    @Test
+    fun `stale search callback is dropped by key generation`() {
+        // 第 8 轮 P2-2：旧搜源回调已在 IO 线程执行中时，init() 清 current 与取消
+        // 都拦不住它；凭代际快照丢弃——同键接受、换 key 后旧回调一律丢弃。
+        assertTrue(PlayViewModel.shouldAcceptSearchResults("a:1", "a:1"))
+        assertFalse(PlayViewModel.shouldAcceptSearchResults("a:1", "b:2"))
+        assertFalse(PlayViewModel.shouldAcceptSearchResults("a:1", ""))
+        assertTrue(PlayViewModel.shouldAcceptSearchResults("", ""))
+    }
+
+    @Test
+    fun `new key resets stale playback ui state`() {
+        // 第 8 轮 P2-1：同回栈项复用换 key 时，旧集的下一集预告卡、跳过片头胶囊、
+        // 抽屉与旧片长不能带到新搜源加载期间（会叠在加载动画之上）；搜源回调
+        // 只在 current == null 时开播，旧结果同清。
+        val stale = PlayUiState(
+            isLoading = false,
+            error = "旧错误",
+            title = "旧片",
+            results = listOf(SearchResult(title = "旧片", source = "a")),
+            current = SearchResult(title = "旧片", source = "a"),
+            episodeIndex = 3,
+            positionMs = 600_000L,
+            durationMs = 1_800_000L,
+            isEnded = true,
+            showNextEpisode = true,
+            autoSwitchAttempts = 2,
+            failedSources = setOf("a"),
+            skipIntroVisible = true,
+            drawer = PlayDrawer.EPISODES,
+        )
+        val reset = PlayViewModel.resetUiStateForNewKey(
+            stale, episodeIndex = 5, positionMs = 0L, title = "新片",
+        )
+        assertTrue(reset.isLoading)
+        assertEquals(5, reset.episodeIndex)
+        assertEquals(0L, reset.positionMs)
+        assertEquals("新片", reset.title)
+        assertEquals(null, reset.current)
+        assertEquals(emptyList<SearchResult>(), reset.results)
+        assertEquals(null, reset.error)
+        assertEquals(0, reset.autoSwitchAttempts)
+        assertEquals(emptySet<String>(), reset.failedSources)
+        assertFalse(reset.showNextEpisode)
+        assertFalse(reset.isEnded)
+        assertFalse(reset.skipIntroVisible)
+        assertEquals(null, reset.drawer)
+        assertEquals(0L, reset.durationMs)
     }
 
     @Test

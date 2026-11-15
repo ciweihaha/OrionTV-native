@@ -95,6 +95,8 @@ class PlayViewModel @Inject constructor(
     private var cachedNextEpisodeOverlayEnabled: Boolean = true
     /** 本片手动标记的片头结束时间（毫秒），null 表示没标过（用默认时长兜底）。 */
     private var markedIntroEndMs: Long? = null
+    /** 当前片的统一键（init 定下；搜源回调在 IO 线程读它核对代际，见 P2-2）。 */
+    @Volatile
     private var currentKey: String = ""
     private var routePositionMs: Long = 0L
     private var initialised = false
@@ -215,34 +217,7 @@ class PlayViewModel @Inject constructor(
                 .onSuccess { playerManager.backgroundPlaybackEnabled = it }
                 .onFailure { AppLog.w("PlayViewModel", "后台播放开关读入失败，用默认值：${it.message}") }
         }
-        _uiState.update {
-            it.copy(
-                isLoading = true,
-                episodeIndex = episodeIndex,
-                positionMs = positionMs,
-                title = title,
-                // A10-P2-4：新 key 不再沿用旧结果——搜源回调只在 current == null
-                // 时开播，旧 current 不清会让新搜源回来后只更新列表、不开播；
-                // 旧 failedSources/autoSwitchAttempts 也不带到新片。
-                current = null,
-                results = emptyList(),
-                error = null,
-                autoSwitchAttempts = 0,
-                failedSources = emptySet(),
-                // A11-P2-1：新 key 分支也要清掉旧集的 UI 态——之前只清了上面
-                // 几项，旧集的下一集预告卡（带倒计时）、抽屉、跳过片头胶囊、
-                // 时长/缓冲/断点位置全沿用旧值，残留在新片搜源期；旧集当时开着
-                // 抽屉时更会残留一个内容为空的抽屉，直到新集 startEpisode()
-                // 才把 showNextEpisode/drawer 置 false。
-                showNextEpisode = false,
-                isEnded = false,
-                drawer = null,
-                skipIntroVisible = false,
-                durationMs = 0L,
-                bufferedMs = 0L,
-                breakpointMs = 0L,
-            )
-        }
+        _uiState.update { resetUiStateForNewKey(it, episodeIndex, positionMs, title) }
         startSearch()
         startPolling()
     }
@@ -264,11 +239,20 @@ class PlayViewModel @Inject constructor(
         val searchKey = currentKey
         val (source, id) = MoonTvApi.splitKey(searchKey)
         val title = _uiState.value.title
+        // 第 8 轮 P2-2：同款代际快照——searchDetail 的 onUpdate 在 IO 线程
+        // 同步执行，旧回调已在执行中时，init() 清 current 与 searchJob?.cancel()
+        // 都拦不住它；回调凭快照与现 currentKey 是否一致判定归属（与 startEpisode
+        // 的 startEpisodeGeneration 代际校验同款）。
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             try {
                 val preferredSource = if (source == "douban") null else source.ifBlank { null }
                 detailRepository.searchDetail(title, preferredSource, id.ifBlank { null }) { results, _ ->
+                    // 旧搜源回调撞上同回栈项复用换 key 的瞬间：它读到 init() 刚清的
+                    // current == null，会把旧标题的结果装成 current 并开播旧集，
+                    // 随后新搜源回来只更新列表——播的是旧片、源列表是新片的。
+                    // 代际不符直接丢弃，不写任何状态。
+                    if (!shouldAcceptSearchResults(searchKey, currentKey)) return@searchDetail
                     val state = _uiState.value
                     if (shouldStartEpisodeFromSearch(
                             searchKey,
@@ -1110,6 +1094,50 @@ class PlayViewModel @Inject constructor(
             hasCurrent: Boolean,
             hasResults: Boolean,
         ): Boolean = searchKey == currentKey && !hasCurrent && hasResults
+
+        /**
+         * 新 key 换片时 UI 态复位（可单测，第 8 轮 P2-1）：A10-P2-4 只清了
+         * current/results/error/autoSwitchAttempts/failedSources，同回栈项复用换
+         * key 时旧集的下一集预告卡（showNextEpisode/isEnded）、跳过片头胶囊
+         * （skipIntroVisible）、抽屉（drawer）与旧片长（durationMs）会在新搜源
+         * 加载期间继续显示在加载动画之上；startEpisode 的状态更新要等搜源回来
+         * 才清掉它们。A11-P2-1 补：缓冲/断点位置（bufferedMs/breakpointMs）
+         * 同样清零，旧值残留在新片搜源期。
+         */
+        internal fun resetUiStateForNewKey(
+            state: PlayUiState,
+            episodeIndex: Int,
+            positionMs: Long,
+            title: String,
+        ): PlayUiState = state.copy(
+            isLoading = true,
+            episodeIndex = episodeIndex,
+            positionMs = positionMs,
+            title = title,
+            // A10-P2-4：新 key 不再沿用旧结果——搜源回调只在 current == null
+            // 时开播，旧 current 不清会让新搜源回来后只更新列表、不开播；
+            // 旧 failedSources/autoSwitchAttempts 也不带到新片。
+            current = null,
+            results = emptyList(),
+            error = null,
+            autoSwitchAttempts = 0,
+            failedSources = emptySet(),
+            showNextEpisode = false,
+            isEnded = false,
+            skipIntroVisible = false,
+            drawer = null,
+            durationMs = 0L,
+            bufferedMs = 0L,
+            breakpointMs = 0L,
+        )
+
+        /**
+         * 搜源回调的结果是否属于当前搜源（可单测，第 8 轮 P2-2）：回调快照的键
+         * 与现 currentKey 一致才接受——旧搜源回调已在 IO 线程执行中时，取消与
+         * 清 current 都拦不住它，代际不符的结果必须丢弃，不开播、不写状态。
+         */
+        internal fun shouldAcceptSearchResults(callbackKey: String, currentKey: String): Boolean =
+            callbackKey == currentKey
 
         /**
          * VOD 就绪超时到点是否应触发（可单测，A10-P2-1）：页面在前台、仍在
