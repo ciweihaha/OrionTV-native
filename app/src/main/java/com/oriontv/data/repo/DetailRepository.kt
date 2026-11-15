@@ -13,6 +13,8 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -114,20 +116,36 @@ class DetailRepository @Inject constructor(
             return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults)
         }
         val semaphore = Semaphore(DetailSearchLogic.SEARCH_CONCURRENCY_LIMIT)
-        val deferred = resources.take(30).map { site ->
+        // B25-P2-1：逐源失败只记首个异常（区分“返回空列表”与“抛错”）——
+        // 之前 catch 里全吞成 emptyList()，getResources 成功、随后 30 路
+        // 全失败时 merged 为空、preferredError 为 null，searchDetail 会把
+        // 网络错误报成“没有找到相关内容”（B23-P2-1 只修了 getResources 腿）。
+        val firstError = AtomicReference<Exception?>(null)
+        val failureCount = AtomicInteger(0)
+        val sites = resources.take(30)
+        val deferred = sites.map { site ->
             async {
                 semaphore.withPermit {
                     try {
                         moonTvApi.searchVideo(baseUrl, q, site.key)
                     } catch (e: CancellationException) {
                         throw e
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        firstError.compareAndSet(null, e)
+                        failureCount.incrementAndGet()
                         emptyList()
                     }
                 }
             }
         }
         val all = deferred.awaitAll().flatten()
+        // B25-P2-1：全部源都抛错、且无首选源结果可回落时，把首个异常原样重抛；
+        // 任一源成功返回过（即使无精确标题匹配）仍按“没有找到相关内容”走
+        // （B23-P2-1 同款口径）；有首选源结果时不抛，走 B14-P2-3 的降级合并。
+        val error = firstError.get()
+        if (error != null && failureCount.get() == sites.size && preferredResults.isEmpty()) {
+            throw error
+        }
         // 全量路径只留精确标题匹配的结果（RN 同款：搜“庆余年”不带回“庆余年第二季”）。
         val exact = DetailSearchLogic.filterExactTitle(all, q)
         // 合并：首选源结果在前，其余源按全量搜索顺序补；按源去重。
