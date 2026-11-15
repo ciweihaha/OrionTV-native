@@ -57,8 +57,9 @@ class M3uRepository @Inject constructor(
             // 失败后用户清空 M3U 地址，loadFailed 仍滞留 true，后续调用方
             // 会误报“刷新失败”。（现调用方均先判空，不可达，仅作防御。）
             if (m3uUrl.isBlank()) {
-                _loadFailed.value = false
-                return@withContext emptyList()
+                val decision = decideEmptyAddressLoad()
+                _loadFailed.value = decision.loadFailed
+                return@withContext decision.channels
             }
             val cached = cacheStore.readM3uCache(m3uUrl)
             if (!forceRefresh && cached != null && nowMs - cached.ts <= LiveController.M3U_CACHE_TTL_MS) {
@@ -68,8 +69,10 @@ class M3uRepository @Inject constructor(
             val fresh = fetchChannels(m3uUrl)
             val decision = decideLoad(cached?.channels, fresh)
             _loadFailed.value = decision.loadFailed
-            if (fresh.isNotEmpty()) {
-                cacheStore.saveM3uCache(m3uUrl, fresh)
+            // D9-P2-8：只有成功且非空才落盘——合法空源不覆盖旧缓存（下次
+            // 重拉即回），拉取失败更不覆盖。
+            if (fresh is LiveFetchResult.Success && fresh.value.isNotEmpty()) {
+                cacheStore.saveM3uCache(m3uUrl, fresh.value)
             }
             // 拉网失败：回落旧缓存（不断流），没有才返回空列表
             decision.channels
@@ -77,38 +80,67 @@ class M3uRepository @Inject constructor(
 
     companion object {
         /**
-         * 第 6 轮 D6-P2-13：加载结果判定（纯函数，可单测）——fresh 非空即用 fresh、
-         * 失败标记 false；fresh 为空（拉网失败或解析出 0 台）则回落旧缓存并标记失败。
+         * 第 9 轮 D9-P2-7：空地址加载判定（纯函数，可单测）——空地址不算
+         * 一次加载，返回空表且 loadFailed 复位为 false；[loadChannels]
+         * 的空地址分支直接用它，复位逻辑不再只活在不可达的分支里。
+         */
+        fun decideEmptyAddressLoad(): M3uLoadDecision =
+            M3uLoadDecision(emptyList(), loadFailed = false)
+
+        /**
+         * 第 6 轮 D6-P2-13：加载结果判定（纯函数，可单测）——fresh 成功
+         * 即用 fresh、失败标记 false；拉取失败则回落旧缓存并标记失败。
+         * 第 9 轮 D9-P2-8：成功但空表（源本身合法 0 台）不再恒报失败——
+         * 返回空表、loadFailed=false；只有 [LiveFetchResult.Failed]
+         * 才回落旧缓存并标记失败。
          */
         fun decideLoad(
             cachedChannels: List<M3uParser.Channel>?,
-            freshChannels: List<M3uParser.Channel>,
+            fresh: LiveFetchResult<List<M3uParser.Channel>>,
         ): M3uLoadDecision =
-            if (freshChannels.isNotEmpty()) {
-                M3uLoadDecision(freshChannels, loadFailed = false)
-            } else {
-                M3uLoadDecision(cachedChannels.orEmpty(), loadFailed = true)
+            when (fresh) {
+                is LiveFetchResult.Success -> M3uLoadDecision(fresh.value, loadFailed = false)
+                LiveFetchResult.Failed -> M3uLoadDecision(cachedChannels.orEmpty(), loadFailed = true)
             }
     }
 
-    /** 纯拉网（15 秒超时、5MB 上限，失败返回空列表，不抛错；协程取消原样抛出）。 */
-    suspend fun fetchChannels(m3uUrl: String): List<M3uParser.Channel> = withContext(ioDispatcher) {
-        if (m3uUrl.isBlank()) return@withContext emptyList()
+    /**
+     * 纯拉网（15 秒超时、5MB 上限；协程取消原样抛出）。
+     * 第 9 轮 D9-P2-8：返回密封结果区分“拉取失败”与“成功但空表”——
+     * HTTP 失败/体超限/解析抛错 → Failed；HTTP 200 且解析完成 → Success
+     * （哪怕 0 台，源本身合法 0 台时不再恒报“刷新失败”）。
+     */
+    suspend fun fetchChannels(m3uUrl: String): LiveFetchResult<List<M3uParser.Channel>> = withContext(ioDispatcher) {
+        if (m3uUrl.isBlank()) return@withContext LiveFetchResult.Success(emptyList())
         try {
             val request = Request.Builder().url(m3uUrl).get().build()
             playlistClient.newCall(request).executeCancellable().use { response ->
-                if (!response.isSuccessful) return@withContext emptyList()
+                if (!response.isSuccessful) return@withContext LiveFetchResult.Failed
                 // A4-P2-2：流式限量读，超 5MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_M3U_BYTES)
-                    ?: return@withContext emptyList()
-                M3uParser.parse(body)
+                    ?: return@withContext LiveFetchResult.Failed
+                LiveFetchResult.Success(M3uParser.parse(body))
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            emptyList()
+            LiveFetchResult.Failed
         }
     }
+}
+
+/**
+ * 第 9 轮 D9-P2-8：直播源拉取结果（密封，区分“拉取失败”与“成功但空表”）——
+ * 旧实现里 fetch 成功但解析出 0 台/0 节目与拉取失败都用“空”表示，decideLoad
+ * 一律报 loadFailed=true，合法空源每次刷新都提示“刷新失败，仍用旧数据”，
+ * 文案与事实不符；现在只有 [Failed] 才回落旧缓存并标记失败。
+ */
+sealed interface LiveFetchResult<out T> {
+    /** 拉取成功（含合法空表：源本身 0 台/0 节目）。 */
+    data class Success<T>(val value: T) : LiveFetchResult<T>
+
+    /** 拉取失败（HTTP 失败/体超限/解析抛错）。 */
+    data object Failed : LiveFetchResult<Nothing>
 }
 
 /** 第 6 轮 D6-P2-13：[M3uRepository.decideLoad] 的判定结果。 */
@@ -159,23 +191,44 @@ class EpgRepository @Inject constructor(
         /**
          * 空 EPG 不落盘：只有 programmes 非空时才保存（P1-5；M3U 早有同款守卫）。
          * 纯函数，可单测（MockK 已随依赖升级移出，仓库级测试不再用 mock）。
+         * 第 9 轮 D9-P1-1：只判非空不够——实测 epg.xml 仍只覆盖昨天（2026-11-14），
+         * 拉回的过期文件节目非空，旧实现当成功落盘、全天无节目单且无任何失败
+         * 信号；现在还要有未播完的节目（[EpgParser.hasFutureProgramme]）才算
+         * 新鲜可落盘，否则按失败处理（不落盘、loadFailed=true），UI 才能提示。
+         * 注意：这修的是客户端检测与失败信号，服务端发布节奏问题仍在服务端。
          */
-        fun shouldSaveFreshEpg(fresh: EpgParser.EpgData?): Boolean =
-            fresh != null && fresh.programmesByChannel.isNotEmpty()
+        fun shouldSaveFreshEpg(fresh: EpgParser.EpgData?, nowMs: Long = System.currentTimeMillis()): Boolean =
+            fresh != null && fresh.programmesByChannel.isNotEmpty() &&
+                EpgParser.hasFutureProgramme(fresh, nowMs)
 
         /**
          * 第 7 轮 D7-P2-2：EPG 加载结果判定（纯函数，可单测；与
-         * [M3uRepository.decideLoad] 同款）——fresh 非空即用 fresh、失败
-         * 标记 false；fresh 为空（拉网失败或解析出空表）则回落旧缓存并标记失败。
+         * [M3uRepository.decideLoad] 同款）——fresh 成功即用 fresh、失败
+         * 标记 false；拉取失败则回落旧缓存并标记失败。
+         * 第 9 轮 D9-P1-1：fresh 非空但全部过期（没有任何 endAt > now 的节目）
+         * 不当成功——不落盘、回落旧缓存、loadFailed=true。
+         * 第 9 轮 D9-P2-8：fresh 成功但空表（源本身合法 0 节目）按成功处理——
+         * 返回空表、loadFailed=false，不恒报“刷新失败”。
          */
         fun decideLoad(
             cachedData: EpgParser.EpgData?,
-            freshData: EpgParser.EpgData?,
+            fresh: LiveFetchResult<EpgParser.EpgData>,
+            nowMs: Long = System.currentTimeMillis(),
         ): EpgLoadDecision =
-            if (freshData != null && shouldSaveFreshEpg(freshData)) {
-                EpgLoadDecision(freshData, loadFailed = false)
-            } else {
-                EpgLoadDecision(cachedData, loadFailed = true)
+            when (fresh) {
+                is LiveFetchResult.Success -> {
+                    val data = fresh.value
+                    if (data.programmesByChannel.isEmpty()) {
+                        // D9-P2-8：合法空源，按成功处理（不落盘，旧缓存留着）。
+                        EpgLoadDecision(data, loadFailed = false)
+                    } else if (shouldSaveFreshEpg(data, nowMs)) {
+                        EpgLoadDecision(data, loadFailed = false)
+                    } else {
+                        // D9-P1-1：非空但全部过期，不当成功。
+                        EpgLoadDecision(cachedData, loadFailed = true)
+                    }
+                }
+                LiveFetchResult.Failed -> EpgLoadDecision(cachedData, loadFailed = true)
             }
     }
 
@@ -191,30 +244,34 @@ class EpgRepository @Inject constructor(
                 return@withContext cached.data
             }
             val fresh = fetchEpg()
-            val decision = decideLoad(cached?.data, fresh)
+            val decision = decideLoad(cached?.data, fresh, nowMs)
             _loadFailed.value = decision.loadFailed
             // 空 EPG 不覆盖好缓存：服务端偶尔吐空表时，旧缓存比“无节目单”强（P1-5；M3U 早有同款守卫）。
-            if (fresh != null && shouldSaveFreshEpg(fresh)) {
-                cacheStore.saveEpgCache(fresh)
+            // D9-P1-1：过期数据同样不落盘（shouldSaveFreshEpg 已含时效判据）。
+            if (fresh is LiveFetchResult.Success && shouldSaveFreshEpg(fresh.value, nowMs)) {
+                cacheStore.saveEpgCache(fresh.value)
             }
             decision.data
         }
 
-    /** 纯拉网（15 秒超时、3MB 上限，失败返回 null，不抛错；协程取消原样抛出）。 */
-    suspend fun fetchEpg(): EpgParser.EpgData? = withContext(ioDispatcher) {
+    /**
+     * 纯拉网（15 秒超时、3MB 上限；协程取消原样抛出）。
+     * 第 9 轮 D9-P2-8：返回密封结果区分“拉取失败”与“成功但空表”（同 fetchChannels）。
+     */
+    suspend fun fetchEpg(): LiveFetchResult<EpgParser.EpgData> = withContext(ioDispatcher) {
         try {
             val request = Request.Builder().url(EPG_URL).get().build()
             playlistClient.newCall(request).executeCancellable().use { response ->
-                if (!response.isSuccessful) return@withContext null
+                if (!response.isSuccessful) return@withContext LiveFetchResult.Failed
                 // A4-P2-2：流式限量读，超 3MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_CACHE_BYTES)
-                    ?: return@withContext null
-                EpgParser.parse(body)
+                    ?: return@withContext LiveFetchResult.Failed
+                LiveFetchResult.Success(EpgParser.parse(body))
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            null
+            LiveFetchResult.Failed
         }
     }
 }

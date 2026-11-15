@@ -210,4 +210,46 @@ class EpgParserTest {
         val now = EpgParser.nowPlaying(data, "CCTV1", "别的台名", nowMs)
         assertEquals("新闻联播", now?.title)
     }
+
+    @Test
+    fun `hasFutureProgramme is true only when a programme has not ended`() {
+        // D9-P1-1：新鲜数据判据——任一 endAt > now 即新鲜。
+        val data = EpgParser.parse(sample)
+        assertTrue(EpgParser.hasFutureProgramme(data, nowMs))
+        // 所有节目都播完后不再新鲜（昨天那份 epg.xml 拉回来就是这种情况）。
+        assertFalse(EpgParser.hasFutureProgramme(data, nowMs + 3 * 3600_000L))
+        assertFalse(
+            EpgParser.hasFutureProgramme(
+                EpgParser.EpgData(emptyMap(), emptyMap()),
+                nowMs,
+            ),
+        )
+    }
+
+    @Test
+    fun `parse truncates programmes over MAX_PROGRAMMES`() {
+        // D9-P2-4：与 M3U 的 MAX_CHANNELS=20_000 对称——超限截断，不静默丢数据（记日志）。
+        // 每条 1 分钟依次排开（跨天进位，保证 start/stop 合法、不被 endAt <= startAt 丢弃）。
+        fun xmltvTime(totalMinutes: Long): String {
+            val day = 14 + (totalMinutes / 1440).toInt()
+            val minuteOfDay = (totalMinutes % 1440).toInt()
+            return "202611%02d%02d%02d00".format(day, minuteOfDay / 60, minuteOfDay % 60)
+        }
+        val count = EpgParser.MAX_PROGRAMMES + 1
+        val programmes = (0 until count).joinToString("\n") { i ->
+            val start = xmltvTime(i.toLong())
+            val stop = xmltvTime(i.toLong() + 1)
+            """<programme channel="cctv1" start="$start +0800" stop="$stop +0800"><title>节目$i</title></programme>"""
+        }
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <tv>
+              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
+              $programmes
+            </tv>
+        """.trimIndent()
+        val data = EpgParser.parse(xml)
+        val total = data.programmesByChannel.values.sumOf { it.size }
+        assertEquals(EpgParser.MAX_PROGRAMMES, total)
+    }
 }
