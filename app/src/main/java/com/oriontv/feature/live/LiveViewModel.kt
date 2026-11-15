@@ -65,6 +65,12 @@ class LiveViewModel @Inject constructor(
     /** A9-P2-5：init() 在途任务——reload() 的守卫（快速双击失败页“重试”
      * 不再并发跑两路 M3U 加载、两次 playCurrent()，与 refreshJob 同款）。 */
     private var initJob: Job? = null
+    /**
+     * M14：当前频道表是从哪个 M3U 地址加载的——设置里换源后回直播页，
+     * onPageResumed() 原来只在频道表为空时才加载、非空直接返回，旧台继续播；
+     * 回页时比对地址，变了就主动刷新（空表走 reload()、有表走 refreshChannels()）。
+     */
+    private var loadedM3uUrl: String? = null
     /** A9-P1-1：页面是否在前台（onPagePaused/onPageResumed 维护；应用内导航
      * 切走不经过 Activity 生命周期，只看 isForeground 不够）。playCurrent()
      * 开播前复核它，后台的新开播暂缓、回前台时 onPageResumed() 补开播。 */
@@ -157,6 +163,7 @@ class LiveViewModel @Inject constructor(
             }.getOrNull()
 
             val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
+            loadedM3uUrl = m3uUrl
             if (m3uUrl.isBlank()) {
                 // A9-P1-3：未配地址不置 initialised——否则 onPageResumed() 遇频道表
                 // 为空直接早退，用户在设置里填好 M3U 回来永远停在空态，只能杀进程。
@@ -229,6 +236,7 @@ class LiveViewModel @Inject constructor(
             // A6-P2-7：传正在播的那条线（controller.currentUrl），不是
             // current?.url（恒为 urls[0]）——正在播 2 号线时刷新后应回 2 号线。
             controller.setChannels(fresh, restoreUrl = controller.currentUrl, restoreName = current?.name)
+            loadedM3uUrl = m3uUrl
             // 第 7 轮 P2-12：EPG 弹窗持的旧频道对象在新表里已不存在——按新表
             // 重建（标题带台号、左右切台按新列表走）；旧对象继续持着，
             // indexOfChannel 按身份/（url, name）都匹配不到，标题无台号、切台失效。
@@ -367,6 +375,10 @@ class LiveViewModel @Inject constructor(
         if (state.channels.isEmpty()) return
         when (val action = controller.onPlaybackError(state.panelOpen)) {
             is LiveErrorAction.TryLine -> {
+                // M17：自动切线也要持久化——之前只有换台（NextChannel 分支）与
+                // 手动切线（changeLine）调 saveLastChannel()，断流自动切线成功后
+                // 不存，重启后回到旧线路（A7-P1-2 的同款缺口换了个位置）。
+                saveLastChannel()
                 _uiState.update { it.copy(failCount = controller.failCount) }
                 showToast(action.message)
                 playCurrent()
@@ -465,6 +477,9 @@ class LiveViewModel @Inject constructor(
         // 第 7 轮 P1-1：先清离页标志再早退——首启时频道表还是空的，init() 的
         // 加载完成后才开播、才武装就绪超时；若标志不清，那个超时会被误拦。
         pagePaused = false
+        // M14：换源后回页主动刷新（见 refreshIfSourceChanged）——下面两条
+        // 早退分支都不覆盖“地址变了、旧表非空”的情形。
+        refreshIfSourceChanged()
         if (_uiState.value.channels.isEmpty()) {
             // A9-P1-3：频道表为空时重走 init()——首装未配 M3U 时 init() 早退后
             // initialised 已复位（见 init 的未配分支），用户填好地址回来能自动加载；
@@ -484,6 +499,27 @@ class LiveViewModel @Inject constructor(
             return
         }
         playCurrent()
+    }
+
+    /**
+     * M14：换源后回页主动刷新——读当前 M3U 地址，与频道表加载时的
+     * loadedM3uUrl 比对；变了才动：空表走 reload()（重走 init，含未配/失败态
+     * 复位），有表走 refreshChannels()（不断流换表，当前台按名/URL 恢复）。
+     * 加载在途（initJob/refreshJob 活跃）时不查——首进时 init() 正在跑，
+     * 查了也是旧地址的半截结果；加载完成后 loadedM3uUrl 已更新，下次回页
+     * 再比对。DataStore 读失败按地址未变处理，不误触发刷新。
+     */
+    private fun refreshIfSourceChanged() {
+        if (initJob?.isActive == true || refreshJob?.isActive == true) return
+        viewModelScope.launch {
+            // 复测修正：DataStore 读失败按地址未变处理（跳过本次比对，下次回页
+            // 再查）——旧写法 getOrDefault("") 会把读失败当成“地址变空”，误触发
+            // reload()/refreshChannels()（空表时 init 读到空地址还会闪一下未配态）。
+            val current = runCatching { settingsRepository.currentM3uUrl() }.getOrNull()
+                ?: return@launch
+            if (current == loadedM3uUrl) return@launch
+            if (_uiState.value.channels.isEmpty()) reload() else refreshChannels()
+        }
     }
 
     /** OK 重试当前台（失败过且未耗尽自动跳台上限时，OK 不开面板、改重试）。 */

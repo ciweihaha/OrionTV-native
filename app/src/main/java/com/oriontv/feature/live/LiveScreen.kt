@@ -609,6 +609,7 @@ fun LiveScreen(
                 nowMs = uiState.nowMs,
                 onClose = { viewModel.closeEpgDialog() },
                 focusRestoreTick = focusRestoreTick,
+                globalModalOpen = globalModalOpen,
             )
         }
 
@@ -1149,6 +1150,13 @@ private fun EpgDialog(
      * 根 effect 因弹窗开着跳过、EPG 自己的落焦 effect 又不重跑，焦点无处恢复；
      * key 加 tick，关闭后重落正在播的节目行。 */
     focusRestoreTick: Int = 0,
+    /**
+     * M16：全局弹窗（登录/更新卡片）是否开着——7 个页面里唯一漏掉这道门控的
+     * 落焦 effect：登录/更新弹窗开着时 EPG 到达（节目单晚到）会把焦点从弹窗
+     * 里偷走；开着时跳过本次落焦，弹窗关闭后 tick +1 重跑再落（与其他 6 个
+     * 页面同款，见根 effect 的 C11-P2-1 门控）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val programmes = remember(epg, channel) {
         epg?.let { EpgParser.programmesFor(it, channel.tvgId, channel.name) }.orEmpty()
@@ -1176,7 +1184,10 @@ private fun EpgDialog(
     // C5-P2-1/A5-P2-8：固定 delay(100)+单次请求改 requestFocusWithRetry；
     // 正在播行抢不到时回退到“关闭”按钮。
     // C12-P1-3：key 加 focusRestoreTick——弹窗打开时全局弹窗关闭后重落焦点。
-    LaunchedEffect(channel.url, programmes.isEmpty(), focusRestoreTick) {
+    // M16：key 加 globalModalOpen、开头加门控——全局弹窗开着时跳过本次落焦，
+    // 不把焦点从登录/更新弹窗里偷走；关闭后 tick +1 重跑再落正在播的节目行。
+    LaunchedEffect(channel.url, programmes.isEmpty(), focusRestoreTick, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)
