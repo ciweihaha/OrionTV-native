@@ -605,6 +605,21 @@ class LiveViewModel @Inject constructor(
                 is DigitAction.Invalid -> {
                     _uiState.update { it.copy(digitBuffer = "") }
                     showToast("无 ${action.number} 号频道")
+                    // 第 8 轮 P1-1（A10-P2-3 的回归）：数字键路径关面板时跳过信号重播，
+                    // 前提是随后数字键切台又调一次 playCurrent()；台号无效时根本没有
+                    // 切台，就绪超时已取消、面板定时器已取消，播放器会静置在无提示的
+                    // 断流态（signalError 的常驻提示随面板关闭一起消失）。无效台号时
+                    // 按关面板原语义补一次重播（与 shouldReplaySignalOnClosePanel
+                    // 同谓词、skip=false），让就绪超时/自动换台链重新接管。
+                    if (shouldReplaySignalAfterInvalidDigit(
+                            _uiState.value.signalError,
+                            _uiState.value.isPlaying,
+                            _uiState.value.channels.isNotEmpty(),
+                            pagePaused,
+                        )
+                    ) {
+                        playCurrent()
+                    }
                 }
                 else -> _uiState.update { it.copy(digitBuffer = "") }
             }
@@ -901,6 +916,20 @@ class LiveViewModel @Inject constructor(
             skipSignalReplay: Boolean,
         ): Boolean = signalError && !isPlaying && hasChannels &&
             shouldFirePendingPlaybackTask(pagePaused) && !skipSignalReplay
+
+        /**
+         * 无效台号提交后是否应重播当前台（可单测，第 8 轮 P1-1）：与关面板信号重播
+         * 同谓词、skip=false——A10-P2-3 让数字键关面板时跳过重播，台号无效时
+         * 随后没有切台，跳过的那一次重播必须在这里补回来，否则恢复链彻底断掉。
+         */
+        internal fun shouldReplaySignalAfterInvalidDigit(
+            signalError: Boolean,
+            isPlaying: Boolean,
+            hasChannels: Boolean,
+            pagePaused: Boolean,
+        ): Boolean = shouldReplaySignalOnClosePanel(
+            signalError, isPlaying, hasChannels, pagePaused, skipSignalReplay = false,
+        )
 
         /**
          * 待定播放任务到点时是否应执行（可单测，第 7 轮 P1-1）：离页后就绪超时/

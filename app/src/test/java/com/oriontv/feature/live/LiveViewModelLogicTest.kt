@@ -100,6 +100,20 @@ class LiveViewModelLogicTest {
     }
 
     @Test
+    fun `invalid digit replays signal error just like closing panel without skip`() {
+        // 第 8 轮 P1-1：数字键关面板时跳过信号重播，台号无效、随后没有切台时，
+        // 跳过的那一次必须在这里补回来——判定与关面板重播同谓词、skip=false；
+        // 有效台号会切台（不走 Invalid 分支），这里只覆盖 Invalid 分支的判定。
+        assertTrue(LiveViewModel.shouldReplaySignalAfterInvalidDigit(signalError = true, isPlaying = false, hasChannels = true, pagePaused = false))
+        // 已在播（流已恢复）或无信号异常时不动作
+        assertFalse(LiveViewModel.shouldReplaySignalAfterInvalidDigit(signalError = true, isPlaying = true, hasChannels = true, pagePaused = false))
+        assertFalse(LiveViewModel.shouldReplaySignalAfterInvalidDigit(signalError = false, isPlaying = false, hasChannels = true, pagePaused = false))
+        // 无频道、离页后也不重播
+        assertFalse(LiveViewModel.shouldReplaySignalAfterInvalidDigit(signalError = true, isPlaying = false, hasChannels = false, pagePaused = false))
+        assertFalse(LiveViewModel.shouldReplaySignalAfterInvalidDigit(signalError = true, isPlaying = false, hasChannels = true, pagePaused = true))
+    }
+
+    @Test
     fun `refresh failure is reported when network fails even with cached channels`() {
         // A8-P1-2：拉网失败时 loadChannels 回落旧缓存、返回非空旧表，只判空
         // 会把失败当成功、静默无事发生；失败标记为真时必须提示
