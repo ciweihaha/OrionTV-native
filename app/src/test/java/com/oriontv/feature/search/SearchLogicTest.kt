@@ -61,4 +61,17 @@ class SearchLogicTest {
         assertEquals(null, resolveRemoteMessageToSearch(null, 1_000L, nowMs = 1_000L + 60_000L))
         assertEquals(null, resolveRemoteMessageToSearch("词", null, nowMs = 1_000L + 60_000L))
     }
+
+    @Test
+    fun `search box horizontal keys move cursor only except at edges`() {
+        // C10-P2-1：与设置输入框同款快照法——光标不在边界时左右键只移光标
+        //（消费松键，不跳焦点）；已在行首时左键放行回导航轨、已在行尾时
+        // 右键放行进同行按钮，是有意逃逸
+        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 3))
+        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 1))
+        assertFalse(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 0))
+        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 0, textLength = 3))
+        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 2, textLength = 3))
+        assertFalse(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 3, textLength = 3))
+    }
 }

@@ -132,6 +132,17 @@ class PlayScreenLogicTest {
     }
 
     @Test
+    fun `drawer group row left edge is only the first chip`() {
+        // C10-P1-1：选集抽屉分组行是横向单行——只有首个分组 chip 是左缘，
+        // 其余 chip 按左键应切到上一个分组；之前复用纵列表函数（左缘恒真），
+        // 非首分组 chip 上左键被根部预览拦截消费、变死键
+        assertTrue(drawerGroupRowLeftEdge(0))
+        assertFalse(drawerGroupRowLeftEdge(1))
+        assertFalse(drawerGroupRowLeftEdge(2))
+        assertFalse(drawerGroupRowLeftEdge(5))
+    }
+
+    @Test
     fun `up returns to root only when focus is still on the button row`() {
         // A9-P1-4：上键回根只在焦点仍在按钮行时执行；焦点已落在跳过片头胶囊 /
         // 下一集预告卡上时不抢——之前 KeyDown 的焦点搜索刚把它送上去，

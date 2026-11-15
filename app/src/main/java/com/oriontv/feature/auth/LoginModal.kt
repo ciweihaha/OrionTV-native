@@ -26,6 +26,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -186,7 +191,16 @@ private fun LoginField(
                 visualTransformation = if (masked) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 modifier = modifier
                     .fillMaxWidth()
-                    .onFocusChanged { focused = it.isFocused },
+                    .onFocusChanged { focused = it.isFocused }
+                    // C10-P2-1：左右键只移光标，焦点不出弹窗——光标已在边界
+                    // 时也消费松键（官方文档：光标到文本边界再按方向键会把
+                    // 焦点交给相邻目标；弹窗的焦点陷阱是上/下循环，左右键逃逸
+                    // 会落到弹窗底下的页面上）。只拦松键：光标移动发生在
+                    // KeyDown，拦 KeyDown 会拦住光标移动（C7-P2-3 同款）。
+                    .onKeyEvent { event ->
+                        event.type == KeyEventType.KeyUp &&
+                            shouldConsumeLoginFieldArrowKeyUp(event.key)
+                    },
                 decorationBox = { innerTextField ->
                     if (value.isEmpty()) {
                         Text(text = "请输入$label", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
@@ -197,3 +211,10 @@ private fun LoginField(
         }
     }
 }
+
+/** 登录弹窗输入框左右键松键是否消费（可单测，C10-P2-1）：左右键只移光标，
+ * 焦点不出弹窗——光标已在边界时也消费，不像设置页那样放行回菜单
+ *（弹窗的焦点陷阱是账号 → 密码 → 登录 → 取消的上/下循环，左右键逃逸
+ * 会落到弹窗底下的页面上）。上下键不消费（走 focusProperties 的循环）。 */
+internal fun shouldConsumeLoginFieldArrowKeyUp(key: Key): Boolean =
+    key == Key.DirectionLeft || key == Key.DirectionRight

@@ -28,6 +28,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -76,6 +84,21 @@ fun SearchScreen(
     // C6-P1-1：搜索框获焦态（焦点描边用；首进默认落点却无任何焦点态时，
     // 用户分不清焦点在搜索框还是在旁边的按钮上）。
     var searchBoxFocused by remember { mutableStateOf(false) }
+    // C10-P2-1：输入框内部用 TextFieldValue，才能知道光标位置（与设置输入框
+    // 同款，见 SettingsInputRow 的 C7-P2-3）：光标不在边界时左右键只移光标
+    //（消费松键，不跳焦点）；光标已在行首/行尾时放行——左出到导航轨、
+    // 右进“屏上键盘/手机扫码输入”按钮，是有意逃逸，不是陷阱破口。
+    var searchTextFieldValue by remember { mutableStateOf(TextFieldValue(uiState.query)) }
+    // C10-P2-1：左右键按下前光标位置的快照（同款快照法：光标移动发生在 KeyDown，
+    // KeyUp 时读到的已是移动后的位置，按移动后位置判断会误判）。
+    var cursorBeforeLeftMove by remember { mutableStateOf(-1) }
+    var cursorBeforeRightMove by remember { mutableStateOf(-1) }
+    // 外部改了 query（历史填回、清空、屏上键盘输入）时同步回输入框，光标落行尾。
+    LaunchedEffect(uiState.query) {
+        if (uiState.query != searchTextFieldValue.text) {
+            searchTextFieldValue = TextFieldValue(uiState.query, TextRange(uiState.query.length))
+        }
+    }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
     // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
@@ -202,13 +225,47 @@ fun SearchScreen(
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
                 BasicTextField(
-                    value = uiState.query,
-                    onValueChange = { viewModel.onQueryChange(it) },
+                    value = searchTextFieldValue,
+                    onValueChange = {
+                        searchTextFieldValue = it
+                        viewModel.onQueryChange(it.text)
+                    },
                     textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
                     modifier = Modifier
                         .fillMaxWidth()
                         .preferredFocus(searchRequester)
-                        .onFocusChanged { searchBoxFocused = it.isFocused },
+                        .onFocusChanged { searchBoxFocused = it.isFocused }
+                        .onPreviewKeyEvent { event ->
+                            // C10-P2-1：隧道阶段先于输入框自己的光标移动，读到的是
+                            // 移动前位置；只快照、不消费（C7-P2-3 同款）。
+                            if (event.type == KeyEventType.KeyDown) {
+                                when (event.key) {
+                                    Key.DirectionLeft -> cursorBeforeLeftMove =
+                                        searchTextFieldValue.selection.start
+                                    Key.DirectionRight -> cursorBeforeRightMove =
+                                        searchTextFieldValue.selection.end
+                                    else -> Unit
+                                }
+                            }
+                            false
+                        }
+                        .onKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyUp) {
+                                when (event.key) {
+                                    // 按移动前光标位置判断——不在边界时消费松键，
+                                    // 只移光标、不跳焦点；已在边界时放行（左出导航轨、
+                                    // 右进同行按钮，是有意逃逸）。
+                                    Key.DirectionLeft -> shouldConsumeSearchLeftKeyUp(cursorBeforeLeftMove)
+                                    Key.DirectionRight -> shouldConsumeSearchRightKeyUp(
+                                        cursorBeforeRightMove,
+                                        searchTextFieldValue.text.length,
+                                    )
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        },
                     decorationBox = { innerTextField ->
                         if (uiState.query.isEmpty()) {
                             Text(text = "输入关键词搜索", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
@@ -414,3 +471,15 @@ fun SearchScreen(
         }
     }
 }
+
+/** 搜索框左键松键是否消费（可单测，C10-P2-1）：与设置输入框同款快照法——
+ * 光标不在行首时只移光标（消费松键，不跳到导航轨）；已在行首时放行，
+ * 冒泡回左侧导航轨（与设置页“回左菜单”同款有意逃逸，不是陷阱破口）。
+ * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。 */
+internal fun shouldConsumeSearchLeftKeyUp(cursorBeforeMove: Int): Boolean =
+    cursorBeforeMove > 0
+
+/** 搜索框右键松键是否消费（可单测，C10-P2-1）：光标不在行尾时只移光标；
+ * 已在行尾时放行，焦点移到右侧“屏上键盘/手机扫码输入”按钮。 */
+internal fun shouldConsumeSearchRightKeyUp(cursorBeforeMove: Int, textLength: Int): Boolean =
+    cursorBeforeMove < textLength

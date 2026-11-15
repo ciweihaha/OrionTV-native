@@ -183,6 +183,15 @@ internal fun drawerListFocusEdges(index: Int, count: Int): Pair<Boolean, Boolean
 }
 
 /**
+ * 选集抽屉分组行 chip 是否在左缘（可单测，C10-P1-1）：分组行是横向单行，
+ * 只有首个分组 chip 是左缘；其余 chip 按左键应切到上一个分组。纵列表函数
+ * drawerListFocusEdges 左缘恒为 true，不能复用到这里——之前复用导致
+ * 非首分组 chip 上左键被根部预览拦截消费、变死键，当前集之前的分组在
+ * 抽屉里选不到（只能退回详情页选集）。
+ */
+internal fun drawerGroupRowLeftEdge(index: Int): Boolean = index == 0
+
+/**
  * 播放页 OK 是否应触发播放/暂停（可单测，第 7 轮 P2-6）：抽屉打开、控制条
  * 隐藏、有待定落点时 OK 另有去处（抽屉内按钮/唤出控制条/提交落点）；
  * 错误页上 OK 也不触发——焦点因“重试”落焦失败回退到根部时，旧分支会在
@@ -983,8 +992,10 @@ private fun EpisodeDrawerContent(
             ) {
                 items(groups.size) { g ->
                     val (start, end) = groups[g]
-                    // C8-P1-2：分组行左缘是首个 chip；下键回到选集网格，不算底缘。
-                    val (groupLeftEdge, _) = drawerListFocusEdges(g, groups.size)
+                    // C10-P1-1：分组行左缘是首个 chip——用 drawerGroupRowLeftEdge，
+                    // 不复用纵列表的 drawerListFocusEdges（左缘恒真，非首分组
+                    // chip 上左键会被根部预览拦截消费、变死键）。
+                    val groupLeftEdge = drawerGroupRowLeftEdge(g)
                     CategoryChip(
                         text = "$start-$end",
                         selected = selectedGroup == g,
