@@ -227,6 +227,25 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `poll tick advances only when player holds this episode`() {
+        // A26-P2-1：A25-P2-1 只给播完/播错/断点保存加了 URL 门控，轮询是唯一
+        // 没加门控的 live 信号读点——认领后、挂片前的窗口内归属门控恒为真，
+        // 别页媒体的位置/时长/播完态会直接读进本集：自动跳把 seek 发到别片
+        // 媒体上、“每集一次”被消耗，写态还污染 position/duration/isEnded。
+        val episodeUrl = "https://cdn.example.com/ep3.m3u8"
+        val otherUrl = "https://cdn.example.com/other.m3u8"
+        // 本集媒体已挂片：tick 推进，读 live 信号。
+        assertTrue(PlayViewModel.shouldAdvancePollTick(episodeUrl, episodeUrl))
+        // 播放器仍挂别页媒体（认领后、挂片前的窗口）：tick 跳过。
+        assertFalse(PlayViewModel.shouldAdvancePollTick(otherUrl, episodeUrl))
+        // 空媒体（初载搜源期 current 还没回来）：tick 跳过。
+        assertFalse(PlayViewModel.shouldAdvancePollTick(null, episodeUrl))
+        // 本集未定（current == null）：无从比对，tick 跳过。
+        assertFalse(PlayViewModel.shouldAdvancePollTick(episodeUrl, null))
+        assertFalse(PlayViewModel.shouldAdvancePollTick(null, null))
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。

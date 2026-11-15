@@ -176,8 +176,19 @@ class PlayViewModel @Inject constructor(
                 // launchStartEpisode 消费，不丢起点。
                 val current = _uiState.value.current
                 if (current != null) {
-                    if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
-                        seekTo(positionMs, userInitiated = false)
+                    // A26-P2-1：同款 URL 门控——reclaim 窗口内播放器仍挂别页媒体时，
+                    // shouldSeekToNewPosition 读到的是别片位置、seekTo 也会作用到
+                    // 别片媒体；只当媒体是本集时才直接 seek，否则与搜源中分支同款
+                    // 记入 routePositionMs（并同步 state.positionMs 供回页 reclaim
+                    // 的起点消费），由待补开播消费，不丢起点。
+                    val episodeUrl = current.episodes.getOrNull(_uiState.value.episodeIndex)
+                    if (isCurrentEpisodeMedia(playerManager.currentUrl, episodeUrl)) {
+                        if (shouldSeekToNewPosition(positionMs, playerManager.currentPositionMs)) {
+                            seekTo(positionMs, userInitiated = false)
+                        }
+                    } else {
+                        routePositionMs = positionMs
+                        _uiState.update { it.copy(positionMs = positionMs) }
                     }
                 } else {
                     routePositionMs = positionMs
@@ -742,12 +753,23 @@ class PlayViewModel @Inject constructor(
                 // 注意：门控只看 Activity 前台（PlayScreen 的 ON_PAUSE/ON_RESUME），
                 // 应用内被其他页盖住时 Activity 仍是 resumed，轮询照常跑。
                 if (!shouldPoll(isForeground, playerManager.backgroundPlaybackEnabled)) continue
+                // A26-P2-1：URL 门控——认领后、挂片前的窗口内归属门控恒为真，
+                // 轮询是唯一没加 URL 门控的 live 信号读点（A25-P2-1 只给
+                // handlePlaybackError/onPlaybackEnded/saveRecordNow 加了门控）：
+                // 播放器仍挂别页媒体、或初载搜源期 current 还没回来（currentUrl
+                // 为 null）时本 tick 直接跳过，不读位置/时长、不写状态、不跑
+                // 自动跳/胶囊/提前预告/断点保存；startEpisode 挂片后下一 tick
+                // 自然恢复。只 gate 动作不够：写态会把别片的 position/duration/
+                // isEnded/isPlaying/isBuffering 写入本集 uiState，isEnded 污染
+                // 还会进 state.isEnded 的读数链。
+                val state = _uiState.value
+                val currentEpisodeUrl = state.current?.episodes?.getOrNull(state.episodeIndex)
+                if (!shouldAdvancePollTick(playerManager.currentUrl, currentEpisodeUrl)) continue
                 val position = playerManager.currentPositionMs
                 val duration = playerManager.durationMs
                 val buffered = playerManager.bufferedPositionMs
                 val playing = playerManager.isPlaying
                 val ended = playerManager.isEnded
-                val state = _uiState.value
                 val wasLoading = state.isLoading
                 _uiState.update {
                     it.copy(
@@ -1577,6 +1599,15 @@ class PlayViewModel @Inject constructor(
          */
         internal fun isCurrentEpisodeMedia(playerUrl: String?, episodeUrl: String?): Boolean =
             playerUrl != null && episodeUrl != null && playerUrl == episodeUrl
+
+        /**
+         * A26-P2-1：轮询本 tick 是否可读 live 信号（可单测）——播放器当前挂的
+         * 媒体是本集时才推进；别页媒体（认领后、挂片前的窗口内，归属门控恒为
+         * 真）或空媒体（初载搜源期 current 还没回来、currentUrl 为 null）时
+         * 跳过本 tick。归属门控与前台门控仍由调用方先行判断，这里只补 URL 门控。
+         */
+        internal fun shouldAdvancePollTick(playerUrl: String?, episodeUrl: String?): Boolean =
+            isCurrentEpisodeMedia(playerUrl, episodeUrl)
 
         /**
          * A23-P2-2：本集实时位置（可单测）——播放器当前挂的媒体是本集时读
