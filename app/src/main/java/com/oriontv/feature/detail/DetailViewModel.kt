@@ -9,6 +9,7 @@ import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.repo.DetailRepository
 import com.oriontv.data.repo.DetailSearchLogic
+import com.oriontv.data.repo.FavoriteState
 import com.oriontv.data.repo.FavoritesRepository
 import com.oriontv.data.repo.PlayRecordsRepository
 import com.oriontv.ui.components.ToastEvent
@@ -78,6 +79,26 @@ class DetailViewModel @Inject constructor(
         internal fun clampSelectedEpisode(selectedEpisode: Int, episodeCount: Int): Int =
             if (episodeCount <= 0) selectedEpisode.coerceAtLeast(0)
             else selectedEpisode.coerceIn(0, episodeCount - 1)
+
+        /**
+         * 第 7 轮跟进 D7-P2-10：三态收藏映射（可单测）——UNKNOWN 不得画成
+         * “未收藏”：isFavorite 仍按 false 计（与 isFavorite() 的旧 Boolean
+         * 契约一致），另置 unknown 由 UI 把按钮置灰禁用。
+         */
+        internal fun mapFavoriteState(state: FavoriteState): FavoriteButtonState =
+            when (state) {
+                FavoriteState.FAVORITE -> FavoriteButtonState(isFavorite = true, unknown = false)
+                FavoriteState.NOT_FAVORITE -> FavoriteButtonState(isFavorite = false, unknown = false)
+                FavoriteState.UNKNOWN -> FavoriteButtonState(isFavorite = false, unknown = true)
+            }
+
+        /**
+         * 第 7 轮跟进 D-P2-13：toggle 失败后重读的收藏态落点（可单测）——重读
+         * 成功以服务端实态为准（数据层写后校验分叉时已先按实态更新 lastKnown
+         * 再抛错，重读读到的就是实态）；重读本身失败时保留切换前旧态，不二次崩溃。
+         */
+        internal fun resolveFavoriteAfterToggleFailure(reRead: Boolean?, previous: Boolean): Boolean =
+            reRead ?: previous
     }
 
     fun init(source: String, id: String, title: String) {
@@ -163,16 +184,22 @@ class DetailViewModel @Inject constructor(
                 )
             }
             // 收藏状态（异步查，不阻塞详情展示）。
-            // B4-P2-2：读取前复核代次；B4-P2-5：查不到当未收藏，不崩溃。
+            // B4-P2-2：读取前复核代次；B4-P2-5：查不到不崩溃（现按 UNKNOWN 计，见下）。
+            // 第 7 轮跟进 D7-P2-10：改用三态 favoriteState()——UNKNOWN（服务端
+            // 失败且从未查过）不得画成“未收藏”，按钮置灰禁用（见 DetailScreen）。
             if (gen != generation) return@launch
-            val favorite = try {
-                favoritesRepository.isFavorite(currentKey)
+            val favoriteState = try {
+                favoritesRepository.favoriteState(currentKey)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                false
+                FavoriteState.UNKNOWN
             }
-            _uiState.value = _uiState.value.copy(isFavorite = favorite)
+            val buttonState = mapFavoriteState(favoriteState)
+            _uiState.value = _uiState.value.copy(
+                isFavorite = buttonState.isFavorite,
+                isFavoriteUnknown = buttonState.unknown,
+            )
         }
     }
 
@@ -223,7 +250,21 @@ class DetailViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _uiState.value = _uiState.value.copy(favoriteError = nextToastEvent("收藏失败，请检查网络后重试"))
+                // 第 7 轮跟进 D-P2-13：失败时重读一次 isFavorite()，让 UI 显示
+                // 服务端实态——数据层写后校验分叉时已先按服务端实态更新 lastKnown
+                // 再抛错，重读读到的就是实态；重读本身失败时保留切换前旧态，
+                // 不二次崩溃（见 resolveFavoriteAfterToggleFailure）。
+                val reRead: Boolean? = try {
+                    favoritesRepository.isFavorite(currentKey)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                _uiState.value = _uiState.value.copy(
+                    isFavorite = resolveFavoriteAfterToggleFailure(reRead, state.isFavorite),
+                    favoriteError = nextToastEvent("收藏失败，请检查网络后重试"),
+                )
             } finally {
                 favoriteToggleGuard.release()
                 _uiState.update { it.copy(isFavoriteToggling = false) }
@@ -267,6 +308,16 @@ fun resumePositionMs(
     return (resumePositionSeconds * 1000).coerceAtLeast(0L)
 }
 
+/**
+ * 第 7 轮跟进 D7-P2-10：详情收藏按钮的三态映射结果（可单测，见
+ * [DetailViewModel.mapFavoriteState]）。
+ */
+data class FavoriteButtonState(
+    val isFavorite: Boolean,
+    /** 未知态：按钮置灰禁用，不显示“未收藏”。 */
+    val unknown: Boolean,
+)
+
 data class DetailUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -279,6 +330,11 @@ data class DetailUiState(
     val selectedEpisode: Int = 0,
     val selectedGroup: Int = 0,
     val isFavorite: Boolean = false,
+    /**
+     * 第 7 轮跟进 D7-P2-10：收藏态未知（服务端失败且从未查过）——按钮置灰
+     * 禁用，不显示“未收藏”；isFavorite 此时仍为 false（与 isFavorite() 契约一致）。
+     */
+    val isFavoriteUnknown: Boolean = false,
     /** 第 6 轮 P1-2：收藏切换进行中（防连按；进行中收藏按钮禁用）。 */
     val isFavoriteToggling: Boolean = false,
     /** B-P0-1：收藏切换失败时的一次性提示（2 秒 Toast，UI 消费后清掉）。 */
