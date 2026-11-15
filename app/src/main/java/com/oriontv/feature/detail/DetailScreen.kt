@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,6 +98,10 @@ private fun DetailScreenContent(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val playRequester = remember { FocusRequester() }
+    // Jewel 第 9 轮 P2-1：活的门控读数——LaunchedEffect 块捕获的是 effect 启动时
+    // 的参数值，弹窗在重试窗口内打开时旧块读到的仍是 false；rememberUpdatedState
+    // 的 State 随重组更新，运行中的重试循环每次复核都读到最新值（下三处同款）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     // C4-P1-4：加载失败后“重试”按钮的焦点锚点（之前失败页无任何焦点，“重试”按不到）。
     val retryRequester = remember { FocusRequester() }
     val density = LocalDensity.current
@@ -119,7 +124,9 @@ private fun DetailScreenContent(
     LaunchedEffect(uiState.current) {
         if (shouldFocusPlayButton(uiState.current != null, viewModel.focusAnchored, globalModalOpen)) {
             // A8-P2-2 同款：按钮尚未组合完成时单次请求静默失败，改重试版。
-            playRequester.requestFocusWithRetry()
+            // Jewel 第 9 轮 P2-1：重试每次都复核门控——effect 启动时弹窗未开、
+            // 重试窗口内弹窗才打开时，不再把焦点偷回弹窗背后的“播放”按钮。
+            playRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             viewModel.focusAnchored = true
         }
     }
@@ -130,7 +137,8 @@ private fun DetailScreenContent(
             lastErrorFocused = null
         } else if (shouldFocusRetryButton(error, uiState.current != null, globalModalOpen, lastErrorFocused)) {
             // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-            retryRequester.requestFocusWithRetry()
+            // Jewel 第 9 轮 P2-1：同上，重试窗口内弹窗打开即停，不偷焦到“重试”按钮。
+            retryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             lastErrorFocused = error
         }
     }
@@ -144,14 +152,19 @@ private fun DetailScreenContent(
     // focusAnchored == true 挡住，是最常见的路径）。首进时 current/error
     // 皆空，detailRestoreFocusTarget 本就是 null、no-op；Detail→Detail 时
     // init 的 LaunchedEffect(source, id) 先跑、已同步清掉 current，同样 no-op。
-    LaunchedEffect(focusRestoreTick) {
+    // Jewel 第 9 轮 P2-1：tick effect 补第 8 轮 P2-8 同款门控——key 加
+    // globalModalOpen，弹窗开着时跳过本次抢焦（关闭后 tick +1 重跑再恢复）；
+    // 重试本身也每次复核门控，弹窗在重试窗口内打开即停（见 requestFocusWithRetry 的
+    // isStillValid）。
+    LaunchedEffect(focusRestoreTick, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         when (detailRestoreFocusTarget(uiState.current != null, uiState.error != null)) {
             DetailFocusTarget.Play -> {
                 // A8-P2-2 同款重试版：弹窗关闭瞬间按钮可能尚未重组完成。
-                playRequester.requestFocusWithRetry()
+                playRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
                 viewModel.focusAnchored = true
             }
-            DetailFocusTarget.Retry -> retryRequester.requestFocusWithRetry()
+            DetailFocusTarget.Retry -> retryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             null -> Unit
         }
     }

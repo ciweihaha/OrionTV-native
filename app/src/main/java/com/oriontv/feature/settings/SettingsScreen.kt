@@ -512,7 +512,14 @@ private fun SettingsInputRow(
                             // Jewel 第 8 轮 P2-5：判定后立即复位快照——一次 KeyDown
                             // 只配一次 KeyUp，复位后无配对的 KeyUp 按“未知”处理，
                             // 不再拿旧快照误判。
-                            val consume = shouldConsumeSettingsLeftKeyUp(cursorBeforeLeftMove)
+                            // Jewel 第 9 轮 P2-8：长按到行首的 quirk——长按时 KeyDown
+                            // 重复分发、快照随之递进，最后一次快照是到 0 之前的位置
+                            // （1），按快照判定会误消费；改取 min(快照, 当前光标)——
+                            // KeyUp 时读到的已是移动后位置，光标已在行首即放行。
+                            val consume = shouldConsumeSettingsLeftKeyUp(
+                                cursorBeforeLeftMove,
+                                textFieldValue.selection.start,
+                            )
                             cursorBeforeLeftMove = -1
                             consume
                         } else {
@@ -536,9 +543,15 @@ private fun SettingsInputRow(
  * Jewel 第 8 轮 P2-5：-1（未知/无配对 KeyDown）时默认消费、不放行——
  * 旧实现把 -1 按行首处理，无配对的 KeyUp 会把光标实际在文本中间的
  * 输入框误判成“行首”放行回菜单；留在输入框内是可恢复的安全方向。
- * （遥控 KeyDown/KeyUp 是否成对分发仍需真机验证，见审计 P2-5。） */
-internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int): Boolean =
-    cursorBeforeMove != 0
+ * （遥控 KeyDown/KeyUp 是否成对分发仍需真机验证，见审计 P2-5。）
+ * Jewel 第 9 轮 P2-8：取 min(快照, 当前光标)——长按左键时 KeyDown 重复分发、
+ * 快照随之递进，最后一次快照是到行首之前的位置（1），只按快照判定会误消费、
+ * 松手后仍留在框内；光标已在行首（任一为 0）即放行回菜单，与短按行为一致。
+ * -1 快照不参与取 min（未知仍默认消费，见上）。 */
+internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int, cursorNow: Int): Boolean {
+    if (cursorBeforeMove == -1) return true
+    return minOf(cursorBeforeMove, cursorNow) != 0
+}
 
 /**
  * NavHost 级弹窗关闭的 tick 是否应把焦点拉回左菜单（可单测）——

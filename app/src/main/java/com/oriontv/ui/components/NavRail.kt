@@ -64,6 +64,12 @@ fun NavRail(
     currentRoute: OrionRoute?,
     onNavigate: (OrionRoute) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Jewel 第 9 轮 P2-4：导航轨焦点变化回调——搜索页的结果区 latch 需在焦点
+     * 移到轨上时清掉（否则下一次搜索启动会把焦点从轨上拉回搜索框）；轨内上下
+     * 移动时 hasFocus 不变，不重复触发。默认空实现，其他调用方不受影响。
+     */
+    onRailFocusChanged: (Boolean) -> Unit = {},
 ) {
     val requesters = remember { List(NavRailItems.size) { FocusRequester() } }
     // C4-P2-7：左键回导航轨的显式焦点交接——刚从内容区进来（整轨 hasFocus
@@ -81,7 +87,10 @@ fun NavRail(
             .width(OrionDimens.NavRailWidth)
             .fillMaxHeight()
             .background(OrionColors.Background)
-            .onFocusChanged { railHasFocus = it.hasFocus }
+            .onFocusChanged {
+                railHasFocus = it.hasFocus
+                onRailFocusChanged(it.hasFocus)
+            }
             .padding(vertical = OrionDimens.ContentPadding.calculateTopPadding()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),

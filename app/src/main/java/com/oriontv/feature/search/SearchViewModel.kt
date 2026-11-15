@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
 import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
@@ -43,6 +44,9 @@ class SearchViewModel @Inject constructor(
     private val remoteInputManager: RemoteInputManager,
     private val savedStateHandle: SavedStateHandle,
     private val json: Json,
+    /** Jewel 第 9 轮 P2-6：iQIYI 联想用的 OkHttp 客户端（AppModule 已提供；联想
+     * 在 feature 层直接调，不碰数据层——只用短超时派生客户端发一条 GET）。 */
+    private val okHttpClient: OkHttpClient,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
@@ -55,6 +59,11 @@ class SearchViewModel @Inject constructor(
 
     private val cache = SearchCache()
     private var searchJob: Job? = null
+    /** Jewel 第 9 轮 P2-6：iQIYI 联想任务（拼音输入时防抖后发一条联想请求；新输入
+     * 到达即取消上一条，迟到响应凭代次丢弃，不覆盖新输入的联想）。 */
+    private var suggestJob: Job? = null
+    /** 联想短超时客户端（懒创建，复用注入客户端的连接池，只收紧超时）。 */
+    private val suggestClient: OkHttpClient by lazy { suggestTimeoutClient(okHttpClient) }
     // B7-P2-7：代次在主线程写、搜索协程读；与 DetailViewModel 同款，@Volatile
     // 保跨线程可见性（本类读写目前都在主线程，防御性加固）。
     @Volatile
@@ -120,12 +129,14 @@ class SearchViewModel @Inject constructor(
 
     /** 输入变化：防抖 300ms 后搜；清空输入时只清结果、不清历史。 */
     fun onQueryChange(query: String) {
+        val historySuggestions = suggest(query, _uiState.value.history)
         _uiState.value = _uiState.value.copy(
             query = query,
-            suggestions = suggest(query, _uiState.value.history),
+            suggestions = historySuggestions,
         )
         saveSearchState()
         searchJob?.cancel()
+        suggestJob?.cancel()
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
             _uiState.value = _uiState.value.copy(results = emptyList(), error = null, isLoading = false)
@@ -136,6 +147,21 @@ class SearchViewModel @Inject constructor(
             delay(DEBOUNCE_MS)
             if (gen != generation) return@launch
             executeSearch(trimmed, gen)
+        }
+        // Jewel 第 9 轮 P2-6：拼音输入时补 iQIYI 中文候选——屏上键盘敲出的是拼音
+        // 字母，历史联想只有搜过的词；拼音串发给 iQIYI 联想接口出中文候选，补在
+        // 历史联想之后（mergeSuggestions）。联想失败/迟到时只留历史联想，不弹错。
+        if (PinyinTable.isPinyinLike(trimmed)) {
+            suggestJob = viewModelScope.launch {
+                delay(DEBOUNCE_MS)
+                if (gen != generation) return@launch
+                val titles = fetchIqiyiSuggestTitles(suggestClient, trimmed)
+                if (gen != generation) return@launch
+                if (_uiState.value.query.trim() != trimmed) return@launch
+                _uiState.value = _uiState.value.copy(
+                    suggestions = mergeSuggestions(historySuggestions, titles),
+                )
+            }
         }
     }
 
@@ -349,6 +375,7 @@ class SearchViewModel @Inject constructor(
 
     fun clearQuery() {
         searchJob?.cancel()
+        suggestJob?.cancel()
         generation++
         _uiState.value = _uiState.value.copy(
             query = "",

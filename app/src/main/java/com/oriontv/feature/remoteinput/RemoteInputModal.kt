@@ -88,7 +88,12 @@ fun RemoteInputModal(
     // 第 6 轮 P2-9：之前恒抢“关闭”——服务未启动时（正是从搜索页点“手机扫码输入”
     // 最常见的状态）用户需先横移一格才能点“开启远程输入”；现在未启动落“一键开启”，
     // 已启动落“关闭”。服务拉起后按钮消失的回落仍由下面的 showEnableButton effect 管。
-    LaunchedEffect(Unit) {
+    // Jewel 第 9 轮 P2-5：挂载抢焦补 globalModalOpen 门控——C12-P2-3 只修了
+    // showEnableButton 变化 effect 那半边，挂载 effect 仍无门控；全局弹窗开着时
+    // 扫码弹窗若此时挂载，会把焦点从全局弹窗偷回扫码弹窗的按钮。key 加
+    // globalModalOpen：弹窗关闭后 effect 重跑再落焦（与 C12-P2-3 同款口径）。
+    LaunchedEffect(showEnableButton, globalModalOpen) {
+        if (!shouldFocusRemoteInputModalOnMount(globalModalOpen)) return@LaunchedEffect
         if (showEnableButton) enableRequester.requestFocus() else closeRequester.requestFocus()
     }
 
@@ -219,3 +224,11 @@ fun RemoteInputModal(
  */
 internal fun shouldFocusModalCloseOnEnableChange(showEnableButton: Boolean, globalModalOpen: Boolean): Boolean =
     !showEnableButton && !globalModalOpen
+
+/**
+ * 扫码弹窗挂载时是否应抢焦点到主操作按钮（可单测，Jewel 第 9 轮 P2-5）：
+ * 全局弹窗未开着时才抢；开着时跳过本次抢焦，关闭后 effect 因 key 变化重跑
+ * 再落焦（与 C12-P2-3 同款口径，补挂载 effect 那半边）。
+ */
+internal fun shouldFocusRemoteInputModalOnMount(globalModalOpen: Boolean): Boolean =
+    !globalModalOpen

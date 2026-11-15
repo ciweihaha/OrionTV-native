@@ -186,7 +186,15 @@ class SettingsViewModel @Inject constructor(
                         AppLog.w("SettingsViewModel", "保存源地址：登出旧服务器失败，继续保存：${e.message}")
                     }
                     // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
-                    try { credentialsStore.clear() } catch (_: Exception) { }
+                    // Jewel 第 9 轮 P2-3：取消原样重抛——旧写法 catch (_: Exception)
+                    // 把 CE 一并吞掉，后续 setSourceAddresses 照常写；与 B15-P2-2
+                    // 同款口径（附属清凭据失败只吞非取消异常）。
+                    try {
+                        credentialsStore.clear()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                    }
                 }
                 // B12-P2-3：新地址与 StorageType 清空一次原子写——旧实现先写
                 // 两个地址、后清 StorageType，三次独立写，中间窗口里新地址配
@@ -286,8 +294,12 @@ class SettingsViewModel @Inject constructor(
     /**
      * B7-P2-8：即改即存的写操作统一走这里——DataStore 写失败时记日志、不崩溃；
      * 旧实现每个 setter 都是裸 launch，写失败即未捕获异常、整个协程崩掉。
+     * Jewel 第 9 轮 P2-7：写失败除记日志外给一次 Toast——开关的 checked 态由
+     * DataStore 流驱动，写盘失败时开关视觉上弹回原位，用户不知道是“没点上”
+     * 还是“保存失败”；与搜索历史写失败的 Toast 口径一致。开机恢复
+     * （restoreRemoteInputIfEnabled）不是用户保存动作，失败不弹 Toast。
      */
-    private fun saveSetting(tag: String, block: suspend () -> Unit) {
+    private fun saveSetting(tag: String, toastOnFailure: Boolean = true, block: suspend () -> Unit) {
         viewModelScope.launch {
             try {
                 block()
@@ -295,6 +307,9 @@ class SettingsViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 AppLog.w("SettingsViewModel", "保存设置失败：$tag：${e.message}")
+                if (toastOnFailure) {
+                    _uiState.update { it.copy(toast = nextToastEvent("保存失败，请重试")) }
+                }
             }
         }
     }
@@ -336,7 +351,7 @@ class SettingsViewModel @Inject constructor(
 
     /** 开机恢复：如果设置里开着远程输入，把服务拉起来（失败时设置页红字提示）。 */
     fun restoreRemoteInputIfEnabled() {
-        saveSetting("restoreRemoteInput") {
+        saveSetting("restoreRemoteInput", toastOnFailure = false) {
             if (settingsRepository.remoteInputEnabled.first()) {
                 remoteInputManager.start()
             }
