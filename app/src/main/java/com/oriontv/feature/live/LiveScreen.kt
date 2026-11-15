@@ -530,6 +530,7 @@ fun LiveScreen(
                 },
                 onOpenPanel = { viewModel.openPanel() },
                 globalModalOpen = globalModalOpen,
+                focusRestoreTick = focusRestoreTick,
             )
         }
 
@@ -695,10 +696,19 @@ private fun PlaybackFailedOverlay(
     onOpenPanel: () -> Unit,
     /** C11-P2-1：全局弹窗开着时挂载也不抢焦（弹窗关闭后由根焦点 effect 恢复）。 */
     globalModalOpen: Boolean = false,
+    /**
+     * A13-P2-2（= C13-P1-3）：NavHost 级弹窗关闭后 +1——失败页出现期间全局
+     * 弹窗关闭，根 effect（key 含 focusRestoreTick）重跑把焦点抢回根部，
+     * 失败页的“频道面板”按钮遥控不可达；落焦 effect key 改成 tick，与
+     * EmptyState 同款：挂载时本 effect 在根 effect 之后跑、按钮获胜；
+     * 弹窗关闭时两者都重跑、按钮后跑获胜；面板开关时本 effect 不重跑，
+     * 与改前一致（面板开着时面板 effect 管焦点，关面板时根 effect 恢复）。
+     */
+    focusRestoreTick: Int = 0,
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(Unit) { if (!globalModalOpen) requester.requestFocusWithRetry() }
+    LaunchedEffect(focusRestoreTick) { if (!globalModalOpen) requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()

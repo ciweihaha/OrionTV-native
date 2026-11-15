@@ -196,6 +196,17 @@ class PlayViewModel @Inject constructor(
         playbackToken = playerManager.claimPlayback()
         currentKey = MoonTvApi.recordKey(source, id, title)
         routePositionMs = positionMs
+        // A13-P2-1：新 key 分支也要重置 VM 级逐集字段——之前只清了 uiState
+        // 里的几项（A11-P2-1 的范围），introSkippedThisEpisode /
+        // skipIntroCapsule / nextEpisodeShownForIndex 还留着旧集的值；
+        // startEpisode() 的换集分支够不着它们——搜源回调先把 current 置成
+        // 新结果才调 launchStartEpisode，到 startEpisode 时 episodeChanged
+        // 已是 false（current 非空且集号相同），新片的片头既不自动跳、胶囊
+        // 也不再出现。只动新 key 分支，不动同集换源/重试的“每集一次”语义
+        //（那两条路仍走 startEpisode 的换集/重 arm 分支）。
+        introSkippedThisEpisode = false
+        skipIntroCapsule.resetForEpisode()
+        nextEpisodeShownForIndex = -1
         // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
         viewModelScope.launch {
             // A8-P2-3：DataStore 读失败会让协程未捕获崩溃；失败即保持默认值
@@ -748,7 +759,12 @@ class PlayViewModel @Inject constructor(
             // 第 7 轮 P2-2：重播也要重置 nextEpisodeShownForIndex（与 retry()
             // 一致）——否则轮询门控以为“本集已出过”，重播后片尾前 10 秒预告
             // 不再提前出现，只有播完时 onPlaybackEnded 才会再弹卡。
+            // A13-P2-3：重播也要重置片头状态（与 retry() 经 startEpisode 的
+            // 重 arm 语义对齐）——重播不走 startEpisode，introSkippedThisEpisode
+            // 仍是真、胶囊已记“出现过”时，重播的片头既不自动跳、胶囊也不出现。
             nextEpisodeShownForIndex = -1
+            introSkippedThisEpisode = false
+            skipIntroCapsule.resetForEpisode()
             _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }
             seekTo(0L)
             playerManager.play()
