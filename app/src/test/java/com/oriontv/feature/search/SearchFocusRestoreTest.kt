@@ -2,8 +2,8 @@ package com.oriontv.feature.search
 
 import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** P2-9（第 5 轮）：返回焦点恢复按条目键锚定，不按 index。 */
@@ -50,5 +50,24 @@ class SearchFocusRestoreTest {
         assertTrue(shouldEnableKeyboardBackHandler(showKeyboard = true, globalModalOpen = false))
         assertFalse(shouldEnableKeyboardBackHandler(showKeyboard = true, globalModalOpen = true))
         assertFalse(shouldEnableKeyboardBackHandler(showKeyboard = false, globalModalOpen = false))
+    }
+
+    @Test
+    fun `loading reclaims focus only from results area`() {
+        // Jewel 第 8 轮 P1-1：焦点在结果卡上时收回（C8-P1-3 意图保留）；
+        // 焦点在屏上键盘按键上时不动；扫码弹窗开着时不动；
+        // 焦点从未进过结果区时不动（不做无谓跳转）。
+        assertTrue(shouldReclaimSearchFocusOnLoading(true, false, false))
+        assertFalse(shouldReclaimSearchFocusOnLoading(true, true, false))
+        assertFalse(shouldReclaimSearchFocusOnLoading(true, false, true))
+        assertFalse(shouldReclaimSearchFocusOnLoading(false, false, false))
+        assertFalse(shouldReclaimSearchFocusOnLoading(false, true, false))
+    }
+
+    @Test
+    fun `no saved key skips result polling`() {
+        // Jewel 第 8 轮 P2-4：无保存键不轮询、直接回落搜索框。
+        assertFalse(shouldPollSavedResult(null))
+        assertTrue(shouldPollSavedResult("agg+1"))
     }
 }

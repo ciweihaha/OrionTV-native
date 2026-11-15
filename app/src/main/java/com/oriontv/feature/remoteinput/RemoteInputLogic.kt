@@ -16,6 +16,16 @@ object RemoteInputLogic {
     /** 远程消息长度上限 10KB（RN 同款）。 */
     const val MAX_MESSAGE_LENGTH = 10 * 1024
 
+    /**
+     * Jewel 第 8 轮 P2-7：/message 消息长度按 UTF-8 字节数判，与第 7 轮
+     * P2-7 的 16KB 体上限（isRequestBodyTooLarge）同口径——旧实现用
+     * String.length（UTF-16 码元），10,001 个汉字约 30KB 字节、字符数刚过
+     * 10K 时本应判 413。实际不可达（整包体先被 16KB 字节上限拦掉），
+     * 纯语义统一。
+     */
+    fun isMessageTooLong(message: String): Boolean =
+        message.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_LENGTH
+
     /** POST 请求体上限 16KB（P1-11：超限直接 413，不读整包体进内存）。 */
     const val MAX_REQUEST_BODY_BYTES = 16 * 1024
 
@@ -425,7 +435,9 @@ class RemoteInputRouter(
                     if (message.isNullOrEmpty()) {
                         return HttpResult(400, "application/json", """{"error":"Missing message"}""")
                     }
-                    if (message.length > RemoteInputLogic.MAX_MESSAGE_LENGTH) {
+                    // Jewel 第 8 轮 P2-7：消息长度按 UTF-8 字节数判（见
+                    // isMessageTooLarge），与 16KB 体上限同口径。
+                    if (RemoteInputLogic.isMessageTooLong(message)) {
                         return HttpResult(413, "application/json", """{"error":"Message too long"}""")
                     }
                     onMessage(message)

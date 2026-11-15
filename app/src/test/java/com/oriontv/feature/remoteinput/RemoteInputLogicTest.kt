@@ -9,6 +9,17 @@ import org.junit.Test
 class RemoteInputLogicTest {
 
     @Test
+    fun `message length is judged by utf-8 bytes`() {
+        // Jewel 第 8 轮 P2-7：与第 7 轮 P2-7 的体上限同口径——
+        // 6000 个汉字约 18KB 字节，字符数未过 10K、字节数已过，判超限；
+        // 3000 个汉字约 9KB 字节，不超限；10240 个 ASCII 字符刚好 10KB，不超限。
+        assertTrue(RemoteInputLogic.isMessageTooLong("中".repeat(6000)))
+        assertFalse(RemoteInputLogic.isMessageTooLong("中".repeat(3000)))
+        assertFalse(RemoteInputLogic.isMessageTooLong("a".repeat(10 * 1024)))
+        assertTrue(RemoteInputLogic.isMessageTooLong("a".repeat(10 * 1024 + 1)))
+    }
+
+    @Test
     fun `pairing code is 4 digits and varies`() {
         val code = RemoteInputLogic.generatePairingCode()
         assertEquals(4, code.length)

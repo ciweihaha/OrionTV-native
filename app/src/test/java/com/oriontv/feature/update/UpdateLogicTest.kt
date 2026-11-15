@@ -28,6 +28,16 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `resolve skip version prefers memory over stored`() {
+        // Jewel 第 8 轮 P2-1：skipVersion() 同步置位的内存态优先——写盘尚未
+        // 落地的窗口内，完成分支也按“已跳过”走；内存态为空时回落到 DataStore 值。
+        assertEquals("2.0.10", resolveSkipVersion("2.0.10", ""))
+        assertEquals("2.0.10", resolveSkipVersion("2.0.10", "2.0.9"))
+        assertEquals("2.0.9", resolveSkipVersion(null, "2.0.9"))
+        assertEquals("", resolveSkipVersion(null, ""))
+    }
+
+    @Test
     fun `strip version prefix removes leading v`() {
         assertEquals("2.0.1", stripVersionPrefix("v2.0.1"))
         assertEquals("2.0.1", stripVersionPrefix("V2.0.1"))

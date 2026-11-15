@@ -409,6 +409,26 @@ fun findSavedResult(results: List<SearchResult>, savedKey: String?): Int {
     return results.indexOfFirst { searchResultKey(it) == savedKey }
 }
 
+/**
+ * Jewel 第 8 轮 P1-1：搜索开始时是否把焦点收回搜索框（纯逻辑，可单测）——
+ * 只在焦点确实在结果区（或刚从结果区因网格卸载而丢失，见 SearchScreen 的
+ * resultsAreaHadFocus latch）时收回；焦点在屏上键盘按键上时不动
+ * （遥控逐字输入不被偷焦点）；扫码弹窗开着时不动（焦点在弹窗内）。
+ * C8-P1-3 的意图保留：远程输入触发新搜索、焦点在结果卡上时仍收回。
+ */
+fun shouldReclaimSearchFocusOnLoading(
+    resultsAreaHadFocus: Boolean,
+    keyboardHasFocus: Boolean,
+    remoteInputModalOpen: Boolean,
+): Boolean = resultsAreaHadFocus && !keyboardHasFocus && !remoteInputModalOpen
+
+/**
+ * Jewel 第 8 轮 P2-4：返回焦点恢复是否需要按保存键轮询（纯逻辑，可单测）——
+ * 无保存键时 findSavedResult 恒 -1，不轮询、直接回落搜索框，
+ * 不空转 10×100ms 拖慢弹窗关闭后的焦点恢复。
+ */
+fun shouldPollSavedResult(savedKey: String?): Boolean = savedKey != null
+
 /** 搜索错误分型（ui-design.md §5.5：错误分型提示，不是一句“失败”）。 */
 sealed interface SearchError {
     val message: String
