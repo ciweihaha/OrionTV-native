@@ -70,6 +70,13 @@ class SearchViewModel @Inject constructor(
     private var generation = 0
 
     /**
+     * B17-P2-2：deleteHistory 代次——与 FavoritesViewModel.refresh() 的
+     * B12-P2-2 同款；快速连删两条历史时，先删的慢结果不再覆盖后删的新列表
+     *（delete 后 getLatest20() 不持锁，迟到旧结果最后写态会让已删词幽灵复现）。
+     */
+    private var deleteHistoryGeneration = 0
+
+    /**
      * P1-4：首进才落搜索框锚点；返回时恢复 savedResultKey。
      * C6-P1-2：原来是 plain var——导航轨切走后 ViewModel 被清、锚点就丢了，
      * 回来又落搜索框；改 SavedStateHandle（与首页/详情/收藏同款），
@@ -344,6 +351,9 @@ class SearchViewModel @Inject constructor(
 
     /** 单条删除历史。 */
     fun deleteHistory(keyword: String) {
+        // B17-P2-2：起删时快照代次，落态前复核仍是最新一次删除，迟到的旧
+        // 结果丢弃（快速连删时先删的 getLatest20() 可能后返回）。
+        val gen = ++deleteHistoryGeneration
         viewModelScope.launch {
             val deleted = try {
                 searchHistoryRepository.delete(keyword)
@@ -364,6 +374,7 @@ class SearchViewModel @Inject constructor(
                 _uiState.value.history
             }
             val newHistory = if (deleted) fresh.filter { it != keyword } else fresh
+            if (gen != deleteHistoryGeneration) return@launch
             // B-P2-7：先取新 history 再算联想；用删除前的旧 history 算，
             // 删后联想 chips 仍含已删词，直到下次输入才刷新。
             _uiState.value = _uiState.value.copy(

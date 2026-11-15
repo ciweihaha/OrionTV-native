@@ -9,6 +9,7 @@ import com.oriontv.core.util.AppLog
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.play.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -143,20 +144,33 @@ class LiveViewModel @Inject constructor(
             // B9-P2-1：DataStore 读失败不让协程未捕获崩溃；失败即保持现有值。
             runCatching { settingsRepository.currentBackgroundPlayback() }
                 .onSuccess { playerManager.backgroundPlaybackEnabled = it }
-                .onFailure { AppLog.w("LiveViewModel", "后台播放开关读入失败，沿用现有值：${it.message}") }
+                .onFailure {
+                    // B17-P2-1：取消异常原样重抛，不当成普通读失败沿用旧值。
+                    if (it is CancellationException) throw it
+                    AppLog.w("LiveViewModel", "后台播放开关读入失败，沿用现有值：${it.message}")
+                }
         }
         initJob = viewModelScope.launch {
-            val favJson = runCatching { settingsRepository.currentLiveFavChannelsJson() }.getOrDefault("")
+            val favJson = runCatching { settingsRepository.currentLiveFavChannelsJson() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败回落空串。
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrDefault("")
             val favorites = runCatching {
                 json.decodeFromString<List<LiveFavChannel>>(favJson)
             }.getOrDefault(emptyList())
             controller.setFavorites(favorites)
-            val lastJson = runCatching { settingsRepository.currentLiveLastChannelJson() }.getOrDefault("")
+            val lastJson = runCatching { settingsRepository.currentLiveLastChannelJson() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败回落空串。
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrDefault("")
             val lastChannel = runCatching {
                 json.decodeFromString<LiveLastChannel>(lastJson)
             }.getOrNull()
 
-            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
+            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败回落空串。
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrDefault("")
             if (m3uUrl.isBlank()) {
                 // A9-P1-3：未配地址不置 initialised——否则 onPageResumed() 遇频道表
                 // 为空直接早退，用户在设置里填好 M3U 回来永远停在空态，只能杀进程。
@@ -223,7 +237,10 @@ class LiveViewModel @Inject constructor(
         // A6-P2-5：在途守卫——上一次刷新还没跑完时直接返回，不并发拉网。
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
-            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }.getOrDefault("")
+            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败回落空串。
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrDefault("")
             if (m3uUrl.isBlank()) return@launch
             val wasFailed = _uiState.value.playbackFailed
             val fresh = m3uRepository.loadChannels(m3uUrl, forceRefresh = true)
@@ -582,6 +599,8 @@ class LiveViewModel @Inject constructor(
             runCatching {
                 settingsRepository.setLiveLastChannelJson(json.encodeToString(last))
             }
+                // B17-P2-1：附属写失败不推翻主流程，但取消异常原样重抛。
+                .onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -687,6 +706,8 @@ class LiveViewModel @Inject constructor(
             runCatching {
                 settingsRepository.setLiveFavChannelsJson(json.encodeToString(favorites))
             }
+                // B17-P2-1：附属写失败不推翻主流程，但取消异常原样重抛。
+                .onFailure { if (it is CancellationException) throw it }
         }
         pokePanelTimer()
     }
@@ -846,6 +867,8 @@ class LiveViewModel @Inject constructor(
             // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
             // PlayViewModel.onCleared 同款）。
             val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败按关处理。
+                .onFailure { if (it is CancellationException) throw it }
                 .getOrDefault(false)
             if (backgroundOn) {
                 playerManager.backgroundPlaybackEnabled = true

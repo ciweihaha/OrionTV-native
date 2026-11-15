@@ -215,7 +215,11 @@ class PlayViewModel @Inject constructor(
             //（MainActivity 另有持续跟新的缓存值兜底，见 A4-P2-5）。
             runCatching { settingsRepository.currentBackgroundPlayback() }
                 .onSuccess { playerManager.backgroundPlaybackEnabled = it }
-                .onFailure { AppLog.w("PlayViewModel", "后台播放开关读入失败，用默认值：${it.message}") }
+                .onFailure {
+                    // B17-P2-1：取消异常原样重抛，不当成普通读失败用默认值。
+                    if (it is CancellationException) throw it
+                    AppLog.w("PlayViewModel", "后台播放开关读入失败，用默认值：${it.message}")
+                }
         }
         _uiState.update { resetUiStateForNewKey(it, episodeIndex, positionMs, title) }
         startSearch()
@@ -635,6 +639,8 @@ class PlayViewModel @Inject constructor(
         _uiState.update { it.copy(isEnded = true) }
         viewModelScope.launch {
             runCatching { playRecordsRepository.delete(currentKey) }
+                // B17-P2-1：附属写失败不推翻主流程，但取消异常原样重抛。
+                .onFailure { if (it is CancellationException) throw it }
             if (shouldShowNextEpisode(
                     cachedNextEpisodeOverlayEnabled,
                     state.episodeIndex,
@@ -1120,6 +1126,8 @@ class PlayViewModel @Inject constructor(
             // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
             // LiveViewModel.onCleared 同款）。
             val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
+                // B17-P2-1：取消异常原样重抛，不当成读失败按关处理。
+                .onFailure { if (it is CancellationException) throw it }
                 .getOrDefault(false)
             if (backgroundOn) {
                 playerManager.backgroundPlaybackEnabled = true

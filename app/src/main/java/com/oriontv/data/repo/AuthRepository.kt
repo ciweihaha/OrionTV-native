@@ -377,7 +377,10 @@ class AuthRepository @Inject constructor(
             // B4-P2-17：31 秒后配置重拉成功时重跑登录恢复——否则冷启动时
             // 配置未到、restoreSession 已失败，登录弹窗一直滞留；
             // 重跑成功时 performRestore 会把弹窗关掉，失败则弹窗继续留着。
-            val refreshed = runCatching { settingsRepository.refreshServerConfig() }.getOrNull()
+            val refreshed = runCatching { settingsRepository.refreshServerConfig() }
+                // B17-P2-1：取消异常原样重抛，不当成配置重拉失败回落空。
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrNull()
             if (refreshed != null && !loggedOut && logoutEpoch.get() == epochAtSchedule) {
                 restoreSession()
             }

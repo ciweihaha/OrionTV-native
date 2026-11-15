@@ -222,6 +222,10 @@ class SettingsViewModel @Inject constructor(
                             false,
                         )
                     }
+                        // B17-P2-1：回滚写失败仍不推翻“保存失败”的上报，但取消
+                        // 异常原样重抛——catch 块内抛出的 CE 不会被同 try 的
+                        // catch 再捕获，直接交由 launch 协程取消处理。
+                        .onFailure { if (it is CancellationException) throw it }
                     throw e
                 }
                 var configFailed = false
