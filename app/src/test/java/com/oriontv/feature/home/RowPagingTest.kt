@@ -70,6 +70,22 @@ class RowPagingTest {
     }
 
     @Test
+    fun `chain loop must not gate on canLoadMore after load started`() {
+        // H12-P1-1：第 12 轮——loadMore() 入口已同步调 onLoadStarted() 拦并发
+        // 调用，此时 canLoadMore() 恒为假；链式续取的循环条件只能看 hasMore，
+        // 用 canLoadMore() 会一次都不进、整页取数成死代码，且 isLoading 永久
+        // 置真、该行此后永不分页（PR #29 的分类分页功能实际完全没跑起来）。
+        val state = RowPagingState(RowSource.CMS, cmsType = 1)
+        state.onLoadStarted()
+        assertFalse(state.canLoadMore())
+        assertTrue(state.hasMore)
+        // 空页后状态机清掉 isLoading，hasMore 仍真，链式续取可继续。
+        state.onEmptyPage(state.advanceCursor(2))
+        assertTrue(state.canLoadMore())
+        assertTrue(state.hasMore)
+    }
+
+    @Test
     fun `shouldLoadMore fires near the end only`() {
         val state = RowPagingState(RowSource.CMS, cmsType = 1)
         assertFalse(state.shouldLoadMore(0, 20))
