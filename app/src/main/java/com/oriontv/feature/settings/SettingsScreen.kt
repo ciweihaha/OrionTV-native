@@ -449,7 +449,9 @@ private fun SettingsInputRow(
     // 读到的已是移动后的位置（第 1 位按左键会读到 0、误放行回菜单）；
     // 在预览阶段 KeyDown 里快照（不消费，不影响光标移动本身），KeyUp 时
     // 按快照判断是否消费。直接在 KeyDown 里消费是错的：会拦住光标移动。
-    var cursorBeforeLeftMove by remember { mutableStateOf(-1) }
+    // 第 13 轮跟进（轻微 9）：初值 -1 不是合法光标，改 0（左键谓词 cursor > 0
+    // 在 0/-1 下同为 false，行为不变）。
+    var cursorBeforeLeftMove by remember { mutableStateOf(0) }
     LaunchedEffect(value) {
         if (value != textFieldValue.text) {
             textFieldValue = TextFieldValue(value, TextRange(value.length))

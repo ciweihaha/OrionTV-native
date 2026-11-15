@@ -154,7 +154,16 @@ class SettingsViewModel @Inject constructor(
         // C8-P2-5：加载完成前直接返回——UI 侧按钮已禁用，这里是防御
         // （加载中的 draft 还是空串/旧值，存了会把已保存地址清掉）。
         if (state.isLoading) return
-        if (state.isSaving || !isDirty) return
+        if (state.isSaving) return
+        // 第 13 轮跟进（轻微 6）：地址没改时不再静默返回——按钮平时因 isDirty
+        // 门控不可点，但重复调用（双击/外部调用）应明确告诉用户无需再存，
+        // 而不是什么都没发生。
+        if (!isDirty) {
+            _uiState.update {
+                it.copy(toast = nextToastEvent("源地址未改动，无需重复保存"))
+            }
+            return
+        }
         // B6-P1-1：非法地址直接拒绝保存——旧实现照单全收还先登出清掉登录态，
         // 用户填错一个字符就丢登录。空地址允许（= 不配服务器，本地模式）。
         if (state.apiUrl.trim().isNotBlank() &&
@@ -234,7 +243,10 @@ class SettingsViewModel @Inject constructor(
                         AppLog.w("SettingsViewModel", "保存源地址：拉取 server-config 失败，按本地模式：${e.message}")
                         null
                     }
-                    if (!failureCached && serverConfig == null && apiChanged) {
+                    // 第 13 轮跟进（轻微 6）：去掉 apiChanged 条件——API 地址没变时
+                    // 本次拉取失败同样要提示（之前静默“已保存”，用户不知道已按
+                    // 本地模式运行）；30 秒失败缓存内的 null 仍不报（failureCached）。
+                    if (!failureCached && serverConfig == null) {
                         configFailed = true
                     }
                 }
@@ -247,6 +259,10 @@ class SettingsViewModel @Inject constructor(
                         ""
                     }
                 _uiState.update { current ->
+                    // 第 13 轮跟进（轻微 6）：configFailed 也可能在 apiChanged == false
+                    // 时发生（地址没变、本次拉取失败），此时并未登出，文案不能再写
+                    // “登录状态已清除”；登录清除后缀只在真的登出过时才拼。
+                    val loginCleared = if (apiChanged) "，登录状态已清除" else ""
                     current.copy(
                         isSaving = false,
                         savedApiUrl = state.apiUrl.trim(),
@@ -257,7 +273,7 @@ class SettingsViewModel @Inject constructor(
                         m3uUrl = if (current.m3uUrl == state.m3uUrl) state.m3uUrl.trim() else current.m3uUrl,
                         toast = nextToastEvent(
                             when {
-                                configFailed -> "已保存，登录状态已清除；服务器配置暂未拉取成功，已按本地模式运行$httpWarning"
+                                configFailed -> "已保存$loginCleared；服务器配置暂未拉取成功，已按本地模式运行$httpWarning"
                                 apiChanged -> "已保存，登录状态已清除$httpWarning"
                                 else -> "已保存$httpWarning"
                             },
