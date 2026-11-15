@@ -139,12 +139,15 @@ private fun DetailScreenContent(
     // 第 7 轮 P1-1：tick 恢复按当前态选锚点——数据已到（弹窗打开期间到达、
     // 上面 effect 被门控拦住）时落“播放”并补置 focusAnchored；错误态时落
     // “重试”（error effect 不重跑，tick 是错误态弹窗关闭后唯一的恢复口）。
-    // C11-P1-3：去掉 tick <= 0 早退——一整个进程里从没关过登录/更新弹窗时
+    // 第 13 轮跟进（轻微 1）：补 globalModalOpen 门控——弹窗开着时 tick 到达
+    // 也不抢焦点（与其他页面一致）；弹窗关闭后 tick +1 重跑再恢复。
+    // C11-P1-3：没有 tick <= 0 早退——一整个进程里从没关过登录/更新弹窗时
     // tick 恒为 0，从播放页返回详情页必丢焦点（另一条恢复路又被
     // focusAnchored == true 挡住，是最常见的路径）。首进时 current/error
     // 皆空，detailRestoreFocusTarget 本就是 null、no-op；Detail→Detail 时
     // init 的 LaunchedEffect(source, id) 先跑、已同步清掉 current，同样 no-op。
-    LaunchedEffect(focusRestoreTick) {
+    LaunchedEffect(focusRestoreTick, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         when (detailRestoreFocusTarget(uiState.current != null, uiState.error != null)) {
             DetailFocusTarget.Play -> {
                 // A8-P2-2 同款重试版：弹窗关闭瞬间按钮可能尚未重组完成。

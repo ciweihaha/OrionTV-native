@@ -46,9 +46,14 @@ class DetailViewModel @Inject constructor(
     /** B12-P2-4：在途的收藏切换任务——init() 切新片时取消，不让旧片的切换
      * 结果写到新片态上（与 searchJob 同款取消）。 */
     private var toggleJob: Job? = null
+    /**
+     * M18：与 generation 同款——init() 在主线程写 currentKey，搜源回调与
+     * 收藏读取在 IO 线程侧读它做复核；plain var 无可见性保证，改 @Volatile
+     *（generation 已在 B7-P2-7 改过，这里是同一模式漏掉的另一半）。
+     */
+    @Volatile
     private var currentKey: String = ""
     private var currentTitle: String = ""
-    private var currentId: String = ""
 
     /** 第 6 轮 P1-2：收藏切换防连按守卫（toggle 是翻转操作，连按两次翻回去）。 */
     private val favoriteToggleGuard = InFlightGuard()
@@ -140,7 +145,6 @@ class DetailViewModel @Inject constructor(
         if (currentKey == key && _uiState.value.results.isNotEmpty()) return
         currentKey = key
         currentTitle = title
-        currentId = id
         val gen = ++generation
         searchJob?.cancel()
         // B12-P2-4：切新片时取消在途的收藏切换——toggle() 是翻转操作，旧片
