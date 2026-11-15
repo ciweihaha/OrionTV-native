@@ -11,7 +11,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -172,56 +171,42 @@ class UpdateDownloader @Inject constructor(
                         // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
                         // 最坏要等 60 秒读超时。改走 suspendCancellableCoroutine
                         //（与 readStreamCapped 同款）：取消到达时 continuation
-                        // 的 invokeOnCancellation 关响应体，中断 socket 读；关流
-                        // 让阻塞的 read() 抛错时，若已取消即按取消收尾（不进重试），
-                        // 否则原样抛错走重试。注意不能用 Job.invokeOnCompletion
-                        // 挂钩——它只在任务完成时跑，阻塞的读不返回、任务完不成，
-                        // 挂钩永远等不到触发；也不能在块里调 currentCoroutineContext()
+                        // 的 invokeOnCancellation 关响应体，中断 socket 读。
+                        // 注意不能用 Job.invokeOnCompletion 挂钩——它只在任务
+                        // 完成时跑，阻塞的读不返回、任务完不成，挂钩永远等不到
+                        // 触发；也不能在块里调 currentCoroutineContext()
                         //（块不是 suspend 上下文），context 先在外面捕获。
+                        // 更关键：块里不要 catch 后再 resumeWithException——
+                        // 取消到达时 continuation 已是已取消态，对它的 resume
+                        // 会被静默忽略，块正常返回后 suspendCancellableCoroutine
+                        // 也会正常返回，取消就被吞掉、下载“正常”完成（单测计数
+                        // 证实：读只进 1 次且因关体抛错、无重试，join 却正常
+                        // 返回；已取消时直接 throw 同样走不通）。所以这里不截
+                        // 获异常：读抛错直接抛出去，由外层 attempt 的 catch 按
+                        // CE/可重试错分流；成功时才 resume。
                         val context = currentCoroutineContext()
                         suspendCancellableCoroutine { cont ->
                             cont.invokeOnCancellation { runCatching { body.close() } }
-                            try {
-                                // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
-                                FileOutputStream(destFile, isResume).use { output ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    while (true) {
-                                        // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
-                                        context.ensureActive()
-                                        val read = input.read(buffer)
-                                        if (read < 0) break
-                                        written += read
-                                        if (written > MAX_APK_BYTES) {
-                                            throw UpdateDownloadException(
-                                                UpdateError.TooLarge,
-                                                "安装包体积超过 200MB 上限，已停止下载",
-                                            )
-                                        }
-                                        output.write(buffer, 0, read)
-                                        onProgress?.invoke(written, total)
+                            // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
+                            FileOutputStream(destFile, isResume).use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
+                                    context.ensureActive()
+                                    val read = input.read(buffer)
+                                    if (read < 0) break
+                                    written += read
+                                    if (written > MAX_APK_BYTES) {
+                                        throw UpdateDownloadException(
+                                            UpdateError.TooLarge,
+                                            "安装包体积超过 200MB 上限，已停止下载",
+                                        )
                                     }
-                                }
-                                if (cont.isActive) cont.resume(Unit)
-                            } catch (e: Exception) {
-                                // 取消时关流会让阻塞中的 read() 抛错：已取消即按取消
-                                // 收尾，不进重试；未取消的错原样抛错走重试。
-                                // （UpdateDownloadException 也是 Exception：超限时
-                                // 若恰好已取消，取消优先、按取消收尾。）
-                                // 注意：已取消时不能只调 resumeWithException——
-                                // continuation 在取消到达时就已是已取消态，对它
-                                // 的 resume 会被静默忽略，块正常返回后
-                                // suspendCancellableCoroutine 也会正常返回，
-                                // 取消就被吞掉、下载“正常”完成（单测计数证实：
-                                // 读只进 1 次且因关体抛错、无重试，join 却正常
-                                // 返回）。所以已取消时直接 throw，让取消真正
-                                // 传出去；未取消时才走 resumeWithException。
-                                if (cont.isCancelled) {
-                                    throw e as? CancellationException
-                                        ?: CancellationException("下载已取消").apply { initCause(e) }
-                                } else {
-                                    cont.resumeWithException(e)
+                                    output.write(buffer, 0, read)
+                                    onProgress?.invoke(written, total)
                                 }
                             }
+                            if (cont.isActive) cont.resume(Unit)
                         }
                     }
                 }
@@ -234,6 +219,11 @@ class UpdateDownloader @Inject constructor(
                 // 取消不重试；残文件保留，下次下载从断点续下（D-P1-5）。
                 throw e
             } catch (e: Exception) {
+                // D8-P2-2：取消到达时读抛的可能是普通 IOException（关体断读），
+                // 不是 CancellationException；先查取消：已取消即按取消收尾，
+                // 不重试、不包成下载失败（末次尝试无退避时尤其需要这行，
+                // 否则取消会被包成 UpdateDownloadException）。
+                currentCoroutineContext().ensureActive()
                 lastError = e
                 // B4-P2-9：可重试失败保留半截文件，下次尝试用 Range 续传；不再每次删。
                 // 中途失败不删残文件，下一次尝试从断点续下（D-P1-5）。
