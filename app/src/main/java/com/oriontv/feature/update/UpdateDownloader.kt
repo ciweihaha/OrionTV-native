@@ -84,7 +84,8 @@ class UpdateDownloader @Inject constructor(
         url: String,
         destFile: File,
         onProgress: ((written: Long, total: Long) -> Unit)? = null,
-    ): File = withContext(ioDispatcher) {
+    ): File {
+        val downloaded = withContext(ioDispatcher) {
         val declared = headApkSizeBytes(url)
         if (declared != null && declared > MAX_APK_BYTES) {
             throw UpdateDownloadException(
@@ -172,16 +173,16 @@ class UpdateDownloader @Inject constructor(
                         // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
                         // 最坏要等 60 秒读超时。取消时由监听协程关响应体，中断
                         // socket 读；读抛错直接由外层 attempt 的 catch 分流。
-                        // 注意不用 suspendCancellableCoroutine：实测它在此结构
-                        // （withContext 里包阻塞读）下吞取消——块里 catch 后
-                        // resumeWithException、直接 throw、不截获直抛，三种收尾
-                        // 都走不通（单测计数：读只进 1 次且因关体抛错、无重试、
-                        // GET 只发 1 次，join 却正常返回；连成功返回前的
-                        // ensureActive 兜底也没拦住）。也不能用
-                        // Job.invokeOnCompletion 挂钩——它只在任务完成时跑，
-                        // 阻塞的读不返回、任务完不成，挂钩永远等不到触发；也
-                        // 不能在块里调 currentCoroutineContext()（块不是
-                        // suspend 上下文），context 先在外面捕获。
+                        // 注意不用 suspendCancellableCoroutine：隔离诊断已证实
+                        // 吞没点是 withContext 本身（readStreamCapped 在
+                        // withContext 里取消后照常返回、不抛 CE；不带
+                        // withContext 时 CE 正常传出），三种收尾写法
+                        // resumeWithException / 直接 throw / 不截获直抛都
+                        // 走不通。取消复核放在 withContext 之外（见函数末尾）。
+                        // 也不能用 Job.invokeOnCompletion 挂钩——它只在任务
+                        // 完成时跑，阻塞的读不返回、任务完不成，挂钩永远等不到
+                        // 触发；也不能在块里调 currentCoroutineContext()（块
+                        // 不是 suspend 上下文），context 先在外面捕获。
                         val context = currentCoroutineContext()
                         coroutineScope {
                             // 取消监听：父协程取消时一并取消，finally 关体断读。
@@ -219,13 +220,9 @@ class UpdateDownloader @Inject constructor(
                         }
                     }
                 }
-                // D8-P2-2：成功返回前再查一次取消。实测表明取消可能在
-                // 拷贝循环的异常路径上被吞掉（读只进 1 次且因关体抛错、
-                // 无重试、GET 只发 1 次，join 却正常返回——三种收尾写法
-                // resumeWithException / 直接 throw / 不截获直抛都走不通，
-                // 吞没点在 suspendCancellableCoroutine 与 withContext 的
-                // 交界处，静态推断无法定位）。无论吞没点在哪，已取消的
-                // 下载绝不能当成成功返回：这里再查一次，取消即抛 CE。
+                // D8-P2-2：成功返回前再查一次取消（辅助兜底——withContext 会
+                // 吞掉内部抛出的 CE，真正能拦住取消的是 withContext 之外的
+                // 复核，见函数末尾；这里多查一次无害，取消时尽早收尾）。
                 currentCoroutineContext().ensureActive()
                 return@withContext destFile
             } catch (e: UpdateDownloadException) {
@@ -254,6 +251,16 @@ class UpdateDownloader @Inject constructor(
             "下载失败，已重试 $MAX_RETRIES 次：${lastError?.message ?: "网络错误"}",
             lastError,
         )
+        }
+        // D8-P2-2：取消复核必须放在 withContext 之外。隔离诊断已证实：
+        // readStreamCapped（ApiClientTest 里不带 withContext 时取消正常抛
+        // CE）放进 withContext 里取消后照常返回、不抛 CE——withContext 会
+        // 吞掉内部抛出的 CancellationException，内层的 ensureActive 兜底
+        // 因此拦不住（读只进 1 次且因关体抛错、无重试、GET 只发 1 次，
+        // join 却正常返回）。这里是调用方协程上下文，CE 能传出：已取消的
+        // 下载绝不能当成成功返回。
+        currentCoroutineContext().ensureActive()
+        return downloaded
     }
 
     /**
