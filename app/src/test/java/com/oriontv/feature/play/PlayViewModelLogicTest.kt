@@ -123,6 +123,47 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `current episode position uses live position only when player holds this episode`() {
+        // A23-P2-2：回页重开播/初载挂起窗口内，播放器仍挂着别页的媒体，
+        // live 位置属于别片——换源/标记片头片尾须读本页冻结进度；只有
+        // 播放器挂的 URL 与本集 URL 一致时才读 live 位置。
+        val episodeUrl = "https://cdn.example.com/ep3.m3u8"
+        val otherUrl = "https://cdn.example.com/other.m3u8"
+        // 本集在播：读 live 位置。
+        assertEquals(
+            123_000L,
+            PlayViewModel.resolveCurrentEpisodePositionMs(
+                playerUrl = episodeUrl, episodeUrl = episodeUrl,
+                livePositionMs = 123_000L, frozenPositionMs = 60_000L,
+            ),
+        )
+        // 播放器挂着别页媒体：读冻结进度。
+        assertEquals(
+            60_000L,
+            PlayViewModel.resolveCurrentEpisodePositionMs(
+                playerUrl = otherUrl, episodeUrl = episodeUrl,
+                livePositionMs = 900_000L, frozenPositionMs = 60_000L,
+            ),
+        )
+        // 播放器为空媒体（开关关/未开播）：读冻结进度。
+        assertEquals(
+            60_000L,
+            PlayViewModel.resolveCurrentEpisodePositionMs(
+                playerUrl = null, episodeUrl = episodeUrl,
+                livePositionMs = 0L, frozenPositionMs = 60_000L,
+            ),
+        )
+        // 本集未定（current == null）：无从比对，读冻结进度。
+        assertEquals(
+            60_000L,
+            PlayViewModel.resolveCurrentEpisodePositionMs(
+                playerUrl = episodeUrl, episodeUrl = null,
+                livePositionMs = 123_000L, frozenPositionMs = 60_000L,
+            ),
+        )
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。

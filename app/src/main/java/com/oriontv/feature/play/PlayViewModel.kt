@@ -970,7 +970,9 @@ class PlayViewModel @Inject constructor(
      * 已标过 → 再点一次清除标记（恢复默认时长兜底）。
      */
     fun markIntroEnd() {
-        val position = playerManager.currentPositionMs
+        // A23-P2-2：回页重开播挂起窗口内播放器仍挂别页媒体时，live 位置是
+        // 别片的——用本页冻结进度，否则会把别片位置存成 A 的片头标记。
+        val position = currentEpisodePositionMs()
         if (position <= 0) return
         viewModelScope.launch {
             // A8-P2-3：DataStore 写失败会让协程未捕获崩溃；失败即提示、不崩溃，
@@ -1007,7 +1009,9 @@ class PlayViewModel @Inject constructor(
      * 原生版存绝对位置并真实使用（见 IntroSkip）。
      */
     fun markOutroStart() {
-        val position = playerManager.currentPositionMs
+        // A23-P2-2：同 markIntroEnd——挂起窗口内 live 位置属于别页媒体，
+        // 用本页冻结进度，否则会把别片位置存成 A 的片尾标记。
+        val position = currentEpisodePositionMs()
         val duration = playerManager.durationMs
         if (position <= 0 || duration <= 0) return
         viewModelScope.launch {
@@ -1063,6 +1067,20 @@ class PlayViewModel @Inject constructor(
         launchStartEpisode(current, index)
     }
 
+    /**
+     * A23-P2-2：本集实时位置——播放器挂着本集媒体时读 live 位置，否则读
+     * 本页冻结的 state.positionMs（见 resolveCurrentEpisodePositionMs）。
+     */
+    private fun currentEpisodePositionMs(): Long {
+        val state = _uiState.value
+        return resolveCurrentEpisodePositionMs(
+            playerUrl = playerManager.currentUrl,
+            episodeUrl = state.current?.episodes?.getOrNull(state.episodeIndex),
+            livePositionMs = playerManager.currentPositionMs,
+            frozenPositionMs = state.positionMs,
+        )
+    }
+
     /** 换源：不丢集数（集号不变），保进度续播（从当前进度开始，不从 0 播）。 */
     fun selectSource(source: String) {
         val state = _uiState.value
@@ -1079,10 +1097,15 @@ class PlayViewModel @Inject constructor(
         // A15-P2-1：播完态（STATE_ENDED）下换源，当前进度即片尾位置；
         // 直接传给新源会被起点溢出守卫（isStartPositionOverflow）误判为播错、
         // 自动换到别的源。播完态从 0 播新源。
+        // A23-P2-2：isEnded 并上 state.isEnded（回页重开播挂起窗口内播放器
+        // 仍挂别页媒体，playerManager.isEnded 不可信）；起点位置同样只在
+        // 播放器挂着本集时读 live，否则读本页冻结进度（见
+        // currentEpisodePositionMs），否则会从别片位置续播、或误判起点溢出
+        // 把用户点的源记入 failedSources。
         launchStartEpisode(
             next,
             state.episodeIndex,
-            resolveSwitchStartMs(playerManager.isEnded, playerManager.currentPositionMs),
+            resolveSwitchStartMs(playerManager.isEnded || state.isEnded, currentEpisodePositionMs()),
         )
     }
 
@@ -1161,8 +1184,12 @@ class PlayViewModel @Inject constructor(
                     // A15-P2-1 顺带：错误页不隐含非播完态——起点溢出走自动换源、
                     // 次数耗尽后同样落错误页，此时播放器仍在 STATE_ENDED，
                     // state.positionMs 即片尾位置；播完态重试从 0 播。
+                    // A23-P2-1：isEnded 还要并上 state.isEnded——离页去别页播过
+                    // 再返回时，错误页挡住 reclaim，两条恢复路都跳过，播放器
+                    // 已被停掉（playerManager.isEnded=false），只读它会以片尾
+                    // 位置重试、再次判起点溢出、误换源（或重试死循环）。
                     val startMs = resolveSwitchStartMs(
-                        playerManager.isEnded,
+                        playerManager.isEnded || state.isEnded,
                         state.positionMs.takeIf { it > 0 },
                     )
                     launchStartEpisode(current, state.episodeIndex, startMs)
@@ -1516,6 +1543,20 @@ class PlayViewModel @Inject constructor(
          */
         internal fun resolveSwitchStartMs(isEnded: Boolean, positionMs: Long?): Long? =
             if (isEnded) 0L else positionMs
+
+        /**
+         * A23-P2-2：本集实时位置（可单测）——播放器当前挂的媒体是本集时读
+         * live 位置；否则（回页重开播/初载挂起窗口内，播放器仍挂着别页的
+         * 媒体）读本页冻结的进度。比对依据：startEpisode 把
+         * episodes[episodeIndex] 原样喂给 playUrl，PlayerManager.currentUrl
+         * 即该串；播放器为空媒体时 currentUrl 为 null，同样走冻结进度。
+         */
+        internal fun resolveCurrentEpisodePositionMs(
+            playerUrl: String?,
+            episodeUrl: String?,
+            livePositionMs: Long,
+            frozenPositionMs: Long,
+        ): Long = if (playerUrl != null && playerUrl == episodeUrl) livePositionMs else frozenPositionMs
 
         /**
          * A17-P2-1：回页时是否应重开当前集（可单测）——只补“被抢走”一种情形：
