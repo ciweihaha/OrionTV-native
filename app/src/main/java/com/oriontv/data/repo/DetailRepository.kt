@@ -103,7 +103,11 @@ class DetailRepository @Inject constructor(
             moonTvApi.getResources(baseUrl)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // B23-P2-1：无首选源结果可回落时把原异常原样重抛——否则网络错
+            // 会被 searchDetail 误报成“没有找到相关内容”；有首选源结果
+            // 时才走降级返回（B14-P2-3 的降级语义保留）。
+            if (preferredResults.isEmpty()) throw e
             // B14-P2-3：资源列表拉取失败时直接返回首选源结果——其余三条路
             // 都走了 dedupeBySource，这里漏了：searchDetail 随后
             // onUpdate(merged, true) 原样发出，同源 chip 会重复出现。
