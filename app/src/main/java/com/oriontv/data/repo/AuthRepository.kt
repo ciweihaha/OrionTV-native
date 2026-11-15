@@ -136,7 +136,6 @@ class AuthRepository @Inject constructor(
                         _showLoginModal.value = true
                     }
                 }
-                }
                 restored
             }
         }
