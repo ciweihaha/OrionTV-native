@@ -183,7 +183,10 @@ class SearchViewModel @Inject constructor(
         if (trimmed.isEmpty()) return
         searchJob?.cancel()
         val gen = ++generation
-        _uiState.value = _uiState.value.copy(query = trimmed)
+        // B25-P2-3：同步清掉旧联想（与 clearQuery() 同款一行）——之前只置
+        // query、不碰 suggestions，点历史/联想 chip 后旧联想仍渲染在新
+        // 搜索结果上方，直到下一次 onQueryChange 才重算。
+        _uiState.value = _uiState.value.copy(query = trimmed, suggestions = emptyList())
         saveSearchState()
         searchJob = viewModelScope.launch {
             if (gen != generation) return@launch
