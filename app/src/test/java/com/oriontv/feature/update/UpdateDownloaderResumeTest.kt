@@ -287,6 +287,9 @@ class UpdateDownloaderResumeTest {
         val readStarted = CountDownLatch(1)
         private val release = CountDownLatch(1)
 
+        /** read() 已返回（抛错或回 -1），即停顿的体读已停下。 */
+        val readFinished = CountDownLatch(1)
+
         @Volatile
         var closed = false
 
@@ -303,15 +306,19 @@ class UpdateDownloaderResumeTest {
                 override fun read(sink: Buffer, byteCount: Long): Long {
                     readCalls.incrementAndGet()
                     readStarted.countDown()
-                    // 有修复时关体立即放行，远不到兜底；无修复时等满兜底后
-                    // 返回 -1，外面的 withTimeout(5 秒) 先抛超时取消异常。
-                    release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
-                    if (closed) {
-                        readThrew.set(true)
-                        throw IOException("body closed")
+                    try {
+                        // 有修复时关体立即放行，远不到兜底；无修复时等满兜底后
+                        // 返回 -1，外面的 withTimeout(15 秒) 先抛超时取消异常。
+                        release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
+                        if (closed) {
+                            readThrew.set(true)
+                            throw IOException("body closed")
+                        }
+                        readReturnedMinusOne.set(true)
+                        return -1
+                    } finally {
+                        readFinished.countDown()
                     }
-                    readReturnedMinusOne.set(true)
-                    return -1
                 }
 
                 override fun timeout(): Timeout = Timeout.NONE
@@ -375,7 +382,7 @@ class UpdateDownloaderResumeTest {
         val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
         try {
             // 停顿兜底 60 秒（与真实读超时一致）：见 StallingBody 注释，
-            // 10 秒兜底会在 CI 线程延迟下先于 5 秒 withTimeout 到期、
+            // 10 秒兜底会在 CI 线程延迟下先于 15 秒 withTimeout 到期、
             // 让下载“正常”完成，是测试竞态而非取消机制问题。
             val body = StallingBody(stallTimeoutMs = 60_000L)
             val getCalls = AtomicInteger(0)
@@ -396,11 +403,13 @@ class UpdateDownloaderResumeTest {
             val dest = File(dir, "OrionTV_v2.0.0.apk")
             // 断言一律放在 runBlocking 外面、各自独立一行：挂起 lambda 里的
             // 断言失败时堆栈只报 runBlocking 行，分不清是哪一环；放外面后
-            // 失败行号直接指明卡点。joinMs 的分段：<8 秒且 thrown 为空
-            // = 读立即回 -1（假体问题）；>=8 秒 = 停顿兜底先到期
-            //（取消未递送或测试线程被饿死）；5 秒左右且为超时异常 = 取消
-            // 未递送到阻塞的读。
+            // 失败行号直接指明卡点。joinMs 的分段：<20 秒且 thrown 为空
+            // = 读立即回 -1（假体问题）；>=20 秒 = 停顿兜底先到期
+            //（取消未递送或测试线程被饿死）；15 秒左右且为超时异常 = 取消
+            // 未递送到阻塞的读。20 秒上限的构成：体读停下信号最多等 15 秒
+            //（见下），再给 await() 收尾留 5 秒余量；仍远小于 60 秒停顿兜底。
             val readEntered: Boolean
+            val readStopped: Boolean
             val thrown: CancellationException?
             var joinMs = -1L
             // 诊断时序：cancel() 调用点、调用后 Job 是否已取消/已完成。
@@ -427,8 +436,16 @@ class UpdateDownloaderResumeTest {
                 // 同 ApiClientTest 的 D7-P2-4 写法：对 Deferred 用 await() 才
                 // 能拿到下载自身的 CancellationException；若取消递送不到，
                 // withTimeout 先抛 TimeoutCancellationException。
+                // D8-P2-2 跟进（第 8 轮跟进，main 上累计红 4 次）：旧写法在
+                // withTimeout(5 秒) 里等 job.await()，CI 调度负载下监听协程
+                // 常常 5 秒内排不上队关体，await 先超时、断言在读还没停下时
+                // 就跑，446 行 readThrew 恒假。改确定性等待：先等体读本身
+                // 停下的信号（readFinished，15 秒有界），再等下载协程收尾；
+                // 15 秒是失败上限、不是期望耗时——健康时读在 1 秒内就停。
+                // 若取消根本没递送，readFinished 15 秒不到、直接判失败。
+                readStopped = body.readFinished.await(15, TimeUnit.SECONDS)
                 thrown = try {
-                    withTimeout(5_000) { job.await() }
+                    withTimeout(15_000) { job.await() }
                     null
                 } catch (e: CancellationException) {
                     e
@@ -436,6 +453,9 @@ class UpdateDownloaderResumeTest {
                 joinMs = (System.nanoTime() - cancelAt) / 1_000_000
             }
             assertTrue("下载应在 10 秒内进入体读", readEntered)
+            // 确定性等待的断言先行：体读 15 秒内没停下，说明关体根本没到达，
+            // 后面的读行为断言必然也挂、在这里先报出真正的卡点。
+            assertTrue("取消后 15 秒内停顿的体读应停下（关体未到达）", readStopped)
             // 诊断（先于行为断言）：cancel() 必须真的取消了 Job，否则下载在
             // 取消前已完成、cancel 是空操作。（关体/读抛错相对 cancelAt 的时序
             // 断言已删——随 CI 线程调度抖动，第 13 轮复测与合并轮同代码一过一挂。）
@@ -451,10 +471,10 @@ class UpdateDownloaderResumeTest {
             // suspendCancellableCoroutine/withContext 里被吞、下载直接
             // “正常”返回。
             assertEquals("GET 应只发 1 次（无重试）", 1, getCalls.get())
-            assertTrue("join 应在 8 秒内返回（否则是停顿兜底）", joinMs < 8_000)
+            assertTrue("join 应在 20 秒内返回（否则是停顿兜底 60 秒先到期）", joinMs < 20_000)
             assertNotNull("取消的下载应抛 CancellationException", thrown)
             assertTrue(
-                "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
+                "取消应在 15 秒内生效（不应是 withTimeout 的超时取消异常）",
                 thrown !is TimeoutCancellationException,
             )
             assertTrue(dest.exists())
