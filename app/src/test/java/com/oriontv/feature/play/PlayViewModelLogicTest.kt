@@ -15,6 +15,18 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `ready timeout does not fire after leaving page`() {
+        // A10-P2-1：离页后 20 秒超时到点也不触发——取消是协作式的，已越过
+        // delay 的任务仍会恢复执行，凭 pageActive 二次核对，不白白消耗一次自动换源
+        assertTrue(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = false))
+        assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = false, isLoading = true, hasCurrent = true, userPaused = false))
+        assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = false, hasCurrent = true, userPaused = false))
+        assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = false, userPaused = false))
+        // 用户手动暂停不算断流（P2-6）
+        assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = true))
+    }
+
+    @Test
     fun `finished episode resumes from zero`() {
         // P1-6：play_time == total_time（看完）从 0 播，不立即“播完”
         assertEquals(0L, PlayViewModel.resolveRecordStartMs(1800, 1800))

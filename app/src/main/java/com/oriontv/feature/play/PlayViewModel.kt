@@ -167,6 +167,16 @@ class PlayViewModel @Inject constructor(
             }
             return
         }
+        // A10-P2-4：新 key 分支——旧开播/旧超时不断、旧播放不停，旧集会在
+        // 新搜源期间继续播，退出时 onCleared 的 saveRecordNow() 还会用新 key +
+        // 新集号 + 旧集进度写一条错位记录；先断旧开播、停旧播放，再重认领、
+        // 起新搜源。另须清掉旧 current/results：搜源回调只在 current == null
+        // 时才开播，不清就永远开不了新集（光取消 job、停播放不够）。
+        startEpisodeJob?.cancel()
+        readyTimeoutJob?.cancel()
+        pendingStart = null
+        playbackStarted = false
+        playerManager.stopIfOwner(playbackToken)
         initialised = true
         playbackToken = playerManager.claimPlayback()
         currentKey = MoonTvApi.recordKey(source, id, title)
@@ -185,6 +195,14 @@ class PlayViewModel @Inject constructor(
                 episodeIndex = episodeIndex,
                 positionMs = positionMs,
                 title = title,
+                // A10-P2-4：新 key 不再沿用旧结果——搜源回调只在 current == null
+                // 时开播，旧 current 不清会让新搜源回来后只更新列表、不开播；
+                // 旧 failedSources/autoSwitchAttempts 也不带到新片。
+                current = null,
+                results = emptyList(),
+                error = null,
+                autoSwitchAttempts = 0,
+                failedSources = emptySet(),
             )
         }
         startSearch()
@@ -250,6 +268,10 @@ class PlayViewModel @Inject constructor(
             searchInterrupted = true
         }
         startEpisodeJob?.cancel()
+        // A10-P2-1：就绪超时也要取消——旧实现只取消搜源/开播，离页后 20 秒
+        // 超时到点仍会触发 handlePlaybackError，白白消耗一次自动换源
+        //（与直播侧 onPagePaused 取消就绪超时对齐）。
+        readyTimeoutJob?.cancel()
     }
 
     /**
@@ -459,7 +481,10 @@ class PlayViewModel @Inject constructor(
         readyTimeoutJob = viewModelScope.launch {
             delay(20_000)
             val state = _uiState.value
-            if (state.isLoading && state.current != null && !userPaused) {
+            // A10-P2-1：到点复核前台——取消是协作式的，已越过 delay 的任务
+            // 仍会恢复执行，离页后到点不再触发自动换源（与直播侧
+            // shouldFirePendingPlaybackTask 同款二次核对）。
+            if (shouldFireReadyTimeout(pageActive, state.isLoading, state.current != null, userPaused)) {
                 handlePlaybackError(null)
             }
         }
@@ -1006,6 +1031,19 @@ class PlayViewModel @Inject constructor(
     }
 
     companion object {
+        /**
+         * VOD 就绪超时到点是否应触发（可单测，A10-P2-1）：页面在前台、仍在
+         * 加载、有当前结果、用户没手动暂停时才触发；离页后到点不触发
+         *（取消是协作式的，已越过 delay 的任务仍会恢复执行，须凭 pageActive
+         * 二次核对；与直播侧 shouldFirePendingPlaybackTask 同款）。
+         */
+        internal fun shouldFireReadyTimeout(
+            pageActive: Boolean,
+            isLoading: Boolean,
+            hasCurrent: Boolean,
+            userPaused: Boolean,
+        ): Boolean = pageActive && isLoading && hasCurrent && !userPaused
+
         /**
          * 播完态按 OK 是否应重播本集（可单测，P1-1）：未在播且已到片尾
          * （STATE_ENDED）时 play() 须先 seekTo 才能重播，OK 在此态是重播；

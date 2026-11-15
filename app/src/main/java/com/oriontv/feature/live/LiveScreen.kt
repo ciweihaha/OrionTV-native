@@ -346,7 +346,10 @@ fun LiveScreen(
                 val digit = digitOf(event)
                 if (digit != null) {
                     if (uiState.exitConfirmOpen) viewModel.dismissExitConfirm()
-                    if (uiState.panelOpen || uiState.epgDialogChannel != null) viewModel.closePanel()
+                    // A10-P2-3：数字键换台先关面板只是为清面板/弹窗——信号异常时
+                    // 关面板会重播当前台，随后数字键切台又调一次 playCurrent()，
+                    // 白白重启一次；跳过这次信号重播，数字键切台那一次就够了。
+                    if (uiState.panelOpen || uiState.epgDialogChannel != null) viewModel.closePanel(skipSignalReplay = true)
                     viewModel.appendDigit(digit)
                     return@onKeyUp true
                 }

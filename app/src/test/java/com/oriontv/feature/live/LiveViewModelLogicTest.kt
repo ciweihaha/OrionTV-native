@@ -78,6 +78,25 @@ class LiveViewModelLogicTest {
         assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = true))
         assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = true, isPlaying = false))
         assertTrue(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = false))
+        // A10-P2-2：失败页切走再回不自动重播——失败时播放器不在播，旧谓词
+        // 恒为真，回页即悄悄重播一次；重试留给失败页“重试”按钮
+        assertFalse(LiveViewModel.shouldResumePlayback(isCurrentOwner = true, isPlaying = false, playbackFailed = true))
+        assertFalse(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = false, playbackFailed = true))
+        assertFalse(LiveViewModel.shouldResumePlayback(isCurrentOwner = false, isPlaying = true, playbackFailed = true))
+    }
+
+    @Test
+    fun `closing panel replays signal error unless digit switch skips it`() {
+        // A10-P2-3：信号异常且未在播时关面板重播当前台（P2-13 有意设计）；
+        // 数字键换台先关面板时跳过这次重播，随后切台那一次就够了
+        assertTrue(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = true, isPlaying = false, hasChannels = true, pagePaused = false, skipSignalReplay = false))
+        assertFalse(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = true, isPlaying = false, hasChannels = true, pagePaused = false, skipSignalReplay = true))
+        // 已在播（流已恢复）或无信号异常时不动作
+        assertFalse(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = true, isPlaying = true, hasChannels = true, pagePaused = false, skipSignalReplay = false))
+        assertFalse(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = false, isPlaying = false, hasChannels = true, pagePaused = false, skipSignalReplay = false))
+        // 无频道、离页后也不重播
+        assertFalse(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = true, isPlaying = false, hasChannels = false, pagePaused = false, skipSignalReplay = false))
+        assertFalse(LiveViewModel.shouldReplaySignalOnClosePanel(signalError = true, isPlaying = false, hasChannels = true, pagePaused = true, skipSignalReplay = false))
     }
 
     @Test

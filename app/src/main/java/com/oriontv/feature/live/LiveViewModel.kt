@@ -460,6 +460,9 @@ class LiveViewModel @Inject constructor(
         if (!shouldResumePlayback(
                 playerManager.isCurrentOwner(playbackToken),
                 playerManager.isPlaying,
+                // A10-P2-2：失败页切走再回不自动重播——失败时播放器不在播，
+                // 旧谓词恒为真，回页即悄悄重播一次；留给失败页“重试”按钮。
+                _uiState.value.playbackFailed,
             )
         ) {
             return
@@ -666,7 +669,7 @@ class LiveViewModel @Inject constructor(
         pokePanelTimer()
     }
 
-    fun closePanel() {
+    fun closePanel(skipSignalReplay: Boolean = false) {
         panelTimerJob?.cancel()
         // P2-13：面板打开期间断流（signalError 常驻、就绪超时已取消），
         // 关面板时若仍未在播，重播当前台——让就绪超时/自动换台链重新接管，
@@ -676,11 +679,20 @@ class LiveViewModel @Inject constructor(
         // 第 7 轮 P1-1：离页后面板定时器到点调进来时不重播（到点回调已凭
         // pagePaused 核对过一次，这里是第二道——closePanel 也可由返回键调入，
         // 在页时标志为假，不影响正常关面板重播）。
+        // A10-P2-3：数字键换台先关面板只是为清面板/弹窗，随后数字键切台
+        // 又调一次 playCurrent()——关面板这一次重播是白白浪费，调用方传
+        // skipSignalReplay = true 跳过；面板定时器到期自动关面板时的重播
+        // 是有意设计（定时器调用点不传参，保持原行为）。
         val hadSignalError = _uiState.value.signalError
         val wasPlaying = _uiState.value.isPlaying
         _uiState.update { it.copy(panelOpen = false, epgDialogChannel = null) }
-        if (hadSignalError && !wasPlaying && _uiState.value.channels.isNotEmpty() &&
-            shouldFirePendingPlaybackTask(pagePaused)
+        if (shouldReplaySignalOnClosePanel(
+                hadSignalError,
+                wasPlaying,
+                _uiState.value.channels.isNotEmpty(),
+                pagePaused,
+                skipSignalReplay,
+            )
         ) {
             playCurrent()
         }
@@ -815,9 +827,14 @@ class LiveViewModel @Inject constructor(
         /**
          * 回页是否应重开播（可单测，P1-4）：已是本页 token 所有者且在播时不动；
          * 播放器被抢走（点播页开播）或停掉（离页时暂停）时重新认领并开播当前台。
+         * A10-P2-2：失败页（playbackFailed）不自动重播——失败时播放器不在播，
+         * 旧谓词恒为真，回页会悄悄重播一次；重试仍走失败页“重试”按钮。
          */
-        internal fun shouldResumePlayback(isCurrentOwner: Boolean, isPlaying: Boolean): Boolean =
-            !(isCurrentOwner && isPlaying)
+        internal fun shouldResumePlayback(
+            isCurrentOwner: Boolean,
+            isPlaying: Boolean,
+            playbackFailed: Boolean = false,
+        ): Boolean = !(isCurrentOwner && isPlaying) && !playbackFailed
 
         /**
          * 面板定时器是否应挂起（可单测，P1-4）：面板打开且 EPG 弹窗未打开时才挂 15 秒定时器；
@@ -837,6 +854,21 @@ class LiveViewModel @Inject constructor(
             backgroundPlaybackEnabled: Boolean,
             playbackStarted: Boolean,
         ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+
+        /**
+         * 关面板时是否应重播当前台（可单测，A10-P2-3）：信号异常且未在播、
+         * 有频道、未离页时重播，让就绪超时/自动换台链重新接管；数字键换台
+         * 先关面板时跳过（随后数字键切台还会调一次 playCurrent()，关面板
+         * 这一次是白白浪费）。
+         */
+        internal fun shouldReplaySignalOnClosePanel(
+            signalError: Boolean,
+            isPlaying: Boolean,
+            hasChannels: Boolean,
+            pagePaused: Boolean,
+            skipSignalReplay: Boolean,
+        ): Boolean = signalError && !isPlaying && hasChannels &&
+            shouldFirePendingPlaybackTask(pagePaused) && !skipSignalReplay
 
         /**
          * 待定播放任务到点时是否应执行（可单测，第 7 轮 P1-1）：离页后就绪超时/
