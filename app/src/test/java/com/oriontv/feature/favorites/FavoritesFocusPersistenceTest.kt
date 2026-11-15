@@ -61,4 +61,15 @@ class FavoritesFocusPersistenceTest {
         handle[FavoritesViewModel.SAVED_FOCUS_KEY] = "agg+9"
         assertEquals("agg+9", handle.get<String>(FavoritesViewModel.SAVED_FOCUS_KEY))
     }
+
+    @Test
+    fun `empty to content also runs restore after failed retry`() {
+        // C12-P1-2：加载失败“重试”成功后焦点丢失——refresh() 不置 restorePending、
+        // tick 也不变，恢复 effect 开头的早退把重试成功拦在外面；空态→有内容时
+        // 也跑一次恢复。例行刷新（已有内容、tick 不变）不跑。
+        assertTrue(shouldRunFavoritesRestore(restorePending = true, focusRestoreTick = 0, lastHandledTick = 0, emptyToContent = false))
+        assertTrue(shouldRunFavoritesRestore(restorePending = false, focusRestoreTick = 1, lastHandledTick = 0, emptyToContent = false))
+        assertTrue(shouldRunFavoritesRestore(restorePending = false, focusRestoreTick = 0, lastHandledTick = 0, emptyToContent = true))
+        assertFalse(shouldRunFavoritesRestore(restorePending = false, focusRestoreTick = 0, lastHandledTick = 0, emptyToContent = false))
+    }
 }

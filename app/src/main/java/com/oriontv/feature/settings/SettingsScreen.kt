@@ -118,8 +118,12 @@ fun SettingsScreen(
         viewModel.restoreRemoteInputIfEnabled()
     }
     // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。
+    // C12-P2-5：二维码弹窗开着时不抢——tick 恢复会把焦点从二维码弹窗里拉回
+    // 左菜单；弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
     LaunchedEffect(focusRestoreTick) {
-        if (focusRestoreTick > 0) menuRequesters[menuIndex].requestFocus()
+        if (shouldRestoreSettingsFocusOnTick(focusRestoreTick, showQrModal)) {
+            menuRequesters[menuIndex].requestFocus()
+        }
     }
     // Toast 2 秒消失（ui-design.md §5.8）。
     // B5-P2-11：以事件 id 为 key——同文案连续两次时 id 不同，effect 一定重跑。
@@ -158,7 +162,10 @@ fun SettingsScreen(
     // 焦点一旦以某种方式回到内容区而卡片仍开着，Back 会直接退出设置页）。
     // 三层互补不重叠：弹窗内→弹窗自己的 handler；弹窗外无焦点→本页/
     // NavHost 的 handler；焦点在内容区→Box onKeyUp。
-    BackHandler(enabled = showQrModal) {
+    // C12-P2-2：全局弹窗开着时这道兜底让位——RemoteInputModal 自己的 handler
+    // 有 !globalModalOpen 门控，这道兜底没有；全局弹窗开着时返回键应先关
+    // 全局弹窗，而不是关底下的二维码弹窗。
+    BackHandler(enabled = shouldEnableQrModalBackHandler(showQrModal, globalModalOpen)) {
         showQrModal = false
     }
 
@@ -835,3 +842,20 @@ internal fun settingsBackAction(showUpdateCard: Boolean, showQrModal: Boolean): 
         showQrModal -> SettingsBackAction.CloseQrModal
         else -> SettingsBackAction.ExitSettings
     }
+
+/**
+ * NavHost 级弹窗关闭的 tick 是否应把焦点拉回左菜单（可单测，C12-P2-5）：
+ * 二维码弹窗开着时不抢——焦点在弹窗内，拉回菜单后弹窗遥控不可达；
+ * 弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
+ */
+internal fun shouldRestoreSettingsFocusOnTick(focusRestoreTick: Int, showQrModal: Boolean): Boolean =
+    focusRestoreTick > 0 && !showQrModal
+
+/**
+ * 二维码弹窗的兜底 BackHandler 是否启用（可单测，C12-P2-2）：弹窗开着且
+ * 全局弹窗未开着时才启用——RemoteInputModal 自己的 handler 有
+ * !globalModalOpen 门控，这道兜底原来没有；全局弹窗开着时返回键应先关
+ * 全局弹窗，而不是关底下的二维码弹窗。
+ */
+internal fun shouldEnableQrModalBackHandler(showQrModal: Boolean, globalModalOpen: Boolean): Boolean =
+    showQrModal && !globalModalOpen

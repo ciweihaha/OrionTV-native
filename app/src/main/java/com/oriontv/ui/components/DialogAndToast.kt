@@ -95,10 +95,13 @@ fun ConfirmDialog(
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    /** C12-P1-3：NavHost 级弹窗关闭后 +1——确认弹窗打开时全局弹窗关闭，
+     * 焦点被抢走后无处恢复；key 加 tick，关闭后重落主按钮。 */
+    focusRestoreTick: Int = 0,
 ) {
     val confirmRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val cancelRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    androidx.compose.runtime.LaunchedEffect(Unit) { confirmRequester.requestFocus() }
+    androidx.compose.runtime.LaunchedEffect(focusRestoreTick) { confirmRequester.requestFocus() }
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方条件组合，
     // 卸载时整棵子树直接移除，exit 动画永远跑不到；留着只是死代码。
     // C11-P2-3：入场淡入 150ms（设计稿 §4）——KDoc 一直写着淡入，代码却没有；

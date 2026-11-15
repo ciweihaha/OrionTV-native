@@ -89,6 +89,14 @@ internal fun shouldRestoreRootFocusOnUp(
     !skipIntroFocused && !nextEpisodeFocused
 
 /**
+ * NavHost 级弹窗关闭的 tick 是否应把焦点拉回根部（可单测，C12-P1-4）：
+ * 抽屉打开时不抢——焦点在抽屉当前项上，拉回根部后抽屉遥控不可达（方向键
+ * 唤出的是根部控制条）；抽屉关闭后由抽屉关闭 effect / 控制条自行落焦。
+ */
+internal fun shouldRestoreRootFocusOnTick(focusRestoreTick: Int, drawerOpen: Boolean): Boolean =
+    focusRestoreTick > 0 && !drawerOpen
+
+/**
  * 控制条 5 秒无操作是否应自动隐藏（可单测，P2-2，第 6 轮修订）：
  * 控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
  * 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
@@ -296,8 +304,11 @@ fun PlayScreen(
         viewModel.onPageResumed()
     }
     // C4-P1-2：NavHost 级弹窗关闭后焦点回根（控制条按钮无焦点时方向键/OK 才能唤出）。
+    // C12-P1-4：抽屉打开时不抢——焦点在抽屉当前项上，拉回根部后抽屉遥控不可达。
     LaunchedEffect(focusRestoreTick) {
-        if (focusRestoreTick > 0) rootRequester.requestFocus()
+        if (shouldRestoreRootFocusOnTick(focusRestoreTick, uiState.drawer != null)) {
+            rootRequester.requestFocus()
+        }
     }
 
     // 从设置页返回 / 切回前台时刷新开播设置缓存（P2-9：轮询不再每 500ms 重读 DataStore）。
@@ -994,7 +1005,10 @@ private fun EpisodeDrawerContent(
     // 完成时单次请求静默失败（LazyVerticalGrid 只组合可见项，当前集在首屏外时
     // 更易失败），焦点留在遮罩后的控制条按钮上，OK 会误触身后按钮；仍失败
     // 回退到根（与错误页同款）。
-    LaunchedEffect(Unit) {
+    // C12-P2-4：key 加总集数——抽屉打开时内容晚到（搜源未回，总集数为 0、
+    // 当前集尚未组合），Unit  effect 只跑一次、落焦失败回退到根；总集数到达
+    // 时重跑，焦点落在当前集上。
+    LaunchedEffect(totalEpisodes) {
         if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
     }
     // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
@@ -1082,7 +1096,9 @@ private fun SourceDrawerContent(
     val currentRequester = remember { FocusRequester() }
     // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
     // 仍失败回退到根。
-    LaunchedEffect(Unit) {
+    // C12-P2-4：key 加源数量——抽屉打开时内容晚到（搜源未回，源列表为空），
+    // Unit effect 只跑一次、落焦失败回退到根；源到达时重跑，焦点落在当前源上。
+    LaunchedEffect(sources.size) {
         if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -98,6 +98,15 @@ internal fun isPanelChannelFavorite(
 internal fun shouldConsumeChannelRowKey(epgDialogOpen: Boolean): Boolean = !epgDialogOpen
 
 /**
+ * 面板落焦 effect 是否应落焦点到当前台行（可单测，C12-P1-3）：面板打开且
+ * EPG 弹窗未打开时才落——EPG 弹窗开着时焦点归弹窗，面板 effect 重跑
+ * （例如全局弹窗关闭的 tick）不能把焦点从弹窗里抢回面板行；EPG 关闭后
+ * 由 EPG 关闭 effect 把焦点还给面板。
+ */
+internal fun shouldFocusPanelRow(panelOpen: Boolean, epgDialogOpen: Boolean): Boolean =
+    panelOpen && !epgDialogOpen
+
+/**
  * 直播页焦点 containment 是否应在预览阶段消费该 KeyDown（可单测，C7-P1-1 /
  * A7-P2-5 同源）：面板打开时左键、EPG 弹窗打开时左/右键——焦点经空间导航会
  * 跑到导航轨，返回键绕过“先关面板/弹窗”层级直接退出直播页，EPG 左键切台
@@ -508,6 +517,7 @@ fun LiveScreen(
                 onGoSettings = { onNavigate(OrionRoute.Settings) },
                 onRetry = { viewModel.reload() },
                 globalModalOpen = globalModalOpen,
+                focusRestoreTick = focusRestoreTick,
             )
         }
 
@@ -585,6 +595,7 @@ fun LiveScreen(
                     panelGroupRowFocused = focused
                     panelGroupFirstChipFocused = firstChip
                 },
+                focusRestoreTick = focusRestoreTick,
             )
         }
 
@@ -596,6 +607,7 @@ fun LiveScreen(
                 epg = uiState.epg,
                 nowMs = uiState.nowMs,
                 onClose = { viewModel.closeEpgDialog() },
+                focusRestoreTick = focusRestoreTick,
             )
         }
 
@@ -611,6 +623,7 @@ fun LiveScreen(
                     onBack()
                 },
                 onCancel = { viewModel.dismissExitConfirm() },
+                focusRestoreTick = focusRestoreTick,
             )
         }
     }
@@ -625,10 +638,13 @@ private fun EmptyState(
     onRetry: () -> Unit,
     /** C11-P2-1：全局弹窗开着时挂载也不抢焦（弹窗关闭后由根焦点 effect 恢复）。 */
     globalModalOpen: Boolean = false,
+    /** C12-P1-3：NavHost 级弹窗关闭后 +1——空态时全局弹窗关闭，根 effect
+     * 只在频道非空时才落焦，空态按钮无处恢复；key 加 tick，关闭后重落按钮。 */
+    focusRestoreTick: Int = 0,
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(Unit) { if (!globalModalOpen) requester.requestFocusWithRetry() }
+    LaunchedEffect(focusRestoreTick) { if (!globalModalOpen) requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -791,6 +807,10 @@ private fun ChannelPanel(
     /** 第 7 轮 P1-2：分组行焦点态上报（focused=焦点在分组行上，firstChip=在首个 chip 上），
      * 供根部 containment 判断左键是行内移动还是出面板。 */
     onGroupFocusChange: (Boolean, Boolean) -> Unit = { _, _ -> },
+    /** C12-P1-3：NavHost 级弹窗关闭后 +1——面板打开时全局弹窗关闭，根 effect
+     * 因面板开着跳过、面板自己的落焦 effect 又不重跑，焦点无处恢复；key 加 tick，
+     * 关闭后重落当前台行。 */
+    focusRestoreTick: Int = 0,
 ) {
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
@@ -807,8 +827,12 @@ private fun ChannelPanel(
     // A11-P2-3：key 加频道表版本——面板打开时“刷新直播源”若重排了频道表，
     // 焦点所在的旧行可能已被卸载/换位；之前 key 只有 (panelOpen, selectedGroup)，
     // 表变化时 effect 不重跑、焦点丢失且无恢复。
-    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion) {
-        if (uiState.panelOpen) {
+    // C12-P1-3：key 加 focusRestoreTick——面板打开时全局弹窗（登录/更新卡片）
+    // 关闭，根 effect 因面板开着跳过，这里不重跑则焦点无处恢复；tick 变化时
+    // 重落当前台行。EPG 弹窗开着时不抢（EPG 自己的落焦 effect 管，关闭后由
+    // 下面的 EPG 关闭 effect 把焦点还给面板）。
+    LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion, focusRestoreTick) {
+        if (shouldFocusPanelRow(uiState.panelOpen, uiState.epgDialogChannel != null)) {
             if (filtered.isEmpty()) {
                 firstChipRequester.requestFocusWithRetry()
             } else {
@@ -1111,6 +1135,10 @@ private fun EpgDialog(
     epg: EpgParser.EpgData?,
     nowMs: Long,
     onClose: () -> Unit = {},
+    /** C12-P1-3：NavHost 级弹窗关闭后 +1——EPG 弹窗打开时全局弹窗关闭，
+     * 根 effect 因弹窗开着跳过、EPG 自己的落焦 effect 又不重跑，焦点无处恢复；
+     * key 加 tick，关闭后重落正在播的节目行。 */
+    focusRestoreTick: Int = 0,
 ) {
     val programmes = remember(epg, channel) {
         epg?.let { EpgParser.programmesFor(it, channel.tvgId, channel.name) }.orEmpty()
@@ -1137,7 +1165,8 @@ private fun EpgDialog(
     // EPG 随后才到）时重跑落点，不再停在“暂无节目单”的关闭按钮上。
     // C5-P2-1/A5-P2-8：固定 delay(100)+单次请求改 requestFocusWithRetry；
     // 正在播行抢不到时回退到“关闭”按钮。
-    LaunchedEffect(channel.url, programmes.isEmpty()) {
+    // C12-P1-3：key 加 focusRestoreTick——弹窗打开时全局弹窗关闭后重落焦点。
+    LaunchedEffect(channel.url, programmes.isEmpty(), focusRestoreTick) {
         val idx = currentIndex.coerceAtLeast(0)
         if (programmes.isNotEmpty()) {
             listState.scrollToItem(idx)

@@ -94,8 +94,13 @@ fun RemoteInputModal(
 
     // P1-2（第 5 轮）：服务拉起后“一键开启”按钮消失，焦点随之清除；
     // 状态翻转后把焦点还给“关闭”按钮，不只打开瞬间抢一次。
+    // C12-P2-3：全局弹窗开着时不抢——扫码弹窗上叠着全局弹窗时，服务拉起
+    // （配对成功后自动拉起）会把焦点从全局弹窗偷回“关闭”按钮；关闭后由
+    // 各页的 tick effect 恢复（全局弹窗关闭时 tick +1 重跑）。
     LaunchedEffect(showEnableButton) {
-        if (!showEnableButton) closeRequester.requestFocus()
+        if (shouldFocusModalCloseOnEnableChange(showEnableButton, globalModalOpen)) {
+            closeRequester.requestFocus()
+        }
     }
 
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方
@@ -205,3 +210,12 @@ fun RemoteInputModal(
         }
     }
 }
+
+/**
+ * 服务拉起后是否应把焦点还给扫码弹窗的“关闭”按钮（可单测，C12-P2-3）：
+ * “一键开启”按钮消失（showEnableButton 由真变假）且全局弹窗未开着时才还；
+ * 全局弹窗开着时不抢——焦点会被从全局弹窗偷回“关闭”按钮，关闭后由各页
+ * 的 tick effect 恢复。
+ */
+internal fun shouldFocusModalCloseOnEnableChange(showEnableButton: Boolean, globalModalOpen: Boolean): Boolean =
+    !showEnableButton && !globalModalOpen

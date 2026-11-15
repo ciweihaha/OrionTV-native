@@ -101,6 +101,15 @@ fun HomeScreen(
         if (!uiState.serverConfigured) goSettingsRequester.requestFocus()
     }
 
+    // C12-P1-6：未配置空态的 tick 监听（必须放在下面 return 之前）——effect B
+    // 在 return 之后，更新卡片关闭后 tick +1 到不了空态，焦点丢失、只能杀进程
+    // 重进；空态专用的 tick 监听放这里，tick 变化且仍未配置时落焦“去设置”。
+    LaunchedEffect(focusRestoreTick) {
+        if (shouldFocusEmptyStateOnTick(focusRestoreTick, uiState.serverConfigured)) {
+            goSettingsRequester.requestFocus()
+        }
+    }
+
     if (!uiState.serverConfigured) {
         Column(
             modifier = Modifier
@@ -156,14 +165,23 @@ fun HomeScreen(
     // 竞态时，焦点会被偷到弹窗底下的分类 chip 上）；不置 initialFocusDone/
     // restoreDone，弹窗关闭后由下面的 tick effect（B）恢复。key 加
     // globalModalOpen：弹窗开关即取消/重跑本 effect，不只靠到达时那一次判断。
+    // C12-P1-1：首载失败时 restoreDone 已被置 true（上面 !initialFocusDone
+    // 分支在行还空着时就跑过），重试成功后行由空变非空、错误页“重试”按钮
+    // 被卸载、焦点丢失，另两条分支都不跑；记一笔行是否曾为空，由空变非空时
+    // 再跑一次恢复（回保存卡片或首 chip）。
+    var rowsWereEmpty by remember { mutableStateOf(true) }
     LaunchedEffect(uiState.rows, globalModalOpen) {
         if (globalModalOpen) return@LaunchedEffect
+        val wasEmpty = rowsWereEmpty
+        rowsWereEmpty = uiState.rows.isEmpty()
         if (!viewModel.initialFocusDone) {
             firstChipRequester.requestFocus()
             viewModel.initialFocusDone = true
             restoreDone = true
         } else if (!restoreDone) {
             if (restoreSavedCard()) restoreDone = true
+        } else if (shouldRecoverFocusAfterRetry(wasEmpty, uiState.rows.isNotEmpty(), restoreDone)) {
+            restoreSavedCard()
         }
     }
     // effect B：弹窗关闭后 tick 变化重跑恢复；行还在加载时跳过

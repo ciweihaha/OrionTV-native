@@ -164,4 +164,13 @@ class LiveScreenLogicTest {
         // 首线路命中仍亮
         assertTrue(isPanelChannelFavorite(rotated, listOf(LiveFavChannel("http://a/new.m3u8", "CCTV-1"))))
     }
+
+    @Test
+    fun `panel refocuses only when epg dialog is closed`() {
+        // C12-P1-3：面板打开时全局弹窗关闭的 tick 重落当前台行；EPG 弹窗开着时
+        // 焦点归弹窗，面板 effect 不能把焦点抢回来。
+        assertTrue(shouldFocusPanelRow(panelOpen = true, epgDialogOpen = false))
+        assertFalse(shouldFocusPanelRow(panelOpen = true, epgDialogOpen = true))
+        assertFalse(shouldFocusPanelRow(panelOpen = false, epgDialogOpen = false))
+    }
 }

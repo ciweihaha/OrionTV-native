@@ -148,3 +148,24 @@ fun findSavedCard(rows: List<HomeRow>, savedKey: String?): Pair<Int, Int>? {
     }
     return null
 }
+
+/**
+ * C12-P1-1：首页错误态“重试”成功后是否应再跑一次焦点恢复（纯函数，可单测）——
+ * 首载失败时 effect A 的 !initialFocusDone 分支已把 restoreDone 置 true，
+ * 重试成功后行由空变非空、错误页“重试”按钮被卸载、焦点丢失，effect A 的
+ * 另两条分支都不跑；此时（行由空变非空且恢复已做过）再跑一次恢复（回保存
+ * 卡片或首 chip）。常驻期间行变化（refreshRecent）不满足“由空变非空”，不抢焦点。
+ */
+internal fun shouldRecoverFocusAfterRetry(
+    rowsWereEmpty: Boolean,
+    hasRows: Boolean,
+    restoreDone: Boolean,
+): Boolean = rowsWereEmpty && hasRows && restoreDone
+
+/**
+ * C12-P1-6：首页未配置空态是否应在 tick 时落焦“去设置”（纯函数，可单测）——
+ * 空态分支在 effect B 声明之前 return，tick 恢复到不了空态；更新卡片关闭后
+ * tick +1、仍未配置时落焦空态按钮，已配置时空态根本不在组合里、不动作。
+ */
+internal fun shouldFocusEmptyStateOnTick(focusRestoreTick: Int, serverConfigured: Boolean): Boolean =
+    focusRestoreTick > 0 && !serverConfigured

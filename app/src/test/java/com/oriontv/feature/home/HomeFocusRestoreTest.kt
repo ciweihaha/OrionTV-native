@@ -2,6 +2,8 @@ package com.oriontv.feature.home
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /** P2-9（第 5 轮）：返回焦点恢复按条目键锚定，不按 index。 */
@@ -77,5 +79,25 @@ class HomeFocusRestoreTest {
         val rows = listOf(row("热门剧集", item("agg", "2")))
         val merged = mergeRecentRow(rows, row("最近播放", item("agg", "9")))
         assertEquals(listOf("最近播放", "热门剧集"), merged.map { it.title })
+    }
+
+    @Test
+    fun `retry success after first load failure recovers focus`() {
+        // C12-P1-1：首载失败时 restoreDone 已被置 true，重试成功后行由空变非空、
+        // 错误页“重试”按钮被卸载、焦点丢失；此时再跑一次恢复。常驻期间行变化
+        // （refreshRecent）不满足“由空变非空”，不抢焦点。
+        assertTrue(shouldRecoverFocusAfterRetry(rowsWereEmpty = true, hasRows = true, restoreDone = true))
+        assertFalse(shouldRecoverFocusAfterRetry(rowsWereEmpty = false, hasRows = true, restoreDone = true))
+        assertFalse(shouldRecoverFocusAfterRetry(rowsWereEmpty = true, hasRows = false, restoreDone = true))
+        assertFalse(shouldRecoverFocusAfterRetry(rowsWereEmpty = true, hasRows = true, restoreDone = false))
+    }
+
+    @Test
+    fun `unconfigured empty state recovers focus on tick`() {
+        // C12-P1-6：未配置空态不在 tick 恢复覆盖内（effect B 在 early return
+        // 之后）；更新卡片关闭后 tick +1、仍未配置时落焦“去设置”，已配置时不动作。
+        assertTrue(shouldFocusEmptyStateOnTick(focusRestoreTick = 1, serverConfigured = false))
+        assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 0, serverConfigured = false))
+        assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 1, serverConfigured = true))
     }
 }

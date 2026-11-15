@@ -132,8 +132,11 @@ fun SearchScreen(
     // C11-P2-1：全局弹窗开着时跳过本次抢焦，不置 initialFocusDone——
     // 弹窗关闭后 tick +1 重跑本 effect 再落焦。key 加 globalModalOpen：
     // 本 effect 有最长 1 秒的等待循环，弹窗在循环中途打开时也要取消抢焦。
+    // C12-P1-5：扫码弹窗开着时同样不抢——全局弹窗关闭的 tick 会重跑本
+    // effect，焦点会被抢出扫码弹窗；扫码弹窗关闭后由它自己的关闭 effect
+    // 把焦点还给触发点。
     LaunchedEffect(focusRestoreTick, globalModalOpen) {
-        if (globalModalOpen) return@LaunchedEffect
+        if (!shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) return@LaunchedEffect
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true
@@ -211,7 +214,9 @@ fun SearchScreen(
 
     // P2-10（第 5 轮）：返回键先收屏上键盘。注册在弹窗 handler 之前，
     // 两者都开时弹窗先关（后注册的优先）。
-    BackHandler(enabled = showKeyboard) { showKeyboard = false }
+    // C12-P2-1：全局弹窗开着时本 handler 让位——后注册优先于 NavHost 的
+    // 全局 handler，返回键会先收键盘、而不是先关视觉上在上的全局弹窗。
+    BackHandler(enabled = shouldEnableKeyboardBackHandler(showKeyboard, globalModalOpen)) { showKeyboard = false }
     // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
     // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
     // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
@@ -499,3 +504,20 @@ internal fun shouldConsumeSearchLeftKeyUp(cursorBeforeMove: Int): Boolean =
  * 已在行尾时放行，焦点移到右侧“屏上键盘/手机扫码输入”按钮。 */
 internal fun shouldConsumeSearchRightKeyUp(cursorBeforeMove: Int, textLength: Int): Boolean =
     cursorBeforeMove < textLength
+
+/**
+ * NavHost 级弹窗关闭的 tick 是否应跑搜索页焦点恢复（可单测，C12-P1-5）：
+ * 全局弹窗开着时不抢（关闭后 tick +1 重跑）；本页扫码弹窗开着时也不抢——
+ * tick 恢复会把焦点抢出扫码弹窗，扫码弹窗关闭后由它自己的关闭 effect
+ * 把焦点还给触发点。
+ */
+internal fun shouldRunSearchTickRestore(globalModalOpen: Boolean, remoteInputModalOpen: Boolean): Boolean =
+    !globalModalOpen && !remoteInputModalOpen
+
+/**
+ * 屏上键盘的 BackHandler 是否启用（可单测，C12-P2-1）：键盘开着且全局弹窗
+ * 未开着时才启用——后注册优先于 NavHost 的全局 handler，全局弹窗开着时
+ * 返回键应先关全局弹窗，而不是先收底下的键盘。
+ */
+internal fun shouldEnableKeyboardBackHandler(showKeyboard: Boolean, globalModalOpen: Boolean): Boolean =
+    showKeyboard && !globalModalOpen

@@ -111,6 +111,11 @@ fun FavoritesScreen(
     // ViewModel 的 focusRestoreRequest 显式通知，tick 由 lastHandledTick 比对。
     var restorePending by remember { mutableStateOf(true) }
     var lastHandledTick by remember { mutableIntStateOf(0) }
+    // C12-P1-2：加载失败“重试”成功后焦点丢失——refresh() 不置 restorePending、
+    // tick 也不变，恢复 effect 开头的早退把重试成功拦在外面（错误页“重试”
+    // 按钮被卸载、焦点无处可落）；记一笔“上次是否空列表”，空态→有内容时也
+    // 跑一次恢复。例行刷新（已有内容时）不满足“由空变有”，不抢焦点。
+    var hadNoItems by remember { mutableStateOf(true) }
     val restoreRequest = uiState.focusRestoreRequest
     LaunchedEffect(restoreRequest) {
         if (restoreRequest > 0) restorePending = true
@@ -121,7 +126,9 @@ fun FavoritesScreen(
         // lastHandledTick 消费之前，否则恢复请求会被吞掉、弹窗关闭后也不再恢复；
         // 弹窗关闭后 tick +1 重跑本 effect 再恢复。
         if (globalModalOpen) return@LaunchedEffect
-        if (!restorePending && focusRestoreTick == lastHandledTick) return@LaunchedEffect
+        val emptyToContent = hadNoItems && uiState.items.isNotEmpty()
+        hadNoItems = uiState.items.isEmpty()
+        if (!shouldRunFavoritesRestore(restorePending, focusRestoreTick, lastHandledTick, emptyToContent)) return@LaunchedEffect
         restorePending = false
         lastHandledTick = focusRestoreTick
         if (!viewModel.initialFocusDone) {
@@ -284,3 +291,16 @@ fun FavoritesScreen(
     }
     }
 }
+
+/**
+ * C12-P1-2：收藏页恢复 effect 是否应跑一次（纯函数，可单测）——首进
+ * （restorePending）、弹窗关闭 tick 变化、或空态→有内容（加载失败“重试”
+ * 成功）时跑；例行刷新（已有内容、tick 不变）不跑，不把焦点从“删除/续播”
+ * 按钮上拉回卡片。
+ */
+internal fun shouldRunFavoritesRestore(
+    restorePending: Boolean,
+    focusRestoreTick: Int,
+    lastHandledTick: Int,
+    emptyToContent: Boolean,
+): Boolean = restorePending || focusRestoreTick != lastHandledTick || emptyToContent

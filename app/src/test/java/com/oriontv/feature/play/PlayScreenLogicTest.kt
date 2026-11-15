@@ -219,4 +219,13 @@ class PlayScreenLogicTest {
         assertEquals(-1, resolveGroupScrollIndex(0, 1))
         assertEquals(-1, resolveGroupScrollIndex(0, 0))
     }
+
+    @Test
+    fun `tick restore skips root focus while drawer is open`() {
+        // C12-P1-4：抽屉打开时全局弹窗关闭把焦点抢回根部，抽屉遥控不可达；
+        // tick effect 增加抽屉门控，抽屉开着时跳过。
+        assertTrue(shouldRestoreRootFocusOnTick(focusRestoreTick = 1, drawerOpen = false))
+        assertFalse(shouldRestoreRootFocusOnTick(focusRestoreTick = 1, drawerOpen = true))
+        assertFalse(shouldRestoreRootFocusOnTick(focusRestoreTick = 0, drawerOpen = false))
+    }
 }

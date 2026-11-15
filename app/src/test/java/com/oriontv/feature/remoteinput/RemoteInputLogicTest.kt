@@ -389,4 +389,14 @@ class RemoteInputLogicTest {
         )
         assertEquals(200, ok.statusCode)
     }
+
+    @Test
+    fun `service start does not steal focus from global modal`() {
+        // C12-P2-3：扫码弹窗服务拉起后落焦 effect 原来无全局弹窗门控——全局
+        // 弹窗开着时服务拉起会把焦点偷回“关闭”按钮；开着时跳过，关闭后由
+        // 各页的 tick effect 恢复。
+        assertTrue(shouldFocusModalCloseOnEnableChange(showEnableButton = false, globalModalOpen = false))
+        assertFalse(shouldFocusModalCloseOnEnableChange(showEnableButton = false, globalModalOpen = true))
+        assertFalse(shouldFocusModalCloseOnEnableChange(showEnableButton = true, globalModalOpen = false))
+    }
 }

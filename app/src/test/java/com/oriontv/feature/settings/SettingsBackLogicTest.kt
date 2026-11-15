@@ -1,6 +1,8 @@
 package com.oriontv.feature.settings
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -46,5 +48,23 @@ class SettingsBackLogicTest {
         // B11-P1-1：设置页末项按登录态切换“登录/退出登录”。
         assertEquals("登录", loginMenuLabel(isLoggedIn = false))
         assertEquals("退出登录", loginMenuLabel(isLoggedIn = true))
+    }
+
+    @Test
+    fun `tick restore skips while qr modal is open`() {
+        // C12-P2-5：设置页 tick 恢复无视二维码弹窗——拉回左菜单后弹窗遥控不可达；
+        // 弹窗开着时跳过，关闭后由它自己的关闭 effect 把焦点还给触发按钮。
+        assertTrue(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, showQrModal = false))
+        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 1, showQrModal = true))
+        assertFalse(shouldRestoreSettingsFocusOnTick(focusRestoreTick = 0, showQrModal = false))
+    }
+
+    @Test
+    fun `qr modal fallback back handler yields to global modal`() {
+        // C12-P2-2：二维码弹窗的兜底 BackHandler 原来无全局弹窗门控（弹窗自己
+        // 的 handler 有）；全局弹窗开着时让位，返回键先关全局弹窗。
+        assertTrue(shouldEnableQrModalBackHandler(showQrModal = true, globalModalOpen = false))
+        assertFalse(shouldEnableQrModalBackHandler(showQrModal = true, globalModalOpen = true))
+        assertFalse(shouldEnableQrModalBackHandler(showQrModal = false, globalModalOpen = false))
     }
 }
