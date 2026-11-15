@@ -426,11 +426,15 @@ class UpdateDownloaderResumeTest {
                 // 空操作——外层复核自然看不到已取消的 Job。
                 cancelledImmediately = job.isCancelled
                 completedImmediately = job.isCompleted
-                // 同 ApiClientTest 的 D7-P2-4 写法：5 秒护栏内 join 应以
-                // 下载自身的 CancellationException 返回；若取消递送不到，
+                // D8-P2-2 跟进（第 13 轮复测确诊）：join() 永远拿不到取消异常——
+                // Job.join() 只等任务结束，已取消任务的 join() 正常返回、不重抛
+                // CancellationException，所以 thrown 恒为 null，前面三次生产侧
+                // 修复（watcher 关体、withContext 外复核）都是对的、测法是错的。
+                // 同 ApiClientTest 的 D7-P2-4 写法：对 Deferred 用 await() 才
+                // 能拿到下载自身的 CancellationException；若取消递送不到，
                 // withTimeout 先抛 TimeoutCancellationException。
                 thrown = try {
-                    withTimeout(5_000) { job.join() }
+                    withTimeout(5_000) { job.await() }
                     null
                 } catch (e: CancellationException) {
                     e
