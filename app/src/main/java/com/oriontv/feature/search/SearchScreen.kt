@@ -78,6 +78,11 @@ fun SearchScreen(
      * 不抢焦点（与详情/首页/播放页的 globalModalOpen 门控同款）。
      */
     globalModalOpen: Boolean = false,
+    /**
+     * Jewel 第 9 轮 P2-4：左侧导航轨是否正持有焦点——轨获焦时结果区 latch
+     * 清掉，下一次搜索启动不再把焦点从轨上拉回搜索框（与键盘容器同款）。
+     */
+    navRailHasFocus: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -127,6 +132,14 @@ fun SearchScreen(
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
+
+    // Jewel 第 9 轮 P2-4：导航轨获焦即清结果区 latch——焦点已移到轨上时，
+    // 下一次搜索启动（远程输入文本到达/防抖到点）不再把焦点从轨上拉回搜索框。
+    // 轨内移动不触发（NavRail 只在整轨 hasFocus 翻转时回调）；焦点轨→结果区
+    // 时结果区容器自己的 onFocusChanged 会重新置位 latch，不丢 P1-1 的收回语义。
+    LaunchedEffect(navRailHasFocus) {
+        if (navRailHasFocus) resultsAreaHadFocus = false
+    }
 
     // C5-P1-1：屏上键盘由开变关时焦点回搜索框——之前键盘关闭后焦点留在已
     // 卸载的键盘按键上，遥控器数秒内按什么都没反应。
@@ -346,16 +359,25 @@ fun SearchScreen(
                 )
             }
             Spacer(modifier = Modifier.width(16.dp))
-            SecondaryButton(
-                text = if (showKeyboard) "收起键盘" else "屏上键盘",
-                onClick = { showKeyboard = !showKeyboard },
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            SecondaryButton(
-                text = "手机扫码输入",
-                onClick = { showRemoteInputModal = true },
-                modifier = Modifier.preferredFocus(scanButtonRequester),
-            )
+            // Jewel 第 9 轮 P2-4：顶栏按钮行获焦即清结果区 latch（与键盘容器
+            // 同款）——焦点已移到“屏上键盘/手机扫码输入”按钮上时，下一次搜索
+            // 启动不再把焦点从按钮上拉回搜索框。Row 整体 hasFocus 含子孙，
+            // 按钮间移动不重复触发；搜索框不在本 Row 内，不受影响。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = false },
+            ) {
+                SecondaryButton(
+                    text = if (showKeyboard) "收起键盘" else "屏上键盘",
+                    onClick = { showKeyboard = !showKeyboard },
+                )
+                SecondaryButton(
+                    text = "手机扫码输入",
+                    onClick = { showRemoteInputModal = true },
+                    modifier = Modifier.preferredFocus(scanButtonRequester),
+                )
+            }
         }
         if (showRemoteInputModal) {
             RemoteInputModal(

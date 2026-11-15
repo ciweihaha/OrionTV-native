@@ -127,6 +127,10 @@ fun OrionNavHost(
     // C4-P1-2：弹窗关闭后焦点还给当前页默认锚点——任一弹窗从开变关时 tick+1，
     // 各页监听 tick 重新跑自己的默认焦点恢复（与首进逻辑同一条路）。
     var focusRestoreTick by remember { mutableIntStateOf(0) }
+    // Jewel 第 9 轮 P2-4：导航轨是否正持有焦点——搜索页的结果区 latch 需在焦点
+    // 移到轨上时清掉（否则下一次搜索启动会把焦点从轨上拉回搜索框）；只透传给
+    // 搜索页，其他页不受影响。
+    var navRailHasFocus by remember { mutableStateOf(false) }
     var anyModalWasOpen by remember { mutableStateOf(false) }
     LaunchedEffect(showLoginModal, showUpdateCard) {
         if (showLoginModal || showUpdateCard) {
@@ -201,6 +205,8 @@ fun OrionNavHost(
                         if (route == currentRoute) return@NavRail
                         navController.navigate(route, topLevelNavOptions())
                     },
+                    // Jewel 第 9 轮 P2-4：轨获焦态透传给搜索页清结果区 latch。
+                    onRailFocusChanged = { navRailHasFocus = it },
                 )
             }
         Box(modifier = Modifier.weight(1f)) {
@@ -301,6 +307,8 @@ fun OrionNavHost(
                         // C11-P2-1/P2-2：全局弹窗开着时各焦点 effect 不抢焦，
                         // 扫码弹窗的返回处理让位给全局弹窗。
                         globalModalOpen = showLoginModal || showUpdateCard,
+                        // Jewel 第 9 轮 P2-4：导航轨获焦时清结果区 latch。
+                        navRailHasFocus = navRailHasFocus,
                     )
                 }
                 composable<OrionRoute.Favorites> {
