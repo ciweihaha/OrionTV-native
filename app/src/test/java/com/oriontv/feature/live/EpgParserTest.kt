@@ -241,13 +241,15 @@ class EpgParserTest {
             val stop = xmltvTime(i.toLong() + 1)
             """<programme channel="cctv1" start="$start +0800" stop="$stop +0800"><title>节目$i</title></programme>"""
         }
-        val xml = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <tv>
-              <channel id="cctv1"><display-name>CCTV1</display-name></channel>
-              $programmes
-            </tv>
-        """.trimIndent()
+        // 注意：不能用三引号 + trimIndent() 拼这份 XML——$programmes 的行零缩进会让
+        // trimIndent() 的最小缩进变成 0，<?xml ...?> 前残留空格，SAX 报 Content is not allowed in prolog。
+        val xml = buildString {
+            appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
+            appendLine("<tv>")
+            appendLine("""<channel id="cctv1"><display-name>CCTV1</display-name></channel>""")
+            appendLine(programmes)
+            appendLine("</tv>")
+        }
         val data = EpgParser.parse(xml)
         val total = data.programmesByChannel.values.sumOf { it.size }
         assertEquals(EpgParser.MAX_PROGRAMMES, total)
