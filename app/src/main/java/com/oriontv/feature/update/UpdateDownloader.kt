@@ -11,7 +11,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.invokeOnCancellation
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -193,29 +192,37 @@ class UpdateDownloader @Inject constructor(
                                 // resumeWithException / 直接 throw / 不截获直抛都
                                 // 走不通——故下载体改用 async + await()（见函数末尾
                                 // 注释），不再用 withContext 包起来。
-                                // 挂钩必须是 Job.invokeOnCancellation，在当前协程里同步
-                                // 注册——不能用 launch 起一个监听协程等 awaitCancellation：
-                                // launch 只把监听协程派发到 IO 池，取消若在它首次运行
-                                // 之前到达，协程体（含 finally 里的关体）根本不会执行
-                                // （Kotlin 官方文档 Cancellation and timeouts：
+                                // 挂钩必须是 Job.invokeOnCompletion(onCancelling = true)，
+                                // 在当前协程里同步注册——不能用 launch 起一个监听协程等
+                                // awaitCancellation：launch 只把监听协程派发到 IO 池，取消
+                                // 若在它首次运行之前到达，协程体（含 finally 里的关体）
+                                // 根本不会执行（Kotlin 官方文档 Cancellation and timeouts：
                                 // “doesn't guarantee that they start running. If
                                 // they're canceled first, nothing is printed”），关体
                                 // 永远到不了、体读堵满 60 秒兜底——main 上累计红 5 次
-                                // 的真因正是这个派发窗口（第 8 轮跟进 2）。invokeOnCompletion
-                                // 同样不能用：它只在任务完成时跑，阻塞的读不返回、任务
-                                // 完不成，挂钩永远等不到触发。invokeOnCancellation 在
-                                // 取消到达时当场执行（取消线程上同步跑），无派发窗口；
-                                // 也不能在块里调 currentCoroutineContext()（块不是
-                                // suspend 上下文），context 先在外面捕获。
+                                // 的真因正是这个派发窗口（第 8 轮跟进 2）。注意 Job 上没有
+                                // 公开的 invokeOnCancellation（那是 CancellableContinuation
+                                // 的成员函数；顶层同名函数是 internal 的），等价写法就是
+                                // invokeOnCompletion(onCancelling = true)。invokeOnCompletion
+                                // 默认（onCancelling = false）同样不能用：它只在任务完成时
+                                // 跑，阻塞的读不返回、任务完不成，挂钩永远等不到触发。
+                                // invokeOnCompletion(onCancelling = true) 在取消到达时当场
+                                // 执行（取消线程上同步跑），无派发窗口；也不能在块里调
+                                // currentCoroutineContext()（块不是 suspend 上下文），
+                                // context 先在外面捕获。
                                 val context = currentCoroutineContext()
                                 // D8-P2-2 跟进 2：取消挂钩同步注册在当前 Job 上——取消
                                 // 到达时在取消线程上当场跑，先置标志再关体（读因关体抛错，
                                 // 标志一定在读抛错之前已置位，外层复核读到它时无竞态）；
                                 // 拷贝已正常完成时不记（copyDone 守卫）。拷贝结束（正常、
                                 // 抛错、取消）即 dispose 挂钩，不留给下一次尝试。
-                                // 注意：若取消在注册前已到达，invokeOnCancellation 会立即
-                                // 执行挂钩——关体照常发生，不丢取消。
-                                val cancelHandle = context[Job]?.invokeOnCancellation {
+                                // 注意：若取消在注册前已到达，invokeOnCompletion(
+                                // onCancelling = true, invokeImmediately = true)
+                                // 会立即执行挂钩——关体照常发生，不丢取消。
+                                val cancelHandle = context[Job]?.invokeOnCompletion(
+                                    onCancelling = true,
+                                    invokeImmediately = true,
+                                ) {
                                     if (!copyDone.get()) cancelledDuringCopy.set(true)
                                     runCatching { body.close() }
                                 }
