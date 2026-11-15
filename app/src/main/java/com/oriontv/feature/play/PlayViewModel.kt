@@ -320,8 +320,11 @@ class PlayViewModel @Inject constructor(
     /**
      * 回页（A9-P1-2，供 PlayScreen 的 ON_RESUME 与重进组合调用）：
      * 记回前台、刷新开播设置缓存；有暂缓的开播先补开，没有且搜源曾被取消、
-     * 当前仍无结果时重跑搜源；其余情况（已在播/已暂停且仍是所有者/已落错误态）不动，
-     * 不自动恢复被暂停的播放；暂停态被别页抢走播放器时重挂媒体项、保持暂停（A19-P2-2）。
+     * 当前仍无结果时重跑搜源；暂停态被别页抢走播放器时重挂媒体项、保持暂停（A19-P2-2）。
+     * A22-P2-1：仍是所有者且未在播时也要区分两种暂停——用户自己按了暂停
+     * （userPaused=true）不动；按 Home 被系统暂停（userPaused=false）时自动
+     * play() 续播，加载中再补 arm 一次就绪超时（onPagePaused 已取消旧超时，
+     * 不补 arm 暂停的加载态连 20 秒兜底都没有）。
      */
     fun onPageResumed() {
         pageActive = true
@@ -358,6 +361,25 @@ class PlayViewModel @Inject constructor(
                 resolveSwitchStartMs(playerManager.isEnded || state.isEnded, state.positionMs.takeIf { it > 0 }),
                 resumePaused = userPaused,
             )
+        } else if (shouldResumeAfterLeaveHint(
+                hasCurrent = current != null,
+                noError = state.error == null,
+                isCurrentOwner = playerManager.isCurrentOwner(playbackToken),
+                isPlaying = playerManager.isPlaying,
+                userPaused = userPaused,
+                playbackStarted = playbackStarted,
+                isEnded = state.isEnded,
+            )
+        ) {
+            // A22-P2-1：仍是所有者、未在播、且不是用户自己按的暂停——按 Home
+            // 时 MainActivity.onUserLeaveHint（开关关）只调 pause()、不碰
+            // userPaused，userPaused=false 就是“Home 暂停”的准确信号；回页
+            // 自动 play() 续播（与直播页 shouldResumePlayback 同场景同行为）。
+            // 播完态不动：play() 在 STATE_ENDED 下是空操作，重播走 togglePlayPause。
+            playerManager.play()
+            // 加载中按 Home 再回：onPagePaused 已取消就绪超时，不补 arm，
+            // 暂停的加载态连 20 秒超时兜底都没有，只能按 OK 恢复。
+            if (state.isLoading) armReadyTimeout()
         }
     }
 
@@ -672,19 +694,23 @@ class PlayViewModel @Inject constructor(
         // A8-P1-1：记 isEnded，下一集倒计时只在播完态走（A6-P1-1 的
         // “正在播或已播完”会让预告卡边播边倒计时、吞掉最后约 7 秒）。
         _uiState.update { it.copy(isEnded = true) }
+        // A22-P2-2：预告卡先出、删断点后拆到后台——delete() 在服务端模式下是
+        // 网络调用（还受 writeMutex 排队），旧实现先等它跑完才置 showNextEpisode，
+        // 弱网时播完后长时间只有定格末帧、无预告卡、无倒计时；倒计时从卡片出现
+        // 才走 3 秒，先出卡不丢任何时间。删断点仍包 runCatching + CE 重抛。
+        if (shouldShowNextEpisode(
+                cachedNextEpisodeOverlayEnabled,
+                state.episodeIndex,
+                current.episodes.size,
+                nextEpisodeDismissedForIndex,
+            )
+        ) {
+            _uiState.update { it.copy(showNextEpisode = true) }
+        }
         viewModelScope.launch {
             runCatching { playRecordsRepository.delete(currentKey) }
                 // B17-P2-1：附属写失败不推翻主流程，但取消异常原样重抛。
                 .onFailure { if (it is CancellationException) throw it }
-            if (shouldShowNextEpisode(
-                    cachedNextEpisodeOverlayEnabled,
-                    state.episodeIndex,
-                    current.episodes.size,
-                    nextEpisodeDismissedForIndex,
-                )
-            ) {
-                _uiState.update { it.copy(showNextEpisode = true) }
-            }
         }
     }
 
@@ -1499,6 +1525,28 @@ class PlayViewModel @Inject constructor(
          */
         internal fun shouldReclaimPlayback(noError: Boolean, isCurrentOwner: Boolean): Boolean =
             noError && !isCurrentOwner
+
+        /**
+         * A22-P2-1：回页时仍是所有者、未在播时是否应自动续播（可单测）——只补
+         * “按 Home 被系统暂停”一种情形：有当前集、无错误态、自己仍是所有者、
+         * 播放器未在播、不是用户自己按的暂停（userPaused=false 才是 Home 暂停
+         * 的准确信号——MainActivity.onUserLeaveHint 只调 pause()、不碰 userPaused；
+         * 用户自己暂停的 userPaused=true 不动）、已开播过、未播完。播完态不动：
+         * play() 在 STATE_ENDED 下是空操作，重播走 togglePlayPause。
+         * 注意与 reclaim 分支的区别：A17-P2-1 的“不用 !isPlaying 门控”只针对
+         * 归属被抢走的 reclaim 分支，本分支是另一分支，门控各算各的。
+         */
+        internal fun shouldResumeAfterLeaveHint(
+            hasCurrent: Boolean,
+            noError: Boolean,
+            isCurrentOwner: Boolean,
+            isPlaying: Boolean,
+            userPaused: Boolean,
+            playbackStarted: Boolean,
+            isEnded: Boolean,
+        ): Boolean =
+            hasCurrent && noError && isCurrentOwner && !isPlaying && !userPaused &&
+                playbackStarted && !isEnded
 
         /**
          * seek 目标钳制（可单测）：钳制到片尾前 1 秒，免得 seek 到正好片尾立即 STATE_ENDED；

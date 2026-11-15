@@ -399,4 +399,68 @@ class PlayViewModelLogicTest {
         assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = false))
         assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = true))
     }
+
+    @Test
+    fun `resumed page auto resumes only Home paused playback`() {
+        // A22-P2-1：仍是所有者、未在播时只续播“按 Home 被系统暂停”的片——
+        // MainActivity.onUserLeaveHint 只调 pause()、不碰 userPaused，
+        // userPaused=false 就是 Home 暂停的准确信号；用户自己按了暂停
+        // （userPaused=true）不动，播完态不动（play() 在 STATE_ENDED 下
+        // 是空操作，重播走 togglePlayPause），在播/有错/未开播过也不动。
+        // Home 暂停的标准情形：有当前集、无错、仍是所有者、未在播、
+        // 非用户暂停、已开播过、未播完。
+        assertTrue(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = true,
+                isPlaying = false, userPaused = false, playbackStarted = true, isEnded = false,
+            ),
+        )
+        // 用户自己按了暂停：不动。
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = true,
+                isPlaying = false, userPaused = true, playbackStarted = true, isEnded = false,
+            ),
+        )
+        // 已在播：不动。
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = true,
+                isPlaying = true, userPaused = false, playbackStarted = true, isEnded = false,
+            ),
+        )
+        // 播完态：不动。
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = true,
+                isPlaying = false, userPaused = false, playbackStarted = true, isEnded = true,
+            ),
+        )
+        // 归属被抢走：不归本分支，走 reclaim 分支。
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = false,
+                isPlaying = false, userPaused = false, playbackStarted = true, isEnded = false,
+            ),
+        )
+        // 有错、无当前集、未开播过：都不动。
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = false, isCurrentOwner = true,
+                isPlaying = false, userPaused = false, playbackStarted = true, isEnded = false,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = false, noError = true, isCurrentOwner = true,
+                isPlaying = false, userPaused = false, playbackStarted = true, isEnded = false,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldResumeAfterLeaveHint(
+                hasCurrent = true, noError = true, isCurrentOwner = true,
+                isPlaying = false, userPaused = false, playbackStarted = false, isEnded = false,
+            ),
+        )
+    }
 }
