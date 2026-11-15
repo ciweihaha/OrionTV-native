@@ -106,6 +106,25 @@ class SettingsDataStore @Inject constructor(
         context.settingsDataStore.edit { it[Keys.M3U_URL] = value }
     }
 
+    /**
+     * B12-P2-3：源地址三键一次原子写——新 apiBaseUrl / m3uUrl 与 StorageType
+     * 清空（type="" + serverConfigFetched=false）在同一个 edit {} 里落盘；
+     * 旧实现是三次独立写，中间窗口里新地址配旧 StorageType、clearStorageType
+     * 自身又是两次独立写，第二写失败还会留下 type="" + fetched=true 的撕裂态。
+     * 四键同在 settings 这一个 DataStore 文件里，一次 edit 即原子（写失败时
+     * 四键全不落盘，不会只写一半）。clearStorage=false 时只写两个地址。
+     */
+    suspend fun setSourceAddresses(apiUrl: String, m3uUrl: String, clearStorage: Boolean) {
+        context.settingsDataStore.edit {
+            it[Keys.API_BASE_URL] = apiUrl
+            it[Keys.M3U_URL] = m3uUrl
+            if (clearStorage) {
+                it[Keys.STORAGE_TYPE] = ""
+                it[Keys.SERVER_CONFIG_FETCHED] = false
+            }
+        }
+    }
+
     suspend fun setRemoteInputEnabled(value: Boolean) {
         context.settingsDataStore.edit { it[Keys.REMOTE_INPUT_ENABLED] = value }
     }

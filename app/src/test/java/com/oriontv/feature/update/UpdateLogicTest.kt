@@ -149,6 +149,18 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `silent update check failure writes no error`() {
+        // B12-P2-7：静默检查失败不写 error——设置页只要 error != null 就在
+        // 底部渲染红字，且没有任何路径清 error，静默失败会让红字长期挂着；
+        // 手动检查失败才展示。
+        assertEquals(null, updateCheckErrorOrNull(silent = true, "检查更新超时，请检查网络后重试"))
+        assertEquals(
+            "检查更新超时，请检查网络后重试",
+            updateCheckErrorOrNull(silent = false, "检查更新超时，请检查网络后重试"),
+        )
+    }
+
+    @Test
     fun `format size renders mb and kb`() {
         val downloader = UpdateDownloader(OkHttpClient())
         assertEquals("18.0MB", downloader.formatSize(18L * 1024 * 1024))

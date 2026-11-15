@@ -43,4 +43,15 @@ class DetailFavoriteTest {
         assertTrue(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = null, previous = true))
         assertFalse(DetailViewModel.resolveFavoriteAfterToggleFailure(reRead = null, previous = false))
     }
+
+    @Test
+    fun `stale toggle result is not applied to a new title`() {
+        // B12-P2-4：切换开始时快照的 key 与代次仍等于当前值时才写态——init()
+        // 切新片后旧切换的 toggle() 可能已越过挂起点、取消拦不住，旧片结果
+        // 写到新片态上即串台；key 或代次任一变了都不写。
+        assertTrue(DetailViewModel.shouldApplyToggleResult("agg+1", "agg+1", 3, 3))
+        assertFalse(DetailViewModel.shouldApplyToggleResult("agg+1", "agg+2", 3, 3))
+        assertFalse(DetailViewModel.shouldApplyToggleResult("agg+1", "agg+1", 3, 4))
+        assertFalse(DetailViewModel.shouldApplyToggleResult("agg+1", "agg+2", 3, 4))
+    }
 }

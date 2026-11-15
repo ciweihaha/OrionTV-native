@@ -33,6 +33,12 @@ class FavoritesViewModel @Inject constructor(
     private val removeGuard = InFlightGuard()
 
     /**
+     * B12-P2-2：refresh() 代次——与 HomeViewModel.refresh() 同款；两次 refresh
+     * 并发时旧的慢结果不再覆盖新的列表（B11-P2-2 同款，收藏页漏了）。
+     */
+    private var refreshGeneration = 0
+
+    /**
      * 第 5 轮：P1-3/P1-4 首进落默认锚点、返回恢复上次卡片——这两个值原来是
      * ViewModel 里的普通变量。导航轨切走（popUpTo(Home) 弹掉收藏页）后
      * ViewModel 被清，只靠内存留不住；再切回来新建的 ViewModel 从头开始，
@@ -64,6 +70,9 @@ class FavoritesViewModel @Inject constructor(
 
     /** 每次回页都刷新（详情页内取消收藏后返回即不残留）。 */
     fun refresh() {
+        // B12-P2-2：起刷时快照代次，迟到结果丢弃——两次 refresh 并发时旧的
+        // 慢结果不再覆盖新列表（与 HomeViewModel.refresh() 同款守卫）。
+        val gen = ++refreshGeneration
         viewModelScope.launch {
             // B4-P2-5：仓库调用失败保留旧 items 并置 loadFailed，不崩溃、不闪空。
             val items = try {
@@ -71,11 +80,13 @@ class FavoritesViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
+                if (gen != refreshGeneration) return@launch
                 // B5-P2-2：首载失败也要清 isLoading，否则加载圈一直转、
                 // loadFailed 提示出不来；旧 items 保留（初始即空表）。
                 _uiState.value = _uiState.value.copy(loadFailed = true, isLoading = false)
                 return@launch
             }
+            if (gen != refreshGeneration) return@launch
             // P2-3：断点续播入口——一并取播放记录（无记录的收藏没有“续播”按钮）。
             // 记录拉取失败只降级为空表，不让收藏列表跟着失败（记录层本身对
             // 服务端失败已有 lastGoodRecords 兜底，这里只防本地异常）。
@@ -86,6 +97,7 @@ class FavoritesViewModel @Inject constructor(
             } catch (_: Exception) {
                 emptyMap()
             }
+            if (gen != refreshGeneration) return@launch
             // B-P2-20：服务端拉取失败时 items 是上次成功结果，置标记让 UI 提示。
             // 第 6 轮 P1-2/P2-7：refresh 整包替换 uiState，删除进行中的键集合与
             // 焦点恢复请求计数要带上，否则刷新一次就把守卫/落点请求清掉。
@@ -116,7 +128,15 @@ class FavoritesViewModel @Inject constructor(
                 // B8-P1-2：删前存在检查用严格版——服务端网络失败时抛错走下面
                 // 的 catch 弹提示；宽容版 isFavorite 失败返回 false，会让
                 // 删除静默 return、无事发生、无任何提示。
-                if (!favoritesRepository.isFavoriteStrict(key)) return@launch
+                if (!favoritesRepository.isFavoriteStrict(key)) {
+                    // B12-P2-8：严格检查返回 false = 服务端已无此收藏（详情页
+                    // 里删过、或别端删过），本地列表仍残留旧项；旧实现直接
+                    // return@launch、静默无事发生、无刷新。给一次提示并刷新
+                    // 列表，与服务端实态对齐（finally 仍会释放守卫）。
+                    _uiState.update { it.copy(favoriteError = nextToastEvent("该收藏已不存在，已刷新列表")) }
+                    refresh()
+                    return@launch
+                }
                 // 第 7 轮 P2-3：焦点落点与恢复请求只在 toggle 成功后算——
                 // 旧实现在 toggle 之前就把 savedFocusKey 换掉、focusRestoreRequest+1，
                 // toggle 一抛错（B8-P1-2 的严格存在检查也会抛错进下面 catch），

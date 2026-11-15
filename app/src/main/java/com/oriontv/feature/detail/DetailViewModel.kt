@@ -43,6 +43,9 @@ class DetailViewModel @Inject constructor(
     val uiState: StateFlow<DetailUiState> = _uiState.asStateFlow()
 
     private var searchJob: Job? = null
+    /** B12-P2-4：在途的收藏切换任务——init() 切新片时取消，不让旧片的切换
+     * 结果写到新片态上（与 searchJob 同款取消）。 */
+    private var toggleJob: Job? = null
     private var currentKey: String = ""
     private var currentTitle: String = ""
     private var currentId: String = ""
@@ -114,6 +117,19 @@ class DetailViewModel @Inject constructor(
          */
         internal fun resolveFavoriteAfterToggleFailure(reRead: Boolean?, previous: Boolean): Boolean =
             reRead ?: previous
+
+        /**
+         * 收藏切换结果是否应写回当前态（可单测，B12-P2-4）：切换开始时快照的
+         * key 与代次仍等于当前值时才写——init() 切新片后旧切换的 toggle() 可能
+         * 已越过挂起点、取消拦不住，失败分支的重读更是挂起调用，旧片结果
+         * 写到新片态上即串台。只复核，不拦仓库侧的写（服务端切换本身已生效）。
+         */
+        internal fun shouldApplyToggleResult(
+            toggleKey: String,
+            currentKey: String,
+            toggleGeneration: Int,
+            currentGeneration: Int,
+        ): Boolean = toggleKey == currentKey && toggleGeneration == currentGeneration
     }
 
     fun init(source: String, id: String, title: String) {
@@ -127,6 +143,11 @@ class DetailViewModel @Inject constructor(
         currentId = id
         val gen = ++generation
         searchJob?.cancel()
+        // B12-P2-4：切新片时取消在途的收藏切换——toggle() 是翻转操作，旧片
+        // 的切换晚到会把结果写到新片态上（init 的搜索回调与收藏读取都有 gen
+        // 复核，唯独 toggle 没有）；取消是协作式的，写态前下面还有 key/gen
+        // 二次复核，两道防线。
+        toggleJob?.cancel()
         _uiState.value = DetailUiState(isLoading = true, selectedEpisode = 0)
         searchJob = viewModelScope.launch {
             // 断点：有播放记录时默认选中记录里的集，并记下断点秒数（P1-2）。
@@ -244,7 +265,12 @@ class DetailViewModel @Inject constructor(
         // 只改调用方守卫，不碰 Repositories.kt 的 toggle() 本体（数据层 D6-P1-2 修）。
         if (!favoriteToggleGuard.tryAcquire()) return
         _uiState.update { it.copy(isFavoriteToggling = true) }
-        viewModelScope.launch {
+        // B12-P2-4：切换开始时快照 key 与代次，写态前复核未变才写——init()
+        // 切新片后旧切换的 toggle() 可能已越过挂起点、取消拦不住，失败分支
+        // 的重读 isFavorite() 更是挂起调用，期间切新片必致旧片结果写到新片态上。
+        val toggleKey = currentKey
+        val toggleGen = generation
+        toggleJob = viewModelScope.launch {
             try {
                 val favorite = Favorite(
                     cover = current.poster,
@@ -257,10 +283,12 @@ class DetailViewModel @Inject constructor(
                 // B4-P1-1：收藏键用 init 的 currentKey（进入时的源/标题），不
                 // 再按当前结果重算——否则切源后收藏存到另一把键下，init 查
                 // isFavorite 时查不到，收藏态永远对不上（旧 P2-16 做法已废弃）。
-                val key = currentKey
+                // B12-P2-4：用切换开始时快照的 toggleKey，不在 launch 体内重读
+                // currentKey——init() 若已切新片，重读会把切换作用到新片上。
                 // B-P0-1：服务端写失败时 toggle 抛错（见 FavoritesRepository），
                 // 这里接住给失败提示、不崩溃，收藏态保持原值。
-                val nowFavorite = favoritesRepository.toggle(key, favorite)
+                val nowFavorite = favoritesRepository.toggle(toggleKey, favorite)
+                if (!shouldApplyToggleResult(toggleKey, currentKey, toggleGen, generation)) return@launch
                 _uiState.value = _uiState.value.copy(isFavorite = nowFavorite, favoriteError = null)
             } catch (e: CancellationException) {
                 throw e
@@ -270,12 +298,17 @@ class DetailViewModel @Inject constructor(
                 // 再抛错，重读读到的就是实态；重读本身失败时保留切换前旧态，
                 // 不二次崩溃（见 resolveFavoriteAfterToggleFailure）。
                 val reRead: Boolean? = try {
-                    favoritesRepository.isFavorite(currentKey)
+                    // B12-P2-4：重读按切换开始时快照的 key（被切走的旧片），
+                    // 不按可能已变的 currentKey——读新片的态再丢弃是白读，
+                    // 读旧片的态才是本次切换的服务端实态（守卫随后才决定写不写）。
+                    favoritesRepository.isFavorite(toggleKey)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
                     null
                 }
+                // B12-P2-4：重读是挂起调用，期间切新片时旧结果不得落到新片态上。
+                if (!shouldApplyToggleResult(toggleKey, currentKey, toggleGen, generation)) return@launch
                 _uiState.value = _uiState.value.copy(
                     isFavorite = resolveFavoriteAfterToggleFailure(reRead, state.isFavorite),
                     favoriteError = nextToastEvent("收藏失败，请检查网络后重试"),

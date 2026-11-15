@@ -329,13 +329,16 @@ class PlayRecordsRepository @Inject constructor(
                 // 冲成一条），只做合并；失败时仍用旧缓存里的断点兜底。
                 moonTvApi.getPlayRecords(baseUrl, key).also {
                     lastGoodRecords = lastGoodRecords?.plus(it) ?: it
-                    _loadFailed.value = false
+                    // B12-P2-6：单条查询成功不碰 _loadFailed——它本是“全表拉取
+                    // 失败”标记，只由 getAllWithKeys() 维护；单条成功会清掉全表
+                    // 失败标记，首页 stale 提示被误清（失败分支同理，见下）。
                 }[key]
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 // B-P2-20：拉取失败时用上次成功结果里的断点，不丢断点续播。
-                _loadFailed.value = true
+                // B12-P2-6：单条失败也不置 _loadFailed——全表标记只由
+                // getAllWithKeys() 维护，单条失败不代表全表失败。
                 lastGoodRecords?.get(key)
             }
         }

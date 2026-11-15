@@ -192,6 +192,8 @@ class HomeViewModel @Inject constructor(
         }
         if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem)
         // 回落豆瓣：走用户服务器的 /api/douban。
+        // B12-P2-5：agg 失败 + 豆瓣失败时行不再静默丢弃——loadDouban 失败即抛错，
+        // 走 loadRows() 的占位行；只有豆瓣成功返回空时才是双源都返回空，行不展示。
         val fallbackTag = category.fallbackTag ?: return emptyList()
         return loadDouban(category.doubanType ?: "tv", fallbackTag, baseUrl)
     }
@@ -200,15 +202,12 @@ class HomeViewModel @Inject constructor(
         loadDouban(category.doubanType ?: "movie", category.doubanTag ?: "热门", baseUrl)
 
     private suspend fun loadDouban(type: String, tag: String, baseUrl: String): List<HomeRowItem> =
-        // B4-P2-4：同上，runCatching 吞取消，改 try/catch 前置重抛。
-        try {
-            moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
-                .list.orEmpty().map(::mapDoubanItem)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
+        // B12-P2-5：豆瓣失败不再吞成空列表——之前失败与“成功返回空”都落到
+        // 空列表，loadCategory 无法区分、行被静默丢弃、无失败占位；现在失败
+        // 即抛错，走 loadRows() 的占位行（“该分类加载失败”），只有成功返回空
+        // 才是真的没内容、行不展示。取消原样抛出（不包进失败里）。
+        moonTvApi.getDoubanData(baseUrl, type, tag, pageSize = 20, pageStart = 0)
+            .list.orEmpty().map(::mapDoubanItem)
 }
 
 /**

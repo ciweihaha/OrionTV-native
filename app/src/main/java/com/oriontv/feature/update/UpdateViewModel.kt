@@ -216,20 +216,25 @@ class UpdateViewModel @Inject constructor(
                 // B5-P1-1：AggApi.version() 的 60 秒总超时是 TimeoutCancellationException
                 //（CancellationException 的子类），按普通失败落错误态、清 isChecking；
                 // 只有真取消（JobCancellationException）才重抛。
+                // B12-P2-7：静默检查失败不写 error——之前静默失败也走同一 catch
+                // 置 error，设置页底部红字长期挂着、无任何路径清掉；静默失败只记日志。
+                if (silent) AppLog.w("UpdateViewModel", "静默检查更新超时：${e.message}")
                 _uiState.update {
                     it.copy(
                         isChecking = false,
-                        error = "检查更新超时，请检查网络后重试",
+                        error = updateCheckErrorOrNull(silent, "检查更新超时，请检查网络后重试"),
                     )
                 }
             } catch (e: CancellationException) {
                 // D-P2-2：取消原样抛出，不转成 error 状态（ViewModel 清掉时本应直接取消）。
                 throw e
             } catch (e: Exception) {
+                // B12-P2-7：同上，静默检查失败不写 error，只记日志。
+                if (silent) AppLog.w("UpdateViewModel", "静默检查更新失败：${e.message}")
                 _uiState.update {
                     it.copy(
                         isChecking = false,
-                        error = versionCheckError(e),
+                        error = updateCheckErrorOrNull(silent, versionCheckError(e)),
                     )
                 }
             }
@@ -486,6 +491,14 @@ fun versionCheckError(e: Exception): String = when {
         "检查更新失败：服务端版本号格式异常，请稍后重试"
     else -> "检查更新失败：${e.message ?: "网络错误"}，请检查网络后重试"
 }
+
+/**
+ * B12-P2-7：更新检查失败的 error 落点（可单测）——静默检查失败不写 error
+ * （设置页只要 error != null 就在底部渲染红字，且没有任何路径清 error，
+ * 静默失败会让红字长期挂着）；手动检查失败才展示。
+ */
+internal fun updateCheckErrorOrNull(silent: Boolean, error: String): String? =
+    if (silent) null else error
 
 data class UpdateUiState(
     val currentVersion: String = "",

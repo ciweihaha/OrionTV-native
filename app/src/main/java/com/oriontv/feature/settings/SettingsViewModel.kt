@@ -188,35 +188,35 @@ class SettingsViewModel @Inject constructor(
                     // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
                     try { credentialsStore.clear() } catch (_: Exception) { }
                 }
+                // B12-P2-3：新地址与 StorageType 清空一次原子写——旧实现先写
+                // 两个地址、后清 StorageType，三次独立写，中间窗口里新地址配
+                // 旧 StorageType；clearStorageType 自身又是两次独立写。现一次
+                // edit {} 落四键（见 SettingsRepository.setSourceAddresses），
+                // 写失败时四键全不落盘、回滚旧地址再报“保存失败”。
+                // B4-P1-3：换源地址把 storageType 清为空（未知态），旧服务
+                // 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次
+                // 数据访问自动重拉，成功前按本地模式兜底并提示用户。
                 try {
-                    settingsRepository.setApiBaseUrl(state.apiUrl.trim())
-                    settingsRepository.setM3uUrl(state.m3uUrl.trim())
+                    settingsRepository.setSourceAddresses(
+                        state.apiUrl.trim(),
+                        state.m3uUrl.trim(),
+                        apiChanged,
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     // B7-P2-9：写新地址失败时回滚旧地址（登出已无法回滚，
                     // 至少地址不丢），再按原路报“保存失败”。
                     runCatching {
-                        settingsRepository.setApiBaseUrl(state.savedApiUrl)
-                        settingsRepository.setM3uUrl(state.savedM3uUrl)
+                        settingsRepository.setSourceAddresses(
+                            state.savedApiUrl,
+                            state.savedM3uUrl,
+                            false,
+                        )
                     }
                     throw e
                 }
-                // B4-P1-3：换源地址先把 storageType 清为空（未知态），旧服务
-                // 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次
-                // 数据访问自动重拉，成功前按本地模式兜底并提示用户。
                 var configFailed = false
-                if (apiChanged) {
-                    // B9-P2-2：成功后的附属写失败不进主流程失败分支——地址已落盘，
-                    // StorageType 清失败只记日志，下次访问自动重拉。
-                    try {
-                        settingsRepository.clearStorageType()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        AppLog.w("SettingsViewModel", "保存源地址：清 StorageType 失败，继续保存：${e.message}")
-                    }
-                }
                 if (state.apiUrl.trim().isNotBlank()) {
                     // B6-P2-10：30 秒失败缓存内的 null 不是“本次拉取失败”——
                     // 缓存期内不发请求、不报配置失败，下次数据访问越过缓存再试。

@@ -157,6 +157,14 @@ class SettingsRepository @Inject constructor(
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
 
     /**
+     * B12-P2-3：源地址三键一次原子写（见 SettingsDataStore.setSourceAddresses）——
+     * 新地址与 StorageType 清空同一次 edit 落盘，不留“新地址配旧 StorageType”
+     * 的中间窗口；写失败时四键全不落盘，调用方回滚旧地址即可。
+     */
+    suspend fun setSourceAddresses(apiUrl: String, m3uUrl: String, clearStorage: Boolean) =
+        settingsDataStore.setSourceAddresses(apiUrl, m3uUrl, clearStorage)
+
+    /**
      * B4-P1-3：把 StorageType 清为空（未知态）——换源地址时先清，旧服务
      * 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次数据访问
      * 自动重拉（ensureServerConfig），成功前按本地模式兜底。

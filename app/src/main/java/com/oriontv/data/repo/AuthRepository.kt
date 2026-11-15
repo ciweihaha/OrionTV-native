@@ -106,8 +106,16 @@ class AuthRepository @Inject constructor(
                 val epochBefore = manualLoginEpoch.get()
                 val restored = restoreSession()
                 if (!restored && !loggedOut && manualLoginEpoch.get() == epochBefore) {
-                    _isLoggedIn.value = false
-                    _showLoginModal.value = true
+                    // B12-P2-9：检查-后-写竞态——上面复核与下面写态之间，手动登录
+                    // 可能插进来（回调跑在 IO 线程，窗口极窄但真实存在），把刚登
+                    // 进去的会话又写回未登录、弹回登录框；写态前再复核一次代次
+                    // 与已退出标志，变了就不再碰登录态与弹窗。注意：这里不能再
+                    // 拿 _isLoggedIn.value 当门控——401 时它本就是 true（正要
+                    // 登出的过期会话），门控只能靠代次与 loggedOut。
+                    if (manualLoginEpoch.get() == epochBefore && !loggedOut) {
+                        _isLoggedIn.value = false
+                        _showLoginModal.value = true
+                    }
                 }
                 restored
             }
@@ -116,7 +124,11 @@ class AuthRepository @Inject constructor(
 
     /** 登录：成功写标记位 + 存凭据（供下次自动续期），失败返回原因。 */
     suspend fun login(username: String, password: String): Result<Unit> {
-        val baseUrl = settingsRepository.currentApiBaseUrl()
+        // B12-P2-1：DataStore 读失败即崩溃——这行原来在 try 块之外，上层
+        // AuthViewModel.login() 又是裸 launch 无 try/catch；同文件 logout() /
+        // checkLoginStatus() / performRestore() 三处同类读都包了 runOrDefault，
+        // 唯独这里漏了。读失败按“未配置服务器地址”返回，不崩溃。
+        val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) return Result.failure(IllegalStateException("还没有配置服务器地址"))
         _loginError.value = null
         return try {
