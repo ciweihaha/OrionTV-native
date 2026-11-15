@@ -22,6 +22,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
+import com.oriontv.ui.components.ModalFadeIn
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -105,6 +106,9 @@ fun UpdateCard(
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——卡片由调用方
     // `if (showUpdateCard)` 条件组合，卸载时整棵子树直接移除，exit 动画
     // 永远跑不到；留着只是死代码。
+    // C11-P2-3：入场淡入 150ms（设计稿 §4）——KDoc 一直写着淡入，代码却没有；
+    // 用 ModalFadeIn（MutableTransitionState false → true），只做入场、不改焦点。
+    ModalFadeIn {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -270,6 +274,7 @@ fun UpdateCard(
                 }
             }
         }
+    }
 }
 
 private fun formatApkSize(bytes: Long): String = when {

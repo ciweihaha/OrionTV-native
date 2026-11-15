@@ -69,6 +69,9 @@ class PlayScreenLogicTest {
         assertFalse(shouldAutoHideControls(true, false, true, false, false))
         assertFalse(shouldAutoHideControls(true, false, false, true, false))
         assertFalse(shouldAutoHideControls(true, false, false, false, true))
+        // C11-P1-1：全局弹窗开着时也不自动隐藏——5 秒到点会把焦点从弹窗偷回根部
+        assertFalse(shouldAutoHideControls(true, false, false, false, false, globalModalOpen = true))
+        assertTrue(shouldAutoHideControls(true, false, false, false, false, globalModalOpen = false))
     }
 
     @Test

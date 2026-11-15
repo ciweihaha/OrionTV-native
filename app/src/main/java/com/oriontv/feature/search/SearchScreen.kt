@@ -72,6 +72,11 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * C11-P2-1：全局弹窗（登录/更新卡片）是否正开着——开着时各焦点 effect
+     * 不抢焦点（与详情/首页/播放页的 globalModalOpen 门控同款）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -109,13 +114,14 @@ fun SearchScreen(
 
     // C5-P1-1：屏上键盘由开变关时焦点回搜索框——之前键盘关闭后焦点留在已
     // 卸载的键盘按键上，遥控器数秒内按什么都没反应。
+    // C11-P2-1：全局弹窗开着时不抢焦（弹窗关闭后由 tick effect 恢复）。
     var keyboardWasOpen by remember { mutableStateOf(false) }
     LaunchedEffect(showKeyboard) {
         if (showKeyboard) {
             keyboardWasOpen = true
         } else if (keyboardWasOpen) {
             keyboardWasOpen = false
-            searchRequester.requestFocus()
+            if (!globalModalOpen) searchRequester.requestFocus()
         }
     }
 
@@ -123,7 +129,11 @@ fun SearchScreen(
     // 结果可能仍在加载（返回时搜索在途），最多等 1 秒；等不到或键已不在
     // 结果里，回落搜索框。
     // C4-P1-2：弹窗关闭后 tick 变化也重跑同一条恢复路。
-    LaunchedEffect(focusRestoreTick) {
+    // C11-P2-1：全局弹窗开着时跳过本次抢焦，不置 initialFocusDone——
+    // 弹窗关闭后 tick +1 重跑本 effect 再落焦。key 加 globalModalOpen：
+    // 本 effect 有最长 1 秒的等待循环，弹窗在循环中途打开时也要取消抢焦。
+    LaunchedEffect(focusRestoreTick, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true
@@ -152,12 +162,15 @@ fun SearchScreen(
     // 无任何恢复——加载一开始就把焦点收回搜索框（网格卸载后焦点有明确落点）；
     // 搜索失败时落到错误态按钮（有“重试”落“重试”，无结果落“换个关键词”，
     // 都落不上才回搜索框）。
-    LaunchedEffect(uiState.isLoading) {
-        if (uiState.isLoading) {
+    // C11-P2-1：key 加 globalModalOpen——弹窗开着时跳过抢焦，关闭后 effect
+    // 重跑、按当前态（仍在加载落搜索框 / 已失败落错误态按钮）补落焦点。
+    LaunchedEffect(uiState.isLoading, globalModalOpen) {
+        if (uiState.isLoading && !globalModalOpen) {
             searchRequester.requestFocus()
         }
     }
-    LaunchedEffect(uiState.error) {
+    LaunchedEffect(uiState.error, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         val error = uiState.error ?: return@LaunchedEffect
         val landed = if (error is SearchError.Empty) {
             changeKeywordRequester.requestFocusWithRetry()
@@ -191,7 +204,8 @@ fun SearchScreen(
             modalWasOpen = true
         } else if (modalWasOpen) {
             modalWasOpen = false
-            scanButtonRequester.requestFocus()
+            // C11-P2-1：全局弹窗开着时不抢焦（弹窗关闭后由 tick effect 恢复）。
+            if (!globalModalOpen) scanButtonRequester.requestFocus()
         }
     }
 
@@ -295,6 +309,8 @@ fun SearchScreen(
                 onDismiss = { showRemoteInputModal = false },
                 // P2-14：服务未开启时弹窗内一键开启，不用退出搜索去设置。
                 onEnableRemoteInput = { viewModel.enableRemoteInput() },
+                // C11-P2-2：全局弹窗开着时扫码弹窗的返回处理让位给全局弹窗。
+                globalModalOpen = globalModalOpen,
             )
         }
 

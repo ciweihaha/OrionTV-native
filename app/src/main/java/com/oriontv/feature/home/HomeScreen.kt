@@ -65,6 +65,11 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * C11-P1-2：全局弹窗（登录/更新卡片）是否正开着——开着时行到达的焦点
+     * effect 不抢焦点（与详情页第 7 轮 P1-1 的门控同款，首页漏了）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     // 回栈后分类选择不重置（原 remember 会丢）。
@@ -147,7 +152,12 @@ fun HomeScreen(
     // effect A：以 rows 为键——返回时行若尚未加载完（refresh() 在途），
     // 等行回来再恢复；恢复只做一次，常驻期间 rows 变化（refreshRecent）
     // 不再抢焦点。
-    LaunchedEffect(uiState.rows) {
+    // C11-P1-2：全局弹窗开着时跳过本次抢焦（冷启动登录弹窗与首页数据到达
+    // 竞态时，焦点会被偷到弹窗底下的分类 chip 上）；不置 initialFocusDone/
+    // restoreDone，弹窗关闭后由下面的 tick effect（B）恢复。key 加
+    // globalModalOpen：弹窗开关即取消/重跑本 effect，不只靠到达时那一次判断。
+    LaunchedEffect(uiState.rows, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         if (!viewModel.initialFocusDone) {
             firstChipRequester.requestFocus()
             viewModel.initialFocusDone = true
@@ -158,9 +168,17 @@ fun HomeScreen(
     }
     // effect B：弹窗关闭后 tick 变化重跑恢复；行还在加载时跳过
     // （等 effect A 在行回来时恢复），不回落首 chip。
+    // C11-P1-2：effect A 因弹窗跳过时 initialFocusDone 仍为假，tick 恢复
+    // 也要能走首次落焦那条路（不只恢复已保存的卡片），否则首 chip 永远落不上。
     LaunchedEffect(focusRestoreTick) {
-        if (focusRestoreTick > 0 && viewModel.initialFocusDone) {
-            restoreSavedCard()
+        if (focusRestoreTick > 0) {
+            if (!viewModel.initialFocusDone) {
+                firstChipRequester.requestFocus()
+                viewModel.initialFocusDone = true
+                restoreDone = true
+            } else {
+                restoreSavedCard()
+            }
         }
     }
 

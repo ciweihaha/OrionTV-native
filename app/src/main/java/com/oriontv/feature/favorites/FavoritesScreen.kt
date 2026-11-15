@@ -60,6 +60,11 @@ fun FavoritesScreen(
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
     /**
+     * C11-P2-1：全局弹窗（登录/更新卡片）是否正开着——开着时恢复 effect
+     * 不抢焦点（与详情/首页/播放页的 globalModalOpen 门控同款）。
+     */
+    globalModalOpen: Boolean = false,
+    /**
      * 第 7 轮 P2-1：空态“去首页”的回栈动作（NavHost 传入 popUpTo(Home)
      * 路径）；为 null 时回落到 onNavigate(Home)（旧行为，防调用方漏传）。
      */
@@ -112,6 +117,10 @@ fun FavoritesScreen(
     }
     LaunchedEffect(uiState.items, uiState.isLoading, focusRestoreTick) {
         if (uiState.isLoading) return@LaunchedEffect
+        // C11-P2-1：全局弹窗开着时跳过本次抢焦——门控放在 restorePending/
+        // lastHandledTick 消费之前，否则恢复请求会被吞掉、弹窗关闭后也不再恢复；
+        // 弹窗关闭后 tick +1 重跑本 effect 再恢复。
+        if (globalModalOpen) return@LaunchedEffect
         if (!restorePending && focusRestoreTick == lastHandledTick) return@LaunchedEffect
         restorePending = false
         lastHandledTick = focusRestoreTick

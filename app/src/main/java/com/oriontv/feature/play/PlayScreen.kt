@@ -57,6 +57,7 @@ import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.LoadingAnimation
+import com.oriontv.ui.components.ModalSlideInRight
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -92,6 +93,8 @@ internal fun shouldRestoreRootFocusOnUp(
  * 控制条显示、抽屉关闭、无待定落点、无下一集预告、无错误页时才隐藏；
  * 错误页上计时器不武装——否则 5 秒后焦点被从“重试”拉回根部。
  * 旧版守卫没有错误页一项：错误出现不会取消已在跑的延时，到点仍抢焦点。
+ * C11-P1-1：全局弹窗开着时也不隐藏——弹窗盖在播放页上时 5 秒到点会把
+ * 焦点从弹窗偷回播放页根部，返回键直接退出播放页。
  */
 internal fun shouldAutoHideControls(
     controlsVisible: Boolean,
@@ -99,8 +102,10 @@ internal fun shouldAutoHideControls(
     hasPendingPreview: Boolean,
     showNextEpisode: Boolean,
     hasError: Boolean,
+    globalModalOpen: Boolean = false,
 ): Boolean =
-    controlsVisible && !drawerOpen && !hasPendingPreview && !showNextEpisode && !hasError
+    controlsVisible && !drawerOpen && !hasPendingPreview && !showNextEpisode && !hasError &&
+        !globalModalOpen
 
 /**
  * 落点预览 2 秒无操作是否应自动提交（可单测，P2-3）：
@@ -237,6 +242,12 @@ fun PlayScreen(
     viewModel: PlayViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * C11-P1-1：全局弹窗（登录/更新卡片）是否正开着——开着时控制条自动隐藏
+     * effect 与错误 effect 不隐藏、不抢焦点（与详情/直播页的 globalModalOpen
+     * 门控同款）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var controlsVisible by remember { mutableStateOf(true) }
@@ -355,16 +366,21 @@ fun PlayScreen(
     // 第 6 轮 P2-7：单次 requestFocus 改 requestFocusWithRetry（与抽屉/面板一致）——
     // 错误页首帧组合未完成时单次请求静默失败，焦点停在根部；仍失败回退到根。
     var hadError by remember { mutableStateOf(false) }
-    LaunchedEffect(uiState.error) {
+    // C11-P1-1：key 加 globalModalOpen——弹窗开着时不抢焦点（错误出现/消失
+    // 都不落焦），弹窗关闭后 effect 重跑、按当前态补落焦点（错误在落“重试”，
+    // 已消失落控制条首选按钮）；hadError 的记账不受门控影响。
+    LaunchedEffect(uiState.error, globalModalOpen) {
         if (uiState.error != null) {
             hadError = true
             // C8-P2-3：错误在抽屉打开时出现不直接落焦——“重试”按钮在遮罩下，
             // 焦点会被抢过去；先关抽屉，抽屉关闭 effect 再把焦点落到“重试”。
-            if (uiState.drawer != null) {
-                errorPendingAfterDrawerClose = true
-                viewModel.openDrawer(null)
-            } else if (!errorRetryRequester.requestFocusWithRetry()) {
-                rootRequester.requestFocus()
+            if (!globalModalOpen) {
+                if (uiState.drawer != null) {
+                    errorPendingAfterDrawerClose = true
+                    viewModel.openDrawer(null)
+                } else if (!errorRetryRequester.requestFocusWithRetry()) {
+                    rootRequester.requestFocus()
+                }
             }
         } else if (hadError) {
             hadError = false
@@ -372,7 +388,9 @@ fun PlayScreen(
             // 第 7 轮 P2-8：错误消失后焦点回控制条首选按钮也改 requestFocusWithRetry——
             // 与错误出现分支（已改重试版）不对称，单次请求在控制条尚未完成组合时
             // 静默失败，焦点回根，用户需多按一次下键才能进按钮行。
-            if (!controlsFirstButtonRequester.requestFocusWithRetry()) rootRequester.requestFocus()
+            if (!globalModalOpen) {
+                if (!controlsFirstButtonRequester.requestFocusWithRetry()) rootRequester.requestFocus()
+            }
         }
     }
 
@@ -435,17 +453,21 @@ fun PlayScreen(
     // 第 7 轮 P2-5：key 补 previewTargetMs——守卫读它，key 却漏了它；落点在
     // effect 已起跑后出现时守卫取的是旧值。目前无可达路径（每次 nudge 都先
     // pokeControls 重启 effect，2 秒提交远小于 5 秒隐藏），属防御性缺口。
-    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error, previewTargetMs) {
+    // C11-P1-1：key 加 globalModalOpen、守卫与到点复核都加弹窗门控——
+    // 登录/更新弹窗盖在播放页上时，5 秒到点不能把焦点从弹窗偷回根部，
+    // 否则返回键直接退出播放页；弹窗关闭后 effect 重跑、5 秒计时重算。
+    LaunchedEffect(controlsTick, uiState.drawer, uiState.showNextEpisode, uiState.error, previewTargetMs, globalModalOpen) {
         if (shouldAutoHideControls(
                 controlsVisible,
                 uiState.drawer != null,
                 previewTargetMs >= 0,
                 uiState.showNextEpisode,
                 uiState.error != null,
+                globalModalOpen,
             )
         ) {
             delay(5000)
-            if (uiState.error == null) {
+            if (uiState.error == null && !globalModalOpen) {
                 controlsVisible = false
                 rootRequester.requestFocus()
             }
@@ -927,6 +949,9 @@ private fun PlayDrawerPanel(
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——抽屉由调用方
     // `if (drawer != null)` 条件组合，卸载时整棵子树直接移除，exit 动画
     // 永远跑不到；留着只是死代码（enter 滑入也随挂载直接出现）。
+    // C11-P2-3：入场滑入 180ms（设计稿 §4）——KDoc 一直写着滑入，代码却没有；
+    // 用 ModalSlideInRight（MutableTransitionState false → true），只做入场、不改焦点。
+    ModalSlideInRight {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -945,6 +970,7 @@ private fun PlayDrawerPanel(
             Spacer(modifier = Modifier.height(16.dp))
             content()
         }
+    }
     }
 }
 

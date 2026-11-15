@@ -1,5 +1,10 @@
 package com.oriontv.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -40,6 +45,43 @@ fun nextToastEvent(message: String): ToastEvent =
     ToastEvent(toastEventIdCounter.incrementAndGet(), message)
 
 /**
+ * 弹窗入场淡入 150ms（ui-design.md §4，C11-P2-3）：
+ * 调用方用 `if (show)` 条件组合，卸载时整棵子树直接移除、exit 动画跑不到，
+ * 只做入场淡入；淡入只改透明度，不改布局与焦点行为。
+ * 用 MutableTransitionState(false → true) 而不是恒 visible=true 的
+ * AnimatedVisibility——后者是第 6 轮删掉的死代码（enter 永远不触发）。
+ */
+@Composable
+fun ModalFadeIn(content: @Composable () -> Unit) {
+    val transitionState = remember { MutableTransitionState(false).apply { targetState = true } }
+    AnimatedVisibility(
+        visibleState = transitionState,
+        enter = fadeIn(animationSpec = tween(150)),
+    ) {
+        content()
+    }
+}
+
+/**
+ * 面板入场滑入 180ms（ui-design.md §4，C11-P2-3）：右侧面板从右滑入，
+ * 与直播频道面板的 AnimatedVisibility（180ms 滑入）同款时序；
+ * 只做入场滑入，不改布局与焦点行为。
+ */
+@Composable
+fun ModalSlideInRight(content: @Composable () -> Unit) {
+    val transitionState = remember { MutableTransitionState(false).apply { targetState = true } }
+    AnimatedVisibility(
+        visibleState = transitionState,
+        enter = slideInHorizontally(
+            initialOffsetX = { it },
+            animationSpec = tween(180),
+        ),
+    ) {
+        content()
+    }
+}
+
+/**
  * 确认弹窗（ui-design.md §5.8）：
  * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；焦点默认落在主按钮上
  * （M1 接 FocusRequester 锚点）；登录失败红字提示；弹窗淡入 150ms（§4）。
@@ -59,6 +101,9 @@ fun ConfirmDialog(
     androidx.compose.runtime.LaunchedEffect(Unit) { confirmRequester.requestFocus() }
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方条件组合，
     // 卸载时整棵子树直接移除，exit 动画永远跑不到；留着只是死代码。
+    // C11-P2-3：入场淡入 150ms（设计稿 §4）——KDoc 一直写着淡入，代码却没有；
+    // 用 ModalFadeIn（MutableTransitionState false → true），只做入场、不改焦点。
+    ModalFadeIn {
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -111,6 +156,7 @@ fun ConfirmDialog(
                 )
             }
         }
+    }
     }
 }
 

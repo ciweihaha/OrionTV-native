@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.ui.components.ModalFadeIn
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -44,7 +45,7 @@ import com.oriontv.ui.theme.OrionTextStyles
 
 /**
  * 登录弹窗（ui-design.md §5.8）：
- * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；
+ * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；弹窗淡入 150ms（§4，C11-P2-3）；
  * 账号 + 密码 + 登录按钮，失败红字提示；焦点默认落在主按钮上
  * （M1 接 FocusRequester 锚点）；会话自动续期，仅过期时重新弹。
  */
@@ -68,6 +69,9 @@ fun LoginModal(
 
     val shownError = error ?: localError
 
+    // C11-P2-3：入场淡入 150ms（设计稿 §4）——与其他弹窗同款 ModalFadeIn，
+    // 只做入场、不改布局与焦点行为。
+    ModalFadeIn {
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -153,6 +157,7 @@ fun LoginModal(
                 )
             }
         }
+    }
     }
 }
 

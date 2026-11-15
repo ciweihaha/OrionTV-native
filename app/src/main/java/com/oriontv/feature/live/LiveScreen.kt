@@ -67,6 +67,7 @@ import com.oriontv.ui.components.BrandProgressBar
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.ConfirmDialog
 import com.oriontv.ui.components.LoadingAnimation
+import com.oriontv.ui.components.ModalFadeIn
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
@@ -253,6 +254,8 @@ fun LiveScreen(
     // C4-P1-2：弹窗关闭后 tick 变化也重跑。
     // A5-P1-3：失败页消失（playbackFailed 由真变假）也重跑——断流失败页上
     // 按上下键/数字键换台后失败页卸载，焦点曾留在已卸载的“重试”按钮上。
+    // C11-P2-1：key 加 globalModalOpen、条件加弹窗门控——全局弹窗开着时
+    // 不把焦点抢回根部（弹窗关闭后 effect 重跑再恢复，与其他页同款）。
     LaunchedEffect(
         uiState.panelOpen,
         uiState.epgDialogChannel,
@@ -260,6 +263,7 @@ fun LiveScreen(
         uiState.playbackFailed,
         uiState.channels.isEmpty(),
         focusRestoreTick,
+        globalModalOpen,
     ) {
         // 第 7 轮 P1-2：面板关闭时分组行焦点态复位，不带到下次打开。
         if (!uiState.panelOpen) {
@@ -267,7 +271,7 @@ fun LiveScreen(
             panelGroupFirstChipFocused = false
         }
         if (uiState.channels.isNotEmpty() && !uiState.panelOpen &&
-            uiState.epgDialogChannel == null && !uiState.exitConfirmOpen
+            uiState.epgDialogChannel == null && !uiState.exitConfirmOpen && !globalModalOpen
         ) {
             // A8-P2-2：失败页消失后的根焦点恢复也是单次，改重试版。
             rootRequester.requestFocusWithRetry()
@@ -503,6 +507,7 @@ fun LiveScreen(
                 loadError = uiState.loadError,
                 onGoSettings = { onNavigate(OrionRoute.Settings) },
                 onRetry = { viewModel.reload() },
+                globalModalOpen = globalModalOpen,
             )
         }
 
@@ -514,6 +519,7 @@ fun LiveScreen(
                     rootRequester.requestFocus()
                 },
                 onOpenPanel = { viewModel.openPanel() },
+                globalModalOpen = globalModalOpen,
             )
         }
 
@@ -617,10 +623,12 @@ private fun EmptyState(
     loadError: String?,
     onGoSettings: () -> Unit,
     onRetry: () -> Unit,
+    /** C11-P2-1：全局弹窗开着时挂载也不抢焦（弹窗关闭后由根焦点 effect 恢复）。 */
+    globalModalOpen: Boolean = false,
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(Unit) { requester.requestFocusWithRetry() }
+    LaunchedEffect(Unit) { if (!globalModalOpen) requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -669,10 +677,12 @@ private fun EmptyState(
 private fun PlaybackFailedOverlay(
     onRetry: () -> Unit,
     onOpenPanel: () -> Unit,
+    /** C11-P2-1：全局弹窗开着时挂载也不抢焦（弹窗关闭后由根焦点 effect 恢复）。 */
+    globalModalOpen: Boolean = false,
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(Unit) { requester.requestFocusWithRetry() }
+    LaunchedEffect(Unit) { if (!globalModalOpen) requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1144,6 +1154,9 @@ private fun EpgDialog(
         }
     }
 
+    // C11-P2-3：入场淡入 150ms（设计稿 §4）——与其他弹窗同款 ModalFadeIn，
+    // 只做入场、不改布局与焦点行为。
+    ModalFadeIn {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1230,6 +1243,7 @@ private fun EpgDialog(
                 )
             }
         }
+    }
     }
 }
 

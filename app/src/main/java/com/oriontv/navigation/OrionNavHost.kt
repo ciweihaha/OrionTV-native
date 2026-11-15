@@ -213,6 +213,8 @@ fun OrionNavHost(
                     HomeScreen(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
+                        // C11-P1-2：全局弹窗开着时行到达的焦点 effect 不抢焦。
+                        globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }
                 composable<OrionRoute.Live> {
@@ -288,18 +290,25 @@ fun OrionNavHost(
                         positionMs = route.positionMs,
                         onBack = { navController.popBackStack() },
                         focusRestoreTick = focusRestoreTick,
+                        // C11-P1-1：全局弹窗开着时自动隐藏与错误 effect 不抢焦点。
+                        globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }
                 composable<OrionRoute.Search> {
                     SearchScreen(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
+                        // C11-P2-1/P2-2：全局弹窗开着时各焦点 effect 不抢焦，
+                        // 扫码弹窗的返回处理让位给全局弹窗。
+                        globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }
                 composable<OrionRoute.Favorites> {
                     FavoritesScreen(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
+                        // C11-P2-1：全局弹窗开着时恢复 effect 不抢焦。
+                        globalModalOpen = showLoginModal || showUpdateCard,
                         // 第 7 轮 P2-1：空态“去首页”回栈到已有的 Home，不压新 Home。
                         onGoHome = navigateHome,
                     )
@@ -311,6 +320,8 @@ fun OrionNavHost(
                         onBack = { navController.popBackStack() },
                         updateViewModel = updateViewModel,
                         focusRestoreTick = focusRestoreTick,
+                        // C11-P2-2：全局弹窗开着时二维码弹窗的返回处理让位。
+                        globalModalOpen = showLoginModal || showUpdateCard,
                     )
                 }
             }

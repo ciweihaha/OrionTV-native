@@ -86,6 +86,11 @@ fun SettingsScreen(
     updateViewModel: UpdateViewModel,
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
+    /**
+     * C11-P2-2：全局弹窗（登录/更新卡片）是否正开着——二维码弹窗的返回处理
+     * 开着时让位给全局弹窗（见 RemoteInputModal 的 BackHandler 门控）。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
@@ -338,6 +343,8 @@ fun SettingsScreen(
             onDismiss = { showQrModal = false },
             // P2-14：服务未启动时弹窗内一键开启。
             onEnableRemoteInput = { viewModel.setRemoteInputEnabled(true) },
+            // C11-P2-2：全局弹窗开着时扫码弹窗的返回处理让位给全局弹窗。
+            globalModalOpen = globalModalOpen,
         )
     }
 }

@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
+import com.oriontv.ui.components.ModalFadeIn
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -57,13 +58,21 @@ fun RemoteInputModal(
     onEnableRemoteInput: (() -> Unit)? = null,
     /** 当前配对码剩余有效秒数（P2-8 倒计时；null = 未签发，显示“5 分钟内有效”）。 */
     pairingCodeRemainingSeconds: Int? = null,
+    /**
+     * C11-P2-2：全局弹窗（登录/更新卡片）是否正开着——开着时扫码弹窗的
+     * BackHandler 让位：全局弹窗视觉上在扫码弹窗之上，返回键应先关全局
+     * 弹窗（NavHost 的 handler），而不是关底下的扫码弹窗。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     val closeRequester = remember { FocusRequester() }
     val enableRequester = remember { FocusRequester() }
 
     // C4-P1-3：扫码弹窗处理返回键（之前按返回直接走默认返回，弹窗不关、页面被 pop）。
-    BackHandler { onDismiss() }
+    // C11-P2-2：全局弹窗开着时本 handler 让位（后注册优先，关掉它会抢在
+    // NavHost 的全局 handler 之前、关掉视觉上在底下的扫码弹窗）。
+    BackHandler(enabled = !globalModalOpen) { onDismiss() }
 
     LaunchedEffect(serverUrl) {
         qrBitmap = if (serverUrl.isNullOrBlank()) {
@@ -92,6 +101,9 @@ fun RemoteInputModal(
     // C6-P2-1：删掉恒 visible=true 的 AnimatedVisibility——弹窗由调用方
     // `if (showRemoteInputModal)` 条件组合，卸载时整棵子树直接移除，exit
     // 动画永远跑不到；留着只是死代码。
+    // C11-P2-3：入场淡入 150ms（设计稿 §4）——KDoc 一直写着淡入，代码却没有；
+    // 用 ModalFadeIn（MutableTransitionState false → true），只做入场、不改焦点。
+    ModalFadeIn {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -191,4 +203,5 @@ fun RemoteInputModal(
                 }
             }
         }
+    }
 }
