@@ -38,6 +38,27 @@ class HomeCacheTest {
         cache.put("电影", (1..50).map { item("片$it") })
         assertEquals(40, cache.get("电影")?.size)
     }
+
+    @Test
+    fun `source kind is stored with page one and returned on hit`() {
+        val cache = HomeCache()
+        cache.put("电影", listOf(item("A")), RowSource.CMS)
+        assertEquals(RowSource.CMS, cache.getSourceKind("电影"))
+        cache.put("热门剧集", listOf(item("B")), RowSource.DOUBAN)
+        assertEquals(RowSource.DOUBAN, cache.getSourceKind("热门剧集"))
+    }
+
+    @Test
+    fun `source kind is null when not recorded or expired`() {
+        var now = 0L
+        val cache = HomeCache(nowMs = { now })
+        cache.put("电影", listOf(item("A")))
+        assertNull(cache.getSourceKind("电影"))
+        cache.put("电视剧", listOf(item("B")), RowSource.CMS)
+        now += HomeCache.CACHE_TTL_MS + 1
+        assertNull(cache.getSourceKind("电视剧"))
+        assertNull(cache.get("电视剧"))
+    }
 }
 
 class HomeModelsTest {

@@ -36,6 +36,12 @@ data class HomeRow(
     val items: List<HomeRowItem>,
     /** P2-9：单行加载失败时的占位文案（null = 正常行）。 */
     val error: String? = null,
+    /** 分类浏览分页：是否还有下一页可取（最近播放行与无分页的行恒为 false）。 */
+    val hasMore: Boolean = false,
+    /** 分类浏览分页：是否正在取下一页。 */
+    val isLoadingMore: Boolean = false,
+    /** 分类浏览分页：取下一页失败时的文案（null = 没失败过；失败不丢已有卡片，移开焦点再回来即重试）。 */
+    val loadMoreError: String? = null,
 )
 
 /** 首页 7 个点播分类（ui-design.md §5.1；CMS 类型对照 plan 附录 B）。 */
@@ -111,6 +117,19 @@ fun normalizeTitle(title: String): String =
 fun dedupeAggItems(items: List<HomeRowItem>): List<HomeRowItem> {
     val seen = LinkedHashSet<String>()
     return items.filter { seen.add(normalizeTitle(it.title)) }
+}
+
+/**
+ * 分类浏览分页：把新取回的一页追加到已有卡片后（纯函数，可单测）。
+ * 已有卡片优先——新页里与已有卡片同名（归一化片名）的丢弃，不顶掉旧卡；
+ * 新页内部也去重。追加后总长度不截断（分页行不走 HomeCache 的 40 条上限，
+ * 缓存只存第 1 页）。
+ */
+fun appendPageItems(existing: List<HomeRowItem>, page: List<HomeRowItem>): List<HomeRowItem> {
+    if (page.isEmpty()) return existing
+    val seen = LinkedHashSet<String>()
+    existing.forEach { seen.add(normalizeTitle(it.title)) }
+    return existing + page.filter { seen.add(normalizeTitle(it.title)) }
 }
 
 /** “剩余 xx 分钟”：总时长 − 已播，向上取整分钟；播完/无时长时返回 null。 */

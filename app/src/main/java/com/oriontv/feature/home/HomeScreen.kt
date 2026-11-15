@@ -283,6 +283,15 @@ fun HomeScreen(
                             color = OrionColors.TextSecondary,
                         )
                     }
+                    // 分类浏览分页：取下一页失败不丢已有卡片，行尾留一句失败文案，
+                    // 焦点移开再回来即重试（loadMore 失败后 hasMore 仍为真）。
+                    if (row.loadMoreError != null) {
+                        Text(
+                            text = row.loadMoreError,
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.TextSecondary,
+                        )
+                    }
                     LazyRow(
                         state = rowListStates.getOrPut(row.title) { LazyListState() },
                         horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
@@ -333,6 +342,14 @@ fun HomeScreen(
                                 },
                                 onFocused = {
                                     viewModel.savedFocusKey = homeFocusKey(row.title, item)
+                                    // 分类浏览分页：电视遥控按方向键逐张移动，焦点位置即滚动
+                                    // 位置；焦点到行尾附近（还剩 3 张）时取下一页。
+                                    // ViewModel 的状态机门控会拦下重复触发、取数中与已到底的行。
+                                    if (row.hasMore &&
+                                        cardIndex >= row.items.size - RowPagingState.FOCUS_THRESHOLD
+                                    ) {
+                                        viewModel.loadMore(row.title)
+                                    }
                                 },
                                 modifier = Modifier
                                     .width(cardWidth)
@@ -342,6 +359,17 @@ fun HomeScreen(
                                         },
                                     ),
                             )
+                        }
+                        // 分类浏览分页：正在取下一页时行尾挂一句提示（新卡片追加进来后焦点不丢）。
+                        if (row.isLoadingMore) {
+                            item {
+                                Text(
+                                    text = "加载更多中…",
+                                    style = OrionTextStyles.Body,
+                                    color = OrionColors.TextSecondary,
+                                    modifier = Modifier.width(cardWidth),
+                                )
+                            }
                         }
                     }
                 }
