@@ -329,28 +329,34 @@ class UpdateDownloaderResumeTest {
             }.build()
             val downloader = UpdateDownloader(client, Dispatchers.IO)
             val dest = File(dir, "OrionTV_v2.0.0.apk")
+            // 断言一律放在 runBlocking 外面、各自独立一行：挂起 lambda 里的
+            // 断言失败时堆栈只报 runBlocking 行，分不清是哪一环；放外面后
+            // 失败行号直接指明卡点（没进体读 / 没抛取消异常 / 超时兜底）。
+            val readEntered: Boolean
+            val thrown: CancellationException?
             runBlocking {
                 // 下载跑在 IO 线程：阻塞的 read() 占一条线程，主线程仍可取消。
                 val job = async(Dispatchers.IO) {
                     downloader.downloadApk("https://example.com/orionTV.apk", dest)
                 }
-                assertTrue(body.readStarted.await(10, TimeUnit.SECONDS))
+                readEntered = body.readStarted.await(10, TimeUnit.SECONDS)
                 job.cancel()
                 // 同 ApiClientTest 的 D7-P2-4 写法：5 秒护栏内 join 应以
                 // 下载自身的 CancellationException 返回；若取消递送不到，
-                // withTimeout 先抛 TimeoutCancellationException，断言失败。
-                val thrown: CancellationException? = try {
+                // withTimeout 先抛 TimeoutCancellationException。
+                thrown = try {
                     withTimeout(5_000) { job.join() }
                     null
                 } catch (e: CancellationException) {
                     e
                 }
-                assertNotNull("取消的下载应抛 CancellationException", thrown)
-                assertTrue(
-                    "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
-                    thrown !is TimeoutCancellationException,
-                )
             }
+            assertTrue("下载应在 10 秒内进入体读", readEntered)
+            assertNotNull("取消的下载应抛 CancellationException", thrown)
+            assertTrue(
+                "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
+                thrown !is TimeoutCancellationException,
+            )
             assertTrue(dest.exists())
         } finally {
             dir.deleteRecursively()
