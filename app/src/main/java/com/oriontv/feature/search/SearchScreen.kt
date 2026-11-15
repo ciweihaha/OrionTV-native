@@ -104,6 +104,15 @@ fun SearchScreen(
             searchTextFieldValue = TextFieldValue(uiState.query, TextRange(uiState.query.length))
         }
     }
+    // Jewel 第 8 轮 P1-1：加载开始即抢焦点时，必须区分焦点在哪——
+    // 焦点在屏上键盘按键上时绝不能收回搜索框（遥控逐字输入时每敲一字、
+    // 300ms 防抖一到就被偷走，键盘基本不可用）；焦点在结果区时才收回
+    // （C8-P1-3 原意图：远程输入触发新搜索、结果网格卸载后焦点有明确落点）。
+    // 不能在 effect 里现读结果区焦点态：加载开始的同时结果网格即卸载，
+    // 焦点随卸载节点一起丢失，现读到的已是 false、该收回的场景反而收不回；
+    // 故用 latch——进入结果区时置位，落到搜索框/键盘时才清掉。
+    var keyboardHasFocus by remember { mutableStateOf(false) }
+    var resultsAreaHadFocus by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
     // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
@@ -121,6 +130,10 @@ fun SearchScreen(
             keyboardWasOpen = true
         } else if (keyboardWasOpen) {
             keyboardWasOpen = false
+            // Jewel 第 8 轮 P1-1：键盘卸载时键盘焦点态不再回调，手动清掉，
+            // 不留陈旧的 keyboardHasFocus 拦住后续的加载抢焦。
+            keyboardHasFocus = false
+            // C11-P2-1：全局弹窗开着时不抢焦（弹窗关闭后由 tick effect 恢复）。
             if (!globalModalOpen) searchRequester.requestFocus()
         }
     }
@@ -135,11 +148,15 @@ fun SearchScreen(
     // C12-P1-5：扫码弹窗开着时同样不抢——全局弹窗关闭的 tick 会重跑本
     // effect，焦点会被抢出扫码弹窗；扫码弹窗关闭后由它自己的关闭 effect
     // 把焦点还给触发点。
+    // Jewel 第 8 轮 P2-4：无保存键时不轮询——findSavedResult(null) 恒 -1，
+    // 空转 10×100ms 才回落，白白拖慢弹窗关闭后的焦点恢复 1 秒。
     LaunchedEffect(focusRestoreTick, globalModalOpen) {
         if (!shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) return@LaunchedEffect
         if (!viewModel.initialFocusDone) {
             searchRequester.requestFocus()
             viewModel.initialFocusDone = true
+        } else if (!shouldPollSavedResult(viewModel.savedResultKey)) {
+            searchRequester.requestFocus()
         } else {
             // P2-9：按条目键恢复；返回时结果可能仍在加载，最多等 1 秒。
             val key = viewModel.savedResultKey
@@ -170,8 +187,21 @@ fun SearchScreen(
     // C13-P2-1：加扫码弹窗门控——C12-P1-5 只给 tick effect 加了，加载/错误
     // 两个 effect 只有全局弹窗门控；扫码弹窗开着时搜索加载/失败会把焦点抢出
     // 弹窗。恢复口：扫码弹窗关闭后由它自己的关闭 effect 把焦点还给触发点。
+    // Jewel 第 8 轮 P1-1：旧实现无守卫——屏上键盘每敲一字、300ms 防抖一到、
+    // 搜索一开始就把焦点从键盘按键上偷回搜索框，遥控逐字输入基本不可用。
+    // 改为只在焦点确实在结果区时才收回（见 shouldReclaimSearchFocusOnLoading）：
+    // 焦点在键盘按键上时不动；扫码弹窗开着时不动（焦点在弹窗内）。
+    // 结果区 latch 的道理见上面 resultsAreaHadFocus 的注释。
+    // 两道门控取合取：C13-P2-1 的全局/扫码弹窗门控与 P1-1 的结果区 latch
+    // 门控都要过才收回，任一不满足都不抢焦。
     LaunchedEffect(uiState.isLoading, globalModalOpen) {
-        if (uiState.isLoading && shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) {
+        if (uiState.isLoading && shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal) &&
+            shouldReclaimSearchFocusOnLoading(
+                resultsAreaHadFocus = resultsAreaHadFocus,
+                keyboardHasFocus = keyboardHasFocus,
+                remoteInputModalOpen = showRemoteInputModal,
+            )
+        ) {
             searchRequester.requestFocus()
         }
     }
@@ -258,7 +288,12 @@ fun SearchScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .preferredFocus(searchRequester)
-                        .onFocusChanged { searchBoxFocused = it.isFocused }
+                        .onFocusChanged {
+                            searchBoxFocused = it.isFocused
+                            // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
+                            // 后续加载不再重复收回。
+                            if (it.isFocused) resultsAreaHadFocus = false
+                        }
                         .onPreviewKeyEvent { event ->
                             // C10-P2-1：隧道阶段先于输入框自己的光标移动，读到的是
                             // 移动前位置；只快照、不消费（C7-P2-3 同款）。
@@ -329,17 +364,35 @@ fun SearchScreen(
         // 都是“搜完”，都收起，不再盖住下方结果区）。
         if (showKeyboard) {
             Spacer(modifier = Modifier.height(16.dp))
-            OnScreenKeyboard(
-                query = uiState.query,
-                onQueryChange = { viewModel.onQueryChange(it) },
-                onSearch = {
-                    showKeyboard = false
-                    viewModel.searchNow(uiState.query)
+            // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
+            // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
+            Box(
+                modifier = Modifier.onFocusChanged {
+                    keyboardHasFocus = it.hasFocus
+                    if (it.hasFocus) resultsAreaHadFocus = false
                 },
-                onDismiss = { showKeyboard = false },
-            )
+            ) {
+                OnScreenKeyboard(
+                    query = uiState.query,
+                    onQueryChange = { viewModel.onQueryChange(it) },
+                    onSearch = {
+                        showKeyboard = false
+                        viewModel.searchNow(uiState.query)
+                    },
+                    onDismiss = { showKeyboard = false },
+                )
+            }
         }
 
+        // Jewel 第 8 轮 P1-1：结果区容器（联想 chip + 历史 chip + 结果/错误区）——
+        // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
+        // effect 凭 latch（而非卸载后的现读焦点态）决定收回搜索框。
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
+        ) {
         // 联想 chip（输入时出现，点按直接搜）。
         if (uiState.suggestions.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
@@ -482,6 +535,7 @@ fun SearchScreen(
                 )
             }
         }
+        } // Jewel 第 8 轮 P1-1：结果区容器结束。
 
         // B6-P2-11：Toast 底部居中。
         if (uiState.toast != null) {
