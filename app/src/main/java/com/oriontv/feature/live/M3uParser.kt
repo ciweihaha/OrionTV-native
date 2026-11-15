@@ -26,6 +26,15 @@ object M3uParser {
      */
     const val MAX_CHANNELS = 20_000
 
+    /**
+     * 第 8 轮 D8-P2-4：`#EXTINF:` 行头大小写不敏感——源文件用小写 `#extinf:`
+     * 时旧实现整份解析出 0 台、直播空态；行内属性名仍按原样取（extractAttrs
+     * 不动）。内外两处循环都要走这里：内层不认小写时，无地址的频道会把
+     * 下一个小写 `#extinf:` 行当 `#` 行跳过、误吞下一台的地址。
+     */
+    internal fun isExtinfLine(line: String): Boolean =
+        line.startsWith("#EXTINF:", ignoreCase = true)
+
     @Serializable
     data class Channel(
         val id: String,
@@ -45,7 +54,7 @@ object M3uParser {
         var i = 0
         while (i < lines.size) {
             val line = lines[i].trim()
-            if (line.startsWith("#EXTINF:")) {
+            if (isExtinfLine(line)) {
                 val name = extractName(line)
                 val attrs = extractAttrs(line)
                 // 下一行非 # 开头且含 :// 的为流地址；#EXTINF 与地址之间的
@@ -58,7 +67,7 @@ object M3uParser {
                         j++
                         continue
                     }
-                    if (next.startsWith("#EXTINF:")) break
+                    if (isExtinfLine(next)) break
                     if (next.startsWith("#")) {
                         j++
                         continue

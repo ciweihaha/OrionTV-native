@@ -207,4 +207,47 @@ class M3uParserTest {
         assertEquals("Channel0", channels.first().name)
         assertEquals("Channel${M3uParser.MAX_CHANNELS - 1}", channels.last().name)
     }
+
+    @Test
+    fun `lowercase extinf lines parse`() {
+        // D8-P2-4：#EXTINF: 行头大小写不敏感——源文件用小写 #extinf: 时
+        // 旧实现整份解析出 0 台、直播空态。
+        val content = """
+            #EXTM3U
+            #extinf:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1.m3u8
+            #extinf:-1 tvg-id="cctv2",CCTV2
+            http://example.com/cctv2.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV2"), channels.map { it.name })
+    }
+
+    @Test
+    fun `mixed case extinf lines parse`() {
+        // D8-P2-4 的另一半：大小写混用的行头同样识别，行内属性按原样取。
+        val content = """
+            #EXTM3U
+            #ExTiNf:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(1, channels.size)
+        assertEquals("CCTV1", channels[0].name)
+        assertEquals("cctv1", channels[0].tvgId)
+    }
+
+    @Test
+    fun `lowercase channel without url does not swallow the next channel`() {
+        // D8-P2-4 的内层循环同款：小写 #extinf 行缺地址时，下一台的地址
+        // 不得被错认成上一台的——内层遇小写 #extinf 即停。
+        val content = """
+            #EXTM3U
+            #extinf:-1 tvg-id="a",ChannelA
+            #extinf:-1 tvg-id="b",ChannelB
+            http://example.com/b.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("ChannelB"), channels.map { it.name })
+    }
 }

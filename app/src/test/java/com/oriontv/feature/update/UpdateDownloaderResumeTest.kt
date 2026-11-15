@@ -14,9 +14,12 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSource
 import okio.ForwardingSource
+import okio.Source
+import okio.Timeout
 import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -257,6 +260,83 @@ class UpdateDownloaderResumeTest {
         assertFalse(shouldTreat416AsComplete(400, 1000))
         assertFalse(shouldTreat416AsComplete(1000, null))
         assertFalse(shouldTreat416AsComplete(0, 1000))
+    }
+
+    /**
+     * 服务端中途停顿、read() 一直阻塞的响应体（模拟弱网下未到 60 秒读超时
+     * 的停顿）。体被关掉时放行阻塞的读并抛错——与真实 OkHttp 关响应体断
+     * socket 的行为同款。
+     */
+    private class StallingBody : ResponseBody() {
+        override fun contentLength() = 1024L
+        override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
+
+        /** 第一次 read() 已进入阻塞（测试据此再取消）。 */
+        val readStarted = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+
+        @Volatile
+        var closed = false
+
+        override fun source(): BufferedSource {
+            return object : Source {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    readStarted.countDown()
+                    // 停顿 10 秒兜底：无修复时取消递送不到阻塞的读，读会等满
+                    // 10 秒后返回 -1、下载“正常”下完（0 字节），外面的
+                    // assertThrows 因没抛取消异常而失败——有修复时关体立即
+                    // 放行，远不到兜底。
+                    release.await(10, TimeUnit.SECONDS)
+                    if (closed) throw IOException("body closed")
+                    return -1
+                }
+
+                override fun timeout(): Timeout = Timeout.NONE
+
+                override fun close() {
+                    closed = true
+                    release.countDown()
+                }
+            }.buffer()
+        }
+    }
+
+    @Test
+    fun `cancel during stalled body read stops promptly`() {
+        // D8-P2-2：服务端停顿、read() 阻塞时取消下载，必须立即停（关体断读），
+        // 不等 60 秒读超时；取消后残文件保留，下次可断点续传。
+        val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
+        try {
+            val body = StallingBody()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.method == "HEAD") {
+                    Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", "1024")
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    responseFor(request, 200, body)
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.Unconfined)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            assertThrows(CancellationException::class.java) {
+                runBlocking {
+                    // 下载跑在 IO 线程：阻塞的 read() 占一条线程，主线程仍可取消。
+                    val job = async(Dispatchers.IO) {
+                        downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                    }
+                    assertTrue(body.readStarted.await(10, TimeUnit.SECONDS))
+                    job.cancel()
+                    job.join()
+                }
+            }
+            assertTrue(dest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test
