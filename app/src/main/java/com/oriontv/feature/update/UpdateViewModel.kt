@@ -502,10 +502,14 @@ class UpdateViewModel @Inject constructor(
         // 复核跳过版本后也不弹完成 Toast、不置路径）。
         // 注意 cancelDownload() 不加代次：CE catch 凭现有代次把 downloading
         // 清掉；若在这里 +1 代次，旧任务收尾会被守卫拦住、downloading 永远 true。
+        // Jewel 第 9 轮 P2-2：先置内存态、后取消下载——旧顺序（先取消、后置位）
+        // 在两行之间留了微窗口：下载恰好在该窗口内跑完时，完成分支读到的内存态
+        // 仍是旧值、DataStore 写盘也尚未落地，于是弹“下载完成”Toast 并重弹卡片；
+        // 先置位后，无论完成分支在取消前还是取消后跑到，都读到已跳过的内存态。
+        skippedVersionMemory = latest
         cancelDownload()
         // Jewel 第 8 轮 P2-1：先同步记内存态，再异步写盘——完成分支优先读
         // 内存态，不等写盘落地；写盘失败时清掉内存态（跳过没记上，卡片留着可再点一次）。
-        skippedVersionMemory = latest
         viewModelScope.launch {
             try {
                 settingsRepository.setUpdateSkipVersion(latest)

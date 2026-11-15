@@ -186,7 +186,15 @@ class SettingsViewModel @Inject constructor(
                         AppLog.w("SettingsViewModel", "保存源地址：登出旧服务器失败，继续保存：${e.message}")
                     }
                     // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了。
-                    try { credentialsStore.clear() } catch (_: Exception) { }
+                    // Jewel 第 9 轮 P2-3：取消原样重抛——旧写法 catch (_: Exception)
+                    // 把 CE 一并吞掉，后续 setSourceAddresses 照常写；与 B15-P2-2
+                    // 同款口径（附属清凭据失败只吞非取消异常）。
+                    try {
+                        credentialsStore.clear()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                    }
                 }
                 // B12-P2-3：新地址与 StorageType 清空一次原子写——旧实现先写
                 // 两个地址、后清 StorageType，三次独立写，中间窗口里新地址配
