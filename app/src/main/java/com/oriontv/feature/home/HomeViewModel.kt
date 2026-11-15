@@ -269,8 +269,15 @@ class HomeViewModel @Inject constructor(
                 val baseUrl = settingsRepository.currentApiBaseUrl()
                 var newItems: List<HomeRowItem>? = null
                 var failed = false
-                // 空页链式续取：单次空页不判死，接着取再下一页；连续两页空状态机判到底，循环自停。
-                while (state.canLoadMore()) {
+                // H12-P1-1：第 12 轮——链式续取的循环条件不能用 canLoadMore()：
+                // loadMore() 入口已同步调过 onLoadStarted()（isLoading=true，
+                // 拦并发调用），canLoadMore() = !isLoading && hasMore 在取数中
+                // 恒为假，while (canLoadMore()) 一次都不进、整页取数是死代码，
+                // 首调还会把 isLoading 永久置真、该行此后永不分页（PR #29 的
+                // 分类分页功能实际完全没跑起来）。只看 hasMore：空页由
+                // onEmptyPage 推进游标、连续两页空才判到底，循环自停；每次
+                // 续取前重上 onLoadStarted()，并发 loadMore 在续取途中仍被拦住。
+                while (state.hasMore) {
                     // 每次链式续取前重上加载中——onEmptyPage 会清掉它，不重上会让并发的
                     // loadMore 在续取途中溜进来（两路同时取同一页）。
                     state.onLoadStarted()
@@ -282,7 +289,12 @@ class HomeViewModel @Inject constructor(
                     } catch (_: Exception) {
                         null
                     }
-                    if (gen != generation) return@launch
+                    if (gen != generation) {
+                        // H12-P2-1：迟到结果丢弃前先复位——refresh() 失败时会保留
+                        // 旧行，不复位“加载更多中…”就一直挂着、该行也永不分页。
+                        resetStaleLoadMore(title, state)
+                        return@launch
+                    }
                     when {
                         page == null -> {
                             state.onLoadFailed()
@@ -297,7 +309,10 @@ class HomeViewModel @Inject constructor(
                         }
                     }
                 }
-                if (gen != generation) return@launch
+                if (gen != generation) {
+                    resetStaleLoadMore(title, state)
+                    return@launch
+                }
                 _uiState.update { current ->
                     current.copy(rows = current.rows.map { row ->
                         if (row.title != title) {
@@ -317,7 +332,12 @@ class HomeViewModel @Inject constructor(
             } catch (_: Exception) {
                 // baseUrl 读取失败等：状态机复位可重试，行尾留失败文案，已有卡片不动。
                 state.onLoadFailed()
-                if (gen != generation) return@launch
+                if (gen != generation) {
+                    // H12-P2-1 同款：迟到时只清“加载更多中…”、不留失败文案
+                    //（新行自有状态；resetStaleLoadMore 里 onLoadFailed() 再调一次无害）。
+                    resetStaleLoadMore(title, state)
+                    return@launch
+                }
                 _uiState.update { current ->
                     current.copy(rows = current.rows.map {
                         if (it.title == title) {
@@ -328,6 +348,22 @@ class HomeViewModel @Inject constructor(
                     })
                 }
             }
+        }
+    }
+
+    /**
+     * H12-P2-1：第 12 轮——迟到（generation 已变）的取数结果丢弃前，先把状态机
+     * 与行上的“加载更多中…”复位：refresh() 失败时会保留旧行，不复位提示就
+     * 一直挂着、该行也永不分页。此时 _uiState 里的行可能是新 refresh 的行
+     * （isLoadingMore 本就为 false），清一次无害；旧状态机已被 refresh() 丢弃，
+     * onLoadFailed() 同样无害。
+     */
+    private fun resetStaleLoadMore(title: String, state: RowPagingState) {
+        state.onLoadFailed()
+        _uiState.update { current ->
+            current.copy(rows = current.rows.map {
+                if (it.title == title) it.copy(isLoadingMore = false) else it
+            })
         }
     }
 
