@@ -31,6 +31,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -285,6 +286,10 @@ fun PlayScreen(
     var rootFocused by remember { mutableStateOf(false) }
     // 控制条首选按钮（播放/暂停）的焦点：抽屉关闭后焦点落回这里。
     val controlsFirstButtonRequester = remember { FocusRequester() }
+    // 第 18 轮 C18-P2-1：活的门控读数（Jewel 第 9 轮 P2-1 同款）——抽屉关闭后
+    // 落焦 effect 的重试窗口内全局弹窗打开时即停，不把焦点偷回弹窗背后的
+    // 控制条按钮；LaunchedEffect 块捕获的只是启动时的参数值。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     // C5-P2-2：跳过片头胶囊的焦点锚点与是否获焦（胶囊消失时焦点回根用）。
     val skipIntroRequester = remember { FocusRequester() }
     var skipIntroFocused by remember { mutableStateOf(false) }
@@ -457,12 +462,14 @@ fun PlayScreen(
             drawerBottomEdgeFocused = false
         } else if (wasOpen) {
             // C8-P2-3：抽屉是因错误出现而关的，焦点落到错误页“重试”，不落控制条。
+            // 第 18 轮 C18-P2-1：两路重试都带活门控；回退到根是单次 requestFocus()、
+            // 本身不复核门控，重试因弹窗打开提前中止时也必须复核、否则仍会偷焦。
             if (errorPendingAfterDrawerClose && uiState.error != null) {
                 errorPendingAfterDrawerClose = false
-                if (!errorRetryRequester.requestFocusWithRetry()) {
+                if (!errorRetryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) && !modalOpenState.value) {
                     rootRequester.requestFocus()
                 }
-            } else if (!controlsFirstButtonRequester.requestFocusWithRetry()) {
+            } else if (!controlsFirstButtonRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) && !modalOpenState.value) {
                 rootRequester.requestFocus()
             }
         }
@@ -1041,6 +1048,9 @@ private fun EpisodeDrawerContent(
     focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
+    // 第 18 轮 C18-P2-1：活的门控读数（Jewel 第 9 轮 P2-1 同款）——内容晚到
+    // 落焦 effect 的重试窗口内全局弹窗打开时即停，不偷焦到抽屉。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     val groups = DetailSearchLogic.episodeGroups(totalEpisodes)
     var selectedGroup by remember(totalEpisodes) {
         mutableStateOf((currentEpisode / 20).coerceIn(0, (groups.size - 1).coerceAtLeast(0)))
@@ -1057,7 +1067,9 @@ private fun EpisodeDrawerContent(
     // 无条件落焦会把焦点偷出弹窗；弹窗关闭后 tick 重跑补落。
     LaunchedEffect(totalEpisodes, focusRestoreTick) {
         if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
-            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+            // 第 18 轮 C18-P2-1：重试带活门控；回退 onFocusFailed()（落根）前
+            // 再复核一次弹窗态——只补 isStillValid 时重试提前中止仍会走回退偷焦。
+            if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) && !modalOpenState.value) onFocusFailed()
         }
     }
     // 第 6 轮 P1-3：分组行改横向滚动——6 组起超出抽屉宽会被 clip 裁掉、不可见
@@ -1147,6 +1159,8 @@ private fun SourceDrawerContent(
     focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
+    // 第 18 轮 C18-P2-1：活的门控读数（与选集抽屉同款）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
     // 仍失败回退到根。
     // C12-P2-4：key 加源数量——抽屉打开时内容晚到（搜源未回，源列表为空），
@@ -1154,7 +1168,8 @@ private fun SourceDrawerContent(
     // C14-P1-3：key 加 tick、落焦加全局弹窗门控（与选集抽屉同款）。
     LaunchedEffect(sources.size, focusRestoreTick) {
         if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
-            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+            // 第 18 轮 C18-P2-1：重试带活门控；回退前再复核弹窗态。
+            if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) && !modalOpenState.value) onFocusFailed()
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1202,12 +1217,15 @@ private fun SpeedDrawerContent(
     focusRestoreTick: Int = 0,
 ) {
     val currentRequester = remember { FocusRequester() }
+    // 第 18 轮 C18-P2-1：活的门控读数（与选集/换源抽屉同款）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     // 第 7 轮 P2-4：同选集抽屉，单次 requestFocus 改 requestFocusWithRetry，
     // 仍失败回退到根。
     // 第 9 轮 P2-5：key 加 tick、落焦加全局弹窗门控（与选集/换源抽屉同款）。
     LaunchedEffect(focusRestoreTick) {
         if (shouldFocusDrawerOnContentArrival(globalModalOpen)) {
-            if (!currentRequester.requestFocusWithRetry()) onFocusFailed()
+            // 第 18 轮 C18-P2-1：重试带活门控；回退前再复核弹窗态。
+            if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) && !modalOpenState.value) onFocusFailed()
         }
     }
     LazyVerticalGrid(

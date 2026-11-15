@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -690,6 +691,7 @@ fun LiveScreen(
                     panelGroupFirstChipFocused = firstChip
                 },
                 focusRestoreTick = focusRestoreTick,
+                globalModalOpen = globalModalOpen,
             )
         }
 
@@ -934,6 +936,13 @@ private fun ChannelPanel(
      * 因面板开着跳过、面板自己的落焦 effect 又不重跑，焦点无处恢复；key 加 tick，
      * 关闭后重落当前台行。 */
     focusRestoreTick: Int = 0,
+    /**
+     * 第 18 轮 C18-P2-1（Jewel 第 9 轮 P2-1 同款）：全局弹窗（登录/更新卡片）
+     * 是否正开着——面板落焦 effect 的重试窗口内弹窗打开时，活门控让重试即停，
+     * 不把焦点偷回被遮罩盖住的面板行；关闭后由 key 里的 tick 重跑补落。
+     * 之前 ChannelPanel 没有这个参数，落焦 effect 只凭启动时快照门控。
+     */
+    globalModalOpen: Boolean = false,
 ) {
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
@@ -941,6 +950,11 @@ private fun ChannelPanel(
     // C8-P2-2：分组为空时无任何行挂 currentRequester，焦点无处可落——
     // 首个分组 chip（★ 收藏/全部恒存在）作空态落点。
     val firstChipRequester = remember { FocusRequester() }
+    // 第 18 轮 C18-P2-1：活的门控读数——LaunchedEffect 块捕获的是 effect 启动时
+    // 的参数值，弹窗在重试窗口内打开时旧块读到的仍是 false；rememberUpdatedState
+    // 的 State 随重组更新，运行中的重试循环每次复核都读到最新值（与详情/首页/
+    // 搜索/收藏页同款）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
 
     // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）；
     // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
@@ -962,11 +976,12 @@ private fun ChannelPanel(
     LaunchedEffect(uiState.panelOpen, uiState.selectedGroup, uiState.channelsVersion, focusRestoreTick, filtered.size) {
         if (shouldFocusPanelRow(uiState.panelOpen, uiState.epgDialogChannel != null)) {
             if (filtered.isEmpty()) {
-                firstChipRequester.requestFocusWithRetry()
+                // 第 18 轮 C18-P2-1：重试每次复核活门控——弹窗在重试窗口内打开即停。
+                firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             } else {
                 val idx = resolvePanelFocusIndex(filtered, currentChannel)
                 listState.scrollToItem(idx)
-                currentRequester.requestFocusWithRetry()
+                currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             }
         }
     }
@@ -1296,6 +1311,10 @@ private fun EpgDialog(
         mutableIntStateOf(resolveEpgInitialFocusedIndex(programmes.isEmpty(), currentIndex))
     }
 
+    // 第 18 轮 C18-P2-1：活的门控读数（与 ChannelPanel / 详情/首页/搜索/收藏页
+    // 同款）——EPG 落焦 effect 的重试窗口内全局弹窗打开时即停，不偷焦。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
+
     // 打开 / 切台时滚到正在播的节目并落焦点；无正在播节目时落第一行（plan §3.3 第 2 条）。
     // 无节目单时落“关闭”按钮：否则弹窗无可聚焦行，焦点留在面板行上，OK 会误切台。
     // A5-P2-3：effect 键加上 programmes.isEmpty()——节目单晚到（打开时为空、
@@ -1315,14 +1334,16 @@ private fun EpgDialog(
             // 初始值是 -1（不拦截），只靠行/按钮的 onFocus 回调纠正会在焦点
             // 已落上、回调尚未跑的窗口里留空档；这里与回调写同一值，不冲突。
             if (shouldFocusEpgDialog(globalModalOpen)) {
-                if (currentRequester.requestFocusWithRetry()) {
+                // 第 18 轮 C18-P2-1：重试每次复核活门控；回退的关闭按钮重试同样
+                // 带门控——弹窗在窗口内打开时两路都即停，不偷焦。
+                if (currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
                     focusedIndex = idx
                 } else {
-                    closeRequester.requestFocusWithRetry()
+                    closeRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
                 }
             }
         } else if (shouldFocusEpgDialog(globalModalOpen)) {
-            closeRequester.requestFocusWithRetry()
+            closeRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
         }
     }
 
