@@ -1,6 +1,7 @@
 package com.oriontv.feature.play
 
 import com.oriontv.data.api.SearchResult
+import com.oriontv.ui.components.ToastEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -291,7 +292,7 @@ class PlayViewModelLogicTest {
             isPlaying = true,
             isBuffering = true,
             playbackRate = 2f,
-            toast = nextToastEvent("旧提示"),
+            toast = ToastEvent(id = 1L, message = "旧提示"),
         )
         val reset = PlayViewModel.resetUiStateForNewKey(
             stale, episodeIndex = 5, positionMs = 0L, title = "新片",
