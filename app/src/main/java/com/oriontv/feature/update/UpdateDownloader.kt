@@ -5,12 +5,12 @@ import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -185,72 +185,73 @@ class UpdateDownloader @Inject constructor(
                                 // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
                                 // 最坏要等 60 秒读超时。取消时由取消挂钩关响应体，中断
                                 // socket 读；读抛错直接由外层 attempt 的 catch 分流。
-                                // 注意不用 suspendCancellableCoroutine：隔离诊断已证实
+                                // 注意：下载体本身不用 withContext 包起来——隔离诊断已证实
                                 // 吞没点是 withContext 本身（readStreamCapped 在
                                 // withContext 里取消后照常返回、不抛 CE；不带
-                                // withContext 时 CE 正常传出），三种收尾写法
-                                // resumeWithException / 直接 throw / 不截获直抛都
-                                // 走不通——故下载体改用 async + await()（见函数末尾
-                                // 注释），不再用 withContext 包起来。
-                                // 挂钩必须是 Job.invokeOnCompletion(onCancelling = true)，
-                                // 在当前协程里同步注册——不能用 launch 起一个监听协程等
-                                // awaitCancellation：launch 只把监听协程派发到 IO 池，取消
-                                // 若在它首次运行之前到达，协程体（含 finally 里的关体）
-                                // 根本不会执行（Kotlin 官方文档 Cancellation and timeouts：
-                                // “doesn't guarantee that they start running. If
-                                // they're canceled first, nothing is printed”），关体
-                                // 永远到不了、体读堵满 60 秒兜底——main 上累计红 5 次
-                                // 的真因正是这个派发窗口（第 8 轮跟进 2）。注意 Job 上没有
-                                // 公开的 invokeOnCancellation（那是 CancellableContinuation
-                                // 的成员函数；顶层同名函数是 internal 的），等价写法就是
-                                // invokeOnCompletion(onCancelling = true)。invokeOnCompletion
-                                // 默认（onCancelling = false）同样不能用：它只在任务完成时
-                                // 跑，阻塞的读不返回、任务完不成，挂钩永远等不到触发。
-                                // invokeOnCompletion(onCancelling = true) 在取消到达时当场
-                                // 执行（取消线程上同步跑），无派发窗口；也不能在块里调
+                                // withContext 时 CE 正常传出），故下载体改用 async +
+                                // await()（见函数末尾注释）。但取消挂钩本身用
+                                // suspendCancellableCoroutine 只当载体（见下）：它只挂
+                                // cont.invokeOnCancellation，不当结果通道，返回值与异常
+                                // 都原样出 SCC、由外层 attempt 的 catch 分流，不碰吞 CE
+                                // 的旧坑。
+                                // 挂钩必须是同步注册的取消钩子——不能用 launch 起一个监听
+                                // 协程等 awaitCancellation：launch 只把监听协程派发到 IO
+                                // 池，取消若在它首次运行之前到达，协程体（含 finally 里的
+                                // 关体）根本不会执行（Kotlin 官方文档 Cancellation and
+                                // timeouts：“doesn't guarantee that they start running. If
+                                // they're canceled first, nothing is printed”），关体永远
+                                // 到不了、体读堵满 60 秒兜底——main 上累计红 5 次的真因正是
+                                // 这个派发窗口（第 8 轮跟进 2）。Job.invokeOnCompletion(
+                                // onCancelling = true) 是 internal API，外部用即编译错；
+                                // Job 上也没有公开的 invokeOnCancellation（那是
+                                // CancellableContinuation 的成员函数）。公开且同步的写法
+                                // 是 suspendCancellableCoroutine + cont.invokeOnCancellation
+                                //（与 ApiClient.executeCancellable 同款）：取消到达时在
+                                // 取消线程上当场执行，无派发窗口；也不能在块里调
                                 // currentCoroutineContext()（块不是 suspend 上下文），
                                 // context 先在外面捕获。
                                 val context = currentCoroutineContext()
-                                // D8-P2-2 跟进 2：取消挂钩同步注册在当前 Job 上——取消
-                                // 到达时在取消线程上当场跑，先置标志再关体（读因关体抛错，
-                                // 标志一定在读抛错之前已置位，外层复核读到它时无竞态）；
-                                // 拷贝已正常完成时不记（copyDone 守卫）。拷贝结束（正常、
-                                // 抛错、取消）即 dispose 挂钩，不留给下一次尝试。
-                                // 注意：若取消在注册前已到达，invokeOnCompletion(
-                                // onCancelling = true, invokeImmediately = true)
-                                // 会立即执行挂钩——关体照常发生，不丢取消。
-                                val cancelHandle = context[Job]?.invokeOnCompletion(
-                                    onCancelling = true,
-                                    invokeImmediately = true,
-                                ) {
-                                    if (!copyDone.get()) cancelledDuringCopy.set(true)
-                                    runCatching { body.close() }
-                                }
-                                try {
-                                    // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
-                                    FileOutputStream(destFile, isResume).use { output ->
-                                        val buffer = ByteArray(64 * 1024)
-                                        while (true) {
-                                            // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
-                                            context.ensureActive()
-                                            val read = input.read(buffer)
-                                            if (read < 0) {
-                                                copyDone.set(true)
-                                                break
-                                            }
-                                            written += read
-                                            if (written > MAX_APK_BYTES) {
-                                                throw UpdateDownloadException(
-                                                    UpdateError.TooLarge,
-                                                    "安装包体积超过 200MB 上限，已停止下载",
-                                                )
-                                            }
-                                            output.write(buffer, 0, read)
-                                            onProgress?.invoke(written, total)
-                                        }
+                                // D8-P2-2 跟进 2：SCC 在这里只当取消挂钩的载体，不当结果
+                                // 通道——在当前协程里同步注册 cont.invokeOnCancellation，
+                                // 取消到达时在取消线程上当场跑，先置标志再关体（读因关体
+                                // 抛错，标志一定在读抛错之前已置位，外层复核读到它时无竞
+                                // 态）；拷贝已正常完成时不记（copyDone 守卫）。返回值与
+                                // 异常都经 resume/resumeWithException 原样出 SCC，由外层
+                                // attempt 的 catch 分流（取消时 ensureActive() 再转 CE）。
+                                // 注意：若取消在注册前已到达，invokeOnCancellation 会立即
+                                // 执行挂钩——关体照常发生，不丢取消。
+                                suspendCancellableCoroutine<Unit> { cont ->
+                                    cont.invokeOnCancellation {
+                                        if (!copyDone.get()) cancelledDuringCopy.set(true)
+                                        runCatching { body.close() }
                                     }
-                                } finally {
-                                    cancelHandle?.dispose()
+                                    try {
+                                        // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
+                                        FileOutputStream(destFile, isResume).use { output ->
+                                            val buffer = ByteArray(64 * 1024)
+                                            while (true) {
+                                                // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
+                                                context.ensureActive()
+                                                val read = input.read(buffer)
+                                                if (read < 0) {
+                                                    copyDone.set(true)
+                                                    break
+                                                }
+                                                written += read
+                                                if (written > MAX_APK_BYTES) {
+                                                    throw UpdateDownloadException(
+                                                        UpdateError.TooLarge,
+                                                        "安装包体积超过 200MB 上限，已停止下载",
+                                                    )
+                                                }
+                                                output.write(buffer, 0, read)
+                                                onProgress?.invoke(written, total)
+                                            }
+                                        }
+                                        cont.resume(Unit)
+                                    } catch (e: Throwable) {
+                                        cont.resumeWithException(e)
+                                    }
                                 }
                             }
                         }

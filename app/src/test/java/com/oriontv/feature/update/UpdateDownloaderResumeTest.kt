@@ -488,9 +488,9 @@ class UpdateDownloaderResumeTest {
         // D8-P2-2 跟进 2：取消挂钩曾是 launch 起的监听协程，取消若抢在它首次
         // 运行之前到达，finally 里的关体根本不会执行、体读堵满 60 秒兜底——
         // 单次跑大概率绿、CI 负载下偶发红（main 上累计红 5 次）。修法是同步
-        // 注册 Job.invokeOnCompletion(onCancelling = true) 挂钩：取消到达时
-        // 在取消线程上当场关体，无派发窗口。本测试把同一场景连跑 10 次：旧机制
-        // 下 10 次里大概率至少红一次，新机制每次都应立即停。
+        // 注册 suspendCancellableCoroutine 的 cont.invokeOnCancellation
+        // 挂钩：取消到达时在取消线程上当场关体，无派发窗口。本测试把同一场景
+        // 连跑 10 次：旧机制下 10 次里大概率至少红一次，新机制每次都应立即停。
         val dir = Files.createTempDirectory("oriontv-cancel-loop-test").toFile()
         try {
             repeat(10) { round ->
