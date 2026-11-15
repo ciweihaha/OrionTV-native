@@ -207,11 +207,17 @@ class UpdateDownloader @Inject constructor(
                                 // 收尾，不进重试；未取消的错原样抛错走重试。
                                 // （UpdateDownloadException 也是 Exception：超限时
                                 // 若恰好已取消，取消优先、按取消收尾。）
+                                // 注意：已取消时不能只调 resumeWithException——
+                                // continuation 在取消到达时就已是已取消态，对它
+                                // 的 resume 会被静默忽略，块正常返回后
+                                // suspendCancellableCoroutine 也会正常返回，
+                                // 取消就被吞掉、下载“正常”完成（单测计数证实：
+                                // 读只进 1 次且因关体抛错、无重试，join 却正常
+                                // 返回）。所以已取消时直接 throw，让取消真正
+                                // 传出去；未取消时才走 resumeWithException。
                                 if (cont.isCancelled) {
-                                    cont.resumeWithException(
-                                        e as? CancellationException
-                                            ?: CancellationException("下载已取消").apply { initCause(e) },
-                                    )
+                                    throw e as? CancellationException
+                                        ?: CancellationException("下载已取消").apply { initCause(e) }
                                 } else {
                                     cont.resumeWithException(e)
                                 }
