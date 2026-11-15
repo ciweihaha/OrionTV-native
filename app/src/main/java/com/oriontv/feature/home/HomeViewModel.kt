@@ -41,6 +41,14 @@ class HomeViewModel @Inject constructor(
     private var generation = 0
 
     /**
+     * B13-P2-2：最近播放行的独立代次——两次并发 refreshRecent() 各 load 各合并
+     * 时，先启动的旧快照后完成会盖掉新的行；落态前复核，旧代次丢弃。
+     * 另见 refreshRecent() 里对共享 generation 的快照：refresh() 在本次加载
+     * 期间跑完并写了新的最近播放行时，旧快照的合并同样必须丢弃。
+     */
+    private var recentGeneration = 0
+
+    /**
      * C5-P2-4：P1-4 的焦点锚点原来是 ViewModel 里的普通变量。导航轨切走
      * （popUpTo(Home) 弹掉首页）后 ViewModel 被清，只靠内存留不住；
      * 再切回来新建的 ViewModel 从头开始，焦点回到分类栏顶部（收藏页
@@ -112,6 +120,13 @@ class HomeViewModel @Inject constructor(
 
     /** 返回首页时只刷新“最近播放”行（断点续播刚看完要立刻出现），其他行走缓存。 */
     fun refreshRecent() {
+        val recentGen = ++recentGeneration
+        // B13-P2-2：快照 refresh() 的共享代次——refresh() 在本次加载期间跑完
+        // 并写了新的最近播放行时，旧快照的合并必须丢弃，否则把新行换回旧快照。
+        // 注意只快照、不推进共享代次：refreshRecent 在每次 ON_RESUME 都调，
+        // 冷启动时与 init 的 refresh() 并发，推进会让 refresh() 误判迟到、
+        // 丢掉整屏（B11-P2-2 只修了合并原子性，代次守卫这里补上）。
+        val genAtStart = generation
         viewModelScope.launch {
             // P2-11（第 5 轮）：加载失败时不删旧行——以前先删行、失败后不补回，
             // 一次瞬时失败就让首页丢一行，直到下次 refresh()。
@@ -127,6 +142,9 @@ class HomeViewModel @Inject constructor(
             } catch (_: Exception) {
                 return@launch
             }
+            // B13-P2-2：落态前复核双代次——有更新的 refreshRecent 已启动，或
+            // refresh() 在此期间跑完写了新行时，旧快照不再合并。
+            if (recentGen != recentGeneration || genAtStart != generation) return@launch
             // B11-P2-2：行合并放进 _uiState.update { … } 的 lambda 内做、
             // 对最新态原子合并——之前先读 _uiState.value.rows 再赋值，与
             // refresh() 并发时旧行快照会覆盖新行（冷启动首屏加载期间离页

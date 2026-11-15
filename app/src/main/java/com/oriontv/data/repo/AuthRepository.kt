@@ -137,13 +137,26 @@ class AuthRepository @Inject constructor(
                     // D-P2-17：凭据保存失败（Keystore 异常）不再误报“登录失败”——
                     // 服务端会话已建、Cookie 已在 Jar 里，本次登录成功；下次冷启动
                     // 静默重登会失败、再提示登录，日志里留一条可见记录。
-                    runCatching { credentialsStore.save(username, password) }.onFailure { e ->
+                    // B13-P2-3：取消异常不混同普通失败——runCatching 会吞掉
+                    // CancellationException，登录被取消后仍走到下面置
+                    // _isLoggedIn = true，把“已取消的登录”标成已登录；CE 原样
+                    // 重抛，其他失败只记日志。
+                    try {
+                        credentialsStore.save(username, password)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
                         AppLog.w("AuthRepository", "登录成功但凭据保存失败，下次冷启动需重新登录：${e.message}")
                     }
                     // B6-P2-5：setAuthCookies 抛错不再报成“登录失败”——服务端会话
                     // 已建、Cookie 已在 Jar 里，本次登录成功；标记丢了只影响下次
                     // 冷启动静默恢复（会再提示登录），与凭据保存失败同款处理。
-                    runCatching { settingsRepository.setAuthCookies("1") }.onFailure { e ->
+                    // B13-P2-3：同上，取消异常原样重抛，不把已取消的登录标成已登录。
+                    try {
+                        settingsRepository.setAuthCookies("1")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
                         AppLog.w("AuthRepository", "登录成功但登录标记保存失败，下次冷启动需重新登录：${e.message}")
                     }
                     // D7-P1-1：显式登录成功清掉已退出标志——退出后重登不受影响，
@@ -197,12 +210,18 @@ class AuthRepository @Inject constructor(
         try {
             if (baseUrl.isNotBlank()) moonTvApi.logout(baseUrl)
         } finally {
+            // B13-P2-3：取消异常不混同普通失败——同 login() 的两处，CE 原样重抛、
+            // 不当成普通失败吞掉；但登出收尾（清凭据/清 Jar/清标记/落未登录态）
+            // 本就应在取消时也跑完，故先记下 CE、跑完收尾再重抛，不让第一步
+            // 的取消截断后面的清理。
+            var cancelled: CancellationException? = null
             // B-P2-18：clear() 已是 suspend，runCatching 的非 suspend 块里调不了，改 try/catch。
-            try { credentialsStore.clear() } catch (_: Exception) { }
+            try { credentialsStore.clear() } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
             runCatching { cookieJar.clear() }
             // B5-P2-3：标记清除失败也不拦登出收尾（_isLoggedIn 必须落 false）。
-            try { settingsRepository.setAuthCookies("") } catch (_: Exception) { }
+            try { settingsRepository.setAuthCookies("") } catch (e: CancellationException) { cancelled = e } catch (_: Exception) { }
             _isLoggedIn.value = false
+            cancelled?.let { throw it }
         }
     }
 

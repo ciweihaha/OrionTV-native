@@ -14,6 +14,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.oriontv.core.storage.StorageKeys
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -85,6 +86,16 @@ class SettingsDataStore @Inject constructor(
     val liveLastChannel: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_LAST_CHANNEL].orEmpty() }
     val liveFavChannels: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_FAV_CHANNELS].orEmpty() }
     val rnMigrationDone: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.RN_MIGRATION_DONE] ?: false }
+
+    /**
+     * B13-P2-4：一次快照同时取 StorageType 与服务器地址——调用方（见
+     * SettingsRepository.useServerStorage）判定用；两个单键 Flow 各 .first()
+     * 有撕裂窗口（B12-P2-3 只修了写侧原子），快照内两键来自同一次 Preferences 发出。
+     */
+    suspend fun currentStorageTypeAndApiBaseUrl(): Pair<String, String> {
+        val prefs = context.settingsDataStore.data.first()
+        return prefs[Keys.STORAGE_TYPE].orEmpty() to prefs[Keys.API_BASE_URL].orEmpty()
+    }
 
     suspend fun setAuthCookies(value: String) {
         context.settingsDataStore.edit { it[Keys.AUTH_COOKIES] = value }

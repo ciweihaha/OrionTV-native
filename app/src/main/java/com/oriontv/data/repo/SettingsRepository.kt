@@ -83,7 +83,10 @@ class SettingsRepository @Inject constructor(
     /** 是否走服务端存储（redis 且配了地址）；否则走本地 Room。 */
     suspend fun useServerStorage(): Boolean {
         ensureServerConfig()
-        return currentStorageType() == "redis" && currentApiBaseUrl().isNotBlank()
+        // B13-P2-4：一次快照同时取两键再判定——之前两次独立 .first() 分别读
+        // storageType 与 apiBaseUrl，读侧仍有撕裂窗口。
+        val (storageType, apiBaseUrl) = settingsDataStore.currentStorageTypeAndApiBaseUrl()
+        return storageType == "redis" && apiBaseUrl.isNotBlank()
     }
 
     // D-P2-16：失败缓存的读写加 @Volatile，跨线程可见（之前最坏多跑一次拉取）。
@@ -164,16 +167,6 @@ class SettingsRepository @Inject constructor(
     suspend fun setSourceAddresses(apiUrl: String, m3uUrl: String, clearStorage: Boolean) =
         settingsDataStore.setSourceAddresses(apiUrl, m3uUrl, clearStorage)
 
-    /**
-     * B4-P1-3：把 StorageType 清为空（未知态）——换源地址时先清，旧服务
-     * 的 StorageType 不残留到新服务上；拉取失败即保持未知，下次数据访问
-     * 自动重拉（ensureServerConfig），成功前按本地模式兜底。
-     * B6-P1-2：“已拉取过”标记一起清，否则新地址沿用旧标记、不再拉取。
-     */
-    suspend fun clearStorageType() {
-        settingsDataStore.setStorageType("")
-        settingsDataStore.setServerConfigFetched(false)
-    }
     suspend fun setRemoteInputEnabled(value: Boolean) = settingsDataStore.setRemoteInputEnabled(value)
     suspend fun setAutoSkipIntro(value: Boolean) = settingsDataStore.setAutoSkipIntro(value)
     suspend fun setIntroSkipSeconds(value: Int) = settingsDataStore.setIntroSkipSeconds(value)

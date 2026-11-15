@@ -15,8 +15,10 @@ import com.oriontv.ui.components.ToastEvent
 import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,11 +63,22 @@ class UpdateViewModel @Inject constructor(
     /** 第 7 轮 P2-5：已下载包路径 + 版本的持久化（独立 DataStore，不碰设置层）。 */
     private val downloadedApkStore = DownloadedApkStore(context)
 
-    /** 第 7 轮 P2-5：启动恢复是否已跑过（init 与 checkForUpdate 各调一次，只跑一次）。 */
-    private var downloadRestoreDone = false
+    /**
+     * B13-P2-1：启动恢复的共享任务（init 与 checkForUpdate 各调一次，只跑一次）——
+     * 旧实现用 downloadRestoreDone 布尔先置 true 再读 DataStore，checkForUpdate
+     * 里那路见标志已真直接返回、不等 init 那路跑完，重查会因恢复未完成而误判
+     * “从未下载过”、白白重新下载；现第二路 await 等它跑完再读态（已完成的
+     * Deferred 立即返回）。与 AuthRepository.restoreDeferred 同款共享恢复。
+     */
+    private var restoreDeferred: Deferred<Unit>? = null
 
     init {
-        viewModelScope.launch { restoreDownloadedApkOnce() }
+        restoreDeferred = viewModelScope.async { runRestoreDownloadedApk() }
+    }
+
+    /** 第二路（checkForUpdate）await 等 init 那路跑完再读态；只调一次。 */
+    private suspend fun restoreDownloadedApkOnce() {
+        restoreDeferred?.await() ?: runRestoreDownloadedApk()
     }
 
     /**
@@ -73,9 +86,7 @@ class UpdateViewModel @Inject constructor(
      * 匹配时复用（重查/卡片直接显示“立即安装”，不用重新下载）；否则清记录，
      * 文件存在但对不上号时删掉，不留孤儿包。
      */
-    private suspend fun restoreDownloadedApkOnce() {
-        if (downloadRestoreDone) return
-        downloadRestoreDone = true
+    private suspend fun runRestoreDownloadedApk() {
         val record = try {
             downloadedApkStore.load()
         } catch (_: Exception) {
