@@ -377,6 +377,19 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `reclaim of paused episode remounts but stays paused`() {
+        // A19-P2-2：已暂停的集被别页抢走播放器后回页，reclaim 仍触发（播放器里
+        // 已无媒体项，跳过会把页面晾在黑屏上），但只重挂、不自动续播——
+        // onPageResumed 把 userPaused 快照进 resumePaused，startEpisode 内
+        // playUrl(autoPlay=false) 且 userPaused 保持真；暂停态下 20 秒就绪
+        // 超时也不触发（P2-6 门控），轮询只读 isPlaying、不自动 play()。
+        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false))
+        assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = true))
+        // 未暂停时 reclaim 照常自动播出。
+        assertTrue(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = false))
+    }
+
+    @Test
     fun `resumed page reclaims playback only when ownership was stolen`() {
         // A17-P2-1：只补“被抢走”一种情形——无错误态、且自己已不是播放器
         // 所有者时重开当前集；仍是所有者（用户暂停后去详情页再回）不续播，

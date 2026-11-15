@@ -127,6 +127,8 @@ class PlayViewModel @Inject constructor(
         val result: SearchResult,
         val episodeIndex: Int,
         val startPositionMs: Long?,
+        /** A19-P2-2：reclaim 时快照的用户暂停态——待补开播重播时仍保持暂停。 */
+        val resumePaused: Boolean = false,
     )
 
     /** 前台状态变化（供 PlayScreen 的生命周期观察者调用）。 */
@@ -318,15 +320,15 @@ class PlayViewModel @Inject constructor(
     /**
      * 回页（A9-P1-2，供 PlayScreen 的 ON_RESUME 与重进组合调用）：
      * 记回前台、刷新开播设置缓存；有暂缓的开播先补开，没有且搜源曾被取消、
-     * 当前仍无结果时重跑搜源；其余情况（已在播/已暂停/已落错误态）不动，
-     * 不自动恢复被暂停的播放。
+     * 当前仍无结果时重跑搜源；其余情况（已在播/已暂停且仍是所有者/已落错误态）不动，
+     * 不自动恢复被暂停的播放；暂停态被别页抢走播放器时重挂媒体项、保持暂停（A19-P2-2）。
      */
     fun onPageResumed() {
         pageActive = true
         refreshCachedSettings()
         pendingStart?.let { pending ->
             pendingStart = null
-            launchStartEpisode(pending.result, pending.episodeIndex, pending.startPositionMs)
+            launchStartEpisode(pending.result, pending.episodeIndex, pending.startPositionMs, pending.resumePaused)
             return
         }
         if (searchInterrupted && _uiState.value.current == null && searchJob?.isActive != true) {
@@ -347,10 +349,14 @@ class PlayViewModel @Inject constructor(
         val state = _uiState.value
         val current = state.current
         if (current != null && shouldReclaimPlayback(state.error == null, playerManager.isCurrentOwner(playbackToken))) {
+            // A19-P2-2：快照用户暂停态——已暂停的集被别页抢走播放器后回页，
+            // 只重挂媒体项、保持暂停（startEpisode 内 autoPlay=false），
+            // 不自动续播；跳过 reclaim 会把页面晾在黑屏上（A18-P2-1 同款教训）。
             launchStartEpisode(
                 current,
                 state.episodeIndex,
                 resolveSwitchStartMs(playerManager.isEnded || state.isEnded, state.positionMs.takeIf { it > 0 }),
+                resumePaused = userPaused,
             )
         }
     }
@@ -380,19 +386,20 @@ class PlayViewModel @Inject constructor(
         result: SearchResult,
         episodeIndex: Int,
         startPositionMs: Long? = null,
+        resumePaused: Boolean = false,
     ) {
         // A9-P1-2：记下本次开播请求——后台暂缓或在途取消时，回前台凭它补开播。
-        pendingStart = PendingStart(result, episodeIndex, startPositionMs)
+        pendingStart = PendingStart(result, episodeIndex, startPositionMs, resumePaused)
         startEpisodeJob?.cancel()
         startEpisodeJob = viewModelScope.launch {
             try {
-                startEpisode(result, episodeIndex, startPositionMs)
+                startEpisode(result, episodeIndex, startPositionMs, resumePaused)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // A9-P1-2：开播失败已落错误态，不再留待补开播（回前台不再自动重跑
                 // 失败的开播）；只清自己的那一笔，不清已被更新的开播取代的待办。
-                if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+                if (pendingStart == PendingStart(result, episodeIndex, startPositionMs, resumePaused)) {
                     pendingStart = null
                 }
                 // A8-P2-3：开播挂起读数（断点/倍速/设置）失败会让协程未捕获崩溃；
@@ -404,7 +411,7 @@ class PlayViewModel @Inject constructor(
     }
 
     /** 开播一集：恢复倍速与断点，20 秒就绪超时保护。 */
-    private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null) {
+    private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null, resumePaused: Boolean = false) {
         // A9-P1-2：开播前复核页面仍在前台——搜源/读断点期间按 Home 后，搜源完成
         // 仍会在后台调到这里；后台的新开播暂缓（待补开播已由 launchStartEpisode
         // 记下），回前台时 onPageResumed() 补开播；已开播过的延续（PiP 内自动换源/
@@ -426,12 +433,13 @@ class PlayViewModel @Inject constructor(
             )
             if (next != null) {
                 _uiState.update { it.copy(failedSources = it.failedSources + result.source) }
-                launchStartEpisode(next, episodeIndex)
+                // A19-P2-2：换源兜底也带上暂停态，暂停集换源后仍保持暂停。
+                launchStartEpisode(next, episodeIndex, resumePaused = resumePaused)
                 return
             }
             _uiState.update { it.copy(isLoading = false, error = "该源暂无可播剧集") }
             // A9-P1-2：已落终态错误，不再留待补开播（回前台不自动重跑）；只清自己的那一笔。
-            if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+            if (pendingStart == PendingStart(result, episodeIndex, startPositionMs, resumePaused)) {
                 pendingStart = null
             }
             return
@@ -492,7 +500,9 @@ class PlayViewModel @Inject constructor(
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
         }
-        userPaused = false
+        // A19-P2-2：reclaim 恢复暂停态时保持 userPaused=true（就绪超时门控
+        // 与轮询 isPlaying 语义随之保持暂停）；其余开播一律从播放态开始。
+        userPaused = resumePaused
         lastSavedPositionMs = -1L
         markedIntroEndMs = settings?.introEndTime?.takeIf { it > 0 }
         playerManager.setPlaybackSpeed(rate)
@@ -501,12 +511,12 @@ class PlayViewModel @Inject constructor(
         startPositionOverflowHandled = false
         // A5-P1-5：播流前复核代际——挂起读数期间已有新开播时，旧开播不再碰播放器。
         if (generation != startEpisodeGeneration) return
-        playerManager.playUrl(episodes[episodeIndex], startPosition)
+        playerManager.playUrl(episodes[episodeIndex], startPosition, autoPlay = !resumePaused)
         playbackStarted = true
         // A5-P1-5：收尾写状态前再复核一次代际，旧开播不覆盖新开播的集/状态。
         if (generation != startEpisodeGeneration) return
         // A9-P1-2：本次开播已真正播出，清除待补开播；只清自己的那一笔。
-        if (pendingStart == PendingStart(result, episodeIndex, startPositionMs)) {
+        if (pendingStart == PendingStart(result, episodeIndex, startPositionMs, resumePaused)) {
             pendingStart = null
         }
         _uiState.update {

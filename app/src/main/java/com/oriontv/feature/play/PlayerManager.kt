@@ -94,10 +94,13 @@ class PlayerManager @Inject constructor(
         data class Other(val message: String? = null) : PlayerError
     }
 
-    fun playUrl(url: String, startPositionMs: Long = 0L) {        player.setMediaItem(MediaItem.fromUri(url))
+    fun playUrl(url: String, startPositionMs: Long = 0L, autoPlay: Boolean = true) {
+        player.setMediaItem(MediaItem.fromUri(url))
         if (startPositionMs > 0) player.seekTo(startPositionMs)
         player.prepare()
-        player.play()
+        // A19-P2-2：autoPlay=false 时只挂项、不自动播出——暂停态 reclaim
+        // 重挂媒体项用（播放器里无媒体项时页面会黑屏）；恢复播出走 togglePlayPause。
+        if (autoPlay) player.play()
     }
 
     fun play() {
