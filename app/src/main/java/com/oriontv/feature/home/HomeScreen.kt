@@ -151,8 +151,17 @@ fun HomeScreen(
     // Jewel 第 9 轮 P2-1：[isStillValid] 由调用方传入活的门控读数——重试
     // 每次都复核，弹窗在窗口内打开即停；重试耗尽后的回落首 chip 也先复核，
     // 不让单次 requestFocus 在弹窗背后偷焦。
+    // C22-P2-1：开头先判 shouldFocusHomeRetry——有错行空时落“重试”而非首 chip：
+    // 弹窗关闭后 tick 恢复（effect B）走这条路，initialFocusDone 已为真、
+    // B 的 else 分支进 restoreSavedCard，旧实现 findSavedCard 在空行上返回
+    // null、!isLoading 时无条件 firstChipRequester.requestFocus()，把焦点
+    // 从弹窗按钮拉回首 chip。
     suspend fun restoreSavedCard(isStillValid: () -> Boolean = { true }): Boolean {
         val rows = uiState.rows
+        if (shouldFocusHomeRetry(uiState.error, rows)) {
+            retryRequester.requestFocusWithRetry(isStillValid = isStillValid)
+            return true
+        }
         val found = findSavedCard(rows, viewModel.savedFocusKey)
         if (found == null) {
             if (!uiState.isLoading) {
@@ -180,11 +189,32 @@ fun HomeScreen(
     // 分支在行还空着时就跑过），重试成功后行由空变非空、错误页“重试”按钮
     // 被卸载、焦点丢失，另两条分支都不跑；记一笔行是否曾为空，由空变非空时
     // 再跑一次恢复（回保存卡片或首 chip）。
+    // C22-P2-1：错误到达的去重门控（详情页 C4-P1-4 同款 lastErrorFocused）——
+    // 同一失败只落一次“重试”，error 清掉后复位为 null，下一次同文案失败
+    // 可再次触发。
+    var lastErrorFocused by remember { mutableStateOf<String?>(null) }
     var rowsWereEmpty by remember { mutableStateOf(true) }
-    LaunchedEffect(uiState.rows, globalModalOpen) {
+    // C22-P2-1：key 加 uiState.error——C21-P2-1 的修法在首进分支里查
+    // shouldFocusHomeRetry，但首帧组合时 error 仍是 null（refresh() 的
+    // isServerConfigured() 即挂起，失败结果只能在组合之后到达），首进分支
+    // 恒走落首 chip、initialFocusDone 置真；错误到达时 rows 是同一空列表
+    // 实例、key 比较不变，effect A 确定不重跑。key 加 error 后，错误到达
+    // （null 变非 null）即重跑，下面的错误到达分支落“重试”，不论
+    // initialFocusDone 是否已真；行非空时不抢。
+    LaunchedEffect(uiState.rows, uiState.error, globalModalOpen) {
         if (globalModalOpen) return@LaunchedEffect
         val wasEmpty = rowsWereEmpty
         rowsWereEmpty = uiState.rows.isEmpty()
+        val error = uiState.error
+        if (error == null) {
+            lastErrorFocused = null
+        } else if (shouldFocusHomeRetryOnErrorArrival(error, uiState.rows, lastErrorFocused)) {
+            retryRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+            lastErrorFocused = error
+            viewModel.initialFocusDone = true
+            restoreDone = true
+            return@LaunchedEffect
+        }
         if (!viewModel.initialFocusDone) {
             // C21-P2-1：首载失败（有错误且行空）时落“重试”而非首 chip——
             // 首 chip 此时是唯一的可用操作之外的落点，用户须多按一次下键
@@ -206,6 +236,9 @@ fun HomeScreen(
     // （等 effect A 在行回来时恢复），不回落首 chip。
     // C11-P1-2：effect A 因弹窗跳过时 initialFocusDone 仍为假，tick 恢复
     // 也要能走首次落焦那条路（不只恢复已保存的卡片），否则首 chip 永远落不上。
+    // C22-P2-1：无弹窗的 plain 失败不触发本 effect（key 里无 error、tick 不变），
+    // 靠 effect A 的 error key 恢复；有弹窗时关闭后 tick+1 走下面 else 分支，
+    // restoreSavedCard 开头先判 shouldFocusHomeRetry，有错行空落“重试”。
     // Jewel 第 9 轮 P2-1：补第 8 轮 P2-8 同款门控——key 加 globalModalOpen，
     // 弹窗开着时跳过本次抢焦（关闭后 tick +1 重跑再恢复）；恢复本身经
     // restoreSavedCard 的重试谓词复核门控（见上）。

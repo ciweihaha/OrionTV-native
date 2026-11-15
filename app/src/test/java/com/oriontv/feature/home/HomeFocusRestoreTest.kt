@@ -104,6 +104,27 @@ class HomeFocusRestoreTest {
     }
 
     @Test
+    fun `error arriving after first chip still focuses retry`() {
+        // C22-P2-1：C21-P2-1 只钉了纯函数、没钉接线——首帧组合时 error 仍是
+        // null，effect A 首进分支恒走落首 chip、initialFocusDone 置真；错误
+        // 到达时 key 不变、effect 不重跑，焦点仍在首 chip。本谓词钉住接线：
+        // 已落过首 chip（lastErrorFocused 仍为 null、initialFocusDone 已真）
+        // 后错误到达（null 变非 null、行空）仍落“重试”；同一失败只触发一次，
+        // 行非空时不抢，无错误时不触发。
+        val rows = listOf(row("热门剧集", item("agg", "2")))
+        // 错误到达：行空、此前未对该失败落过焦 → 落重试。
+        assertTrue(shouldFocusHomeRetryOnErrorArrival(error = "网络错误", rows = emptyList(), lastErrorFocused = null))
+        // 同一失败重复到达（已落过焦）→ 不再触发。
+        assertFalse(shouldFocusHomeRetryOnErrorArrival(error = "网络错误", rows = emptyList(), lastErrorFocused = "网络错误"))
+        // 新失败到达（文案变了）→ 再次触发。
+        assertTrue(shouldFocusHomeRetryOnErrorArrival(error = "服务器错误", rows = emptyList(), lastErrorFocused = "网络错误"))
+        // 行非空时不抢。
+        assertFalse(shouldFocusHomeRetryOnErrorArrival(error = "网络错误", rows = rows, lastErrorFocused = null))
+        // 无错误时不触发。
+        assertFalse(shouldFocusHomeRetryOnErrorArrival(error = null, rows = emptyList(), lastErrorFocused = null))
+    }
+
+    @Test
     fun `unconfigured empty state recovers focus on tick`() {
         // C12-P1-6：未配置空态不在 tick 恢复覆盖内（effect B 在 early return
         // 之后）；更新卡片关闭后 tick +1、仍未配置时落焦“去设置”，已配置时不动作。

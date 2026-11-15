@@ -193,6 +193,21 @@ internal fun shouldFocusHomeRetry(
 ): Boolean = error != null && rows.isEmpty()
 
 /**
+ * C22-P2-1：错误在首进落焦之后才到达时是否应落焦错误页“重试”按钮（纯函数，
+ * 可单测）——C21-P2-1 的修法只在 effect A 的首进分支里查 shouldFocusHomeRetry，
+ * 但首帧组合时 error 仍是 null（refresh() 的 isServerConfigured() 即挂起），
+ * 首进分支恒走落首 chip、initialFocusDone 置真；错误到达时 effect A 的 key
+ * 里没有 error、effect B 的 key 也不变，两条路都不重跑。本谓词钉住接线：
+ * 同一失败只触发一次（lastErrorFocused 去重，详情页 C4-P1-4 同款；error 清掉
+ * 后调用方把门控复位为 null，下一次同文案失败可再次触发），行非空时不抢。
+ */
+internal fun shouldFocusHomeRetryOnErrorArrival(
+    error: String?,
+    rows: List<HomeRow>,
+    lastErrorFocused: String?,
+): Boolean = error != null && error != lastErrorFocused && shouldFocusHomeRetry(error, rows)
+
+/**
  * C12-P1-6：首页未配置空态是否应在 tick 时落焦“去设置”（纯函数，可单测）——
  * 空态分支在 effect B 声明之前 return，tick 恢复到不了空态；更新卡片关闭后
  * tick +1、仍未配置时落焦空态按钮，已配置时空态根本不在组合里、不动作。
