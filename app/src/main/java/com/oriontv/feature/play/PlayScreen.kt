@@ -3,6 +3,7 @@ package com.oriontv.feature.play
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -562,6 +564,23 @@ fun PlayScreen(
         return false
     }
 
+    // 触摸修复：视频区点按回调——错误页不做事，预览进行中提交落点，
+    // 抽屉开着时关抽屉，控制条显着时收起（焦点回根），否则唤出控制条。
+    // 与遥控器 OK/返回键同款行为。rememberUpdatedState 兜底：点按层的
+    // 手势检测器只注册一次，回调总读最新值，不因 recomposition 重启而丢点按。
+    val latestVideoTap = rememberUpdatedState {
+        when {
+            uiState.error != null -> Unit
+            previewTargetMs >= 0 -> commitPreview()
+            uiState.drawer != null -> viewModel.openDrawer(null)
+            controlsVisible -> {
+                controlsVisible = false
+                rootRequester.requestFocus()
+            }
+            else -> pokeControls()
+        }
+    }
+
     /** 左/右快进预览一步（P1-2/P1-3/P2-2 共用）：时长未出或反向按过起点时清掉预览。 */
     fun nudgePreview(dir: Int) {
         val target = previewController.nudge(uiState.positionMs, dir)
@@ -829,6 +848,18 @@ fun PlayScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
+        // 触摸修复：视频区点按层——原生 PlayerView 吃不到 Compose 点按，
+        // 不叠这一层平板用户没有任何办法唤出控制条。叠在视频之上、
+        // 控制条/抽屉/弹窗之下（后组合的层在上），只接住空白视频区的点按；
+        // 控制条显着时它被控制条根盖住，点按改由 PlayerControls 的 onVideoTap 接。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { latestVideoTap.value() })
+                },
+        )
+
         if (uiState.isLoading) {
             // C5-P2-3：全屏加载态改用 LoadingAnimation（真转圈动画）。
             LoadingAnimation()
@@ -928,6 +959,9 @@ fun PlayScreen(
                 onOpenEpisodes = { viewModel.openDrawer(PlayDrawer.EPISODES); pokeControls() },
                 onOpenSpeed = { viewModel.openDrawer(PlayDrawer.SPEED); pokeControls() },
                 onOpenSources = { viewModel.openDrawer(PlayDrawer.SOURCES); pokeControls() },
+                // 触摸修复：控制条显着时，视频区空白处点按走视频点按回调
+                // （收控制条/关抽屉/提交预览落点，与遥控器同款行为）。
+                onVideoTap = { latestVideoTap.value() },
                 modifier = Modifier.fillMaxSize(),
             )
         }

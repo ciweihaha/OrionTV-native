@@ -1,6 +1,7 @@
 package com.oriontv.feature.play
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
@@ -92,6 +95,9 @@ fun PlayerControls(
     onOpenEpisodes: () -> Unit,
     onOpenSpeed: () -> Unit,
     onOpenSources: () -> Unit,
+    /** 触摸修复：视频区空白处点按（控制条显着时根 Box 盖住视频，点按改由
+     * 这里接；按钮是子元素，点按先到按钮，不会误触发）。 */
+    onVideoTap: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 第 9 轮 P2-3：remember 的 key 加 isEnded——只记 showNextEpisode 时，
@@ -120,7 +126,17 @@ fun PlayerControls(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    // 触摸修复：控制条根的空白处点按（见 onVideoTap 参数说明）——
+    // rememberUpdatedState 兜底：手势检测器只注册一次，回调总读最新值，
+    // 不因每秒进度 recomposition 重启而丢点按。
+    val latestVideoTap = rememberUpdatedState(onVideoTap)
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { latestVideoTap.value() })
+            },
+    ) {
         // 顶部：标题 + 集数 + 源名。P2-11：单行省略，不让长片名延伸到屏幕中央
         // 与预览气泡重叠；气泡同时下移到标题行之下（top 96dp），双保险。
         Text(

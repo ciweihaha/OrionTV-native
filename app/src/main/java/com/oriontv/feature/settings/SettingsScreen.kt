@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -379,19 +380,16 @@ private fun SettingsMenuItem(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .focusable()
+            // 触摸修复：clickable 本身可聚焦，点按触发 onClick；右键仍走
+            // onKeyUp（clickable 不处理方向键右键）。
+            .clickable { onClick() }
             .onFocusChanged { focused = it.isFocused }
             .onKeyUp {
-                when (it.key) {
-                    Key.DirectionCenter, Key.Enter -> {
-                        onClick()
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        onRight()
-                        true
-                    }
-                    else -> false
+                if (it.key == Key.DirectionRight) {
+                    onRight()
+                    true
+                } else {
+                    false
                 }
             }
             .orionFocus(focused)
@@ -621,18 +619,10 @@ private fun PlaybackSettings(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .focusable(introEnabled)
+                // 触摸修复：clickable 本身可聚焦；禁用时 enabled=false（与旧
+                // focusable(introEnabled) 同款置灰不可操作），点按循环切换档位。
+                .clickable(enabled = introEnabled) { onCycleIntroSeconds() }
                 .onFocusChanged { focused = it.isFocused }
-                .onKeyUp {
-                    if (!introEnabled) {
-                        false
-                    } else if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
-                        onCycleIntroSeconds()
-                        true
-                    } else {
-                        false
-                    }
-                }
                 .orionFocus(focused)
                 .alpha(if (introEnabled) 1f else 0.4f)
                 .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
@@ -669,16 +659,11 @@ private fun ToggleRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .focusable()
+            // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
+            // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
+            // 不留两处按键处理（否则遥控器按一次会触发两次 onToggle）。
+            .clickable { onToggle() }
             .onFocusChanged { focused = it.isFocused }
-            .onKeyUp {
-                if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
-                    onToggle()
-                    true
-                } else {
-                    false
-                }
-            }
             .orionFocus(focused)
             .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .padding(horizontal = 16.dp, vertical = 14.dp),

@@ -1,7 +1,7 @@
 package com.oriontv.feature.search
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.key
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
-import com.oriontv.core.focus.onKeyUp
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.ui.components.orionFocus
 import com.oriontv.ui.theme.OrionColors
@@ -344,16 +341,11 @@ private fun KeyboardKey(
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
-            .focusable()
+            // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
+            // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
+            // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
+            .clickable { onClick() }
             .onFocusChanged { focused = it.isFocused }
-            .onKeyUp {
-                if (it.key == Key.DirectionCenter || it.key == Key.Enter) {
-                    onClick()
-                    true
-                } else {
-                    false
-                }
-            }
             .orionFocus(focused, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .background(OrionColors.Background, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .padding(vertical = 10.dp),

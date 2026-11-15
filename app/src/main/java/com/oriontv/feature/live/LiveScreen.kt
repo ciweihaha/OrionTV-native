@@ -7,6 +7,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -354,6 +356,19 @@ fun LiveScreen(
         return null
     }
 
+    // 触摸修复：视频区点按回调（与遥控器 OK 同款）——面板开着时关面板，
+    // 播放失败时重试，否则打开频道面板；无频道时不做事（空态/失败页的按钮
+    // 在上层）。rememberUpdatedState 兜底：点按层的手势检测器只注册一次，
+    // 回调总读最新值，不因 recomposition 重启而丢点按。
+    val latestVideoTap = rememberUpdatedState {
+        when {
+            uiState.panelOpen -> viewModel.closePanel()
+            uiState.channels.isEmpty() -> Unit
+            uiState.playbackFailed -> viewModel.retryCurrent()
+            else -> viewModel.openPanel()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -557,6 +572,17 @@ fun LiveScreen(
                 }
             },
             modifier = Modifier.fillMaxSize(),
+        )
+
+        // 触摸修复：视频区点按层——原生 PlayerView 吃不到 Compose 点按，
+        // 不叠这一层平板用户没有任何办法打开频道面板。叠在视频之上、
+        // 面板/弹窗/按钮之下（后组合的层在上），只接住空白视频区的点按。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { latestVideoTap.value() })
+                },
         )
 
         if (uiState.isLoading) {
@@ -1159,12 +1185,24 @@ private fun ChannelRow(
     var focused by remember { mutableStateOf(false) }
     var longPressed by remember { mutableStateOf(false) }
     val now = epg?.let { EpgParser.nowPlaying(it, channel.tvgId, channel.name, nowMs) }
+    // 触摸修复：点按选台、长按收藏——detectTapGestures 只走触摸，不碰遥控器
+    // 按键；onTap 在长按后不触发，与按键路径的 longPressed 挡掉逻辑同款
+    // （长按后松手不跟一次 onClick）。rememberUpdatedState 兜底：手势
+    // 检测器只注册一次，回调总读最新值，不因 recomposition 重启而丢点按。
+    val latestOnClick = rememberUpdatedState(onClick)
+    val latestOnLongPress = rememberUpdatedState(onLongPress)
     var rowModifier = Modifier
         .fillMaxWidth()
         .focusable()
         .onFocusChanged {
             focused = it.isFocused
             if (it.isFocused) onFocus()
+        }
+        .pointerInput(Unit) {
+            detectTapGestures(
+                onTap = { latestOnClick.value() },
+                onLongPress = { latestOnLongPress.value() },
+            )
         }
         .onKeyEvent { event ->
             // EPG 弹窗打开时行不消费任何键：否则弹窗无可聚焦行、焦点留在行上，
