@@ -988,12 +988,17 @@ private fun ChannelPanel(
         }
     }
     // EPG 弹窗关闭后焦点回落到面板当前台。
+    // C23-P1-1：先滚到目标行再落焦——目标行可能在可视区外未组合，裸重试
+    // 5 次全失败即丢焦点；仍失败回退到恒在组合里的首个分组 chip。
     LaunchedEffect(uiState.epgDialogChannel) {
         if (uiState.epgDialogChannel == null && uiState.panelOpen) {
             if (filtered.isEmpty()) {
                 firstChipRequester.requestFocusWithRetry()
             } else {
-                currentRequester.requestFocusWithRetry()
+                listState.scrollToItem(resolvePanelFocusIndex(filtered, currentChannel))
+                if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
+                    firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+                }
             }
         }
     }
