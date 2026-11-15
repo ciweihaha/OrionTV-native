@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -83,6 +84,10 @@ fun HomeScreen(
     // 每行横向滚动状态 + 每张卡片的焦点锚点（返回恢复用；键为 "行:卡片"）。
     val rowListStates = remember { mutableMapOf<String, LazyListState>() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    // Jewel 第 9 轮 P2-1：活的门控读数（与详情页同款）——effect 块捕获的
+    // globalModalOpen 是启动时快照，弹窗在重试窗口内打开时旧块读不到；
+    // rememberUpdatedState 的 State 随重组更新，重试每次复核都读最新值。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
 
     // 返回首页时刷新“最近播放”行（刚看完的断点要立刻出现）。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -140,7 +145,10 @@ fun HomeScreen(
     // 让调用方等下一次 rows 变化再试；行已加载完仍找不到才回落首 chip。
     // 目标卡片尚未组合完成时重试请求（C4-P2-2），仍失败才回默认锚点，
     // 不再静默丢焦点；固定 120ms 延时已去掉（B4-P2-23 同款问题）。
-    suspend fun restoreSavedCard(): Boolean {
+    // Jewel 第 9 轮 P2-1：[isStillValid] 由调用方传入活的门控读数——重试
+    // 每次都复核，弹窗在窗口内打开即停；重试耗尽后的回落首 chip 也先复核，
+    // 不让单次 requestFocus 在弹窗背后偷焦。
+    suspend fun restoreSavedCard(isStillValid: () -> Boolean = { true }): Boolean {
         val rows = uiState.rows
         val found = findSavedCard(rows, viewModel.savedFocusKey)
         if (found == null) {
@@ -153,8 +161,8 @@ fun HomeScreen(
         val (row, card) = found
         listState.scrollToItem(row + 1)
         rowListStates[rows[row].title]?.scrollToItem(card)
-        val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry() ?: false
-        if (!restored) firstChipRequester.requestFocus()
+        val restored = cardRequesters["$row:$card"]?.requestFocusWithRetry(isStillValid = isStillValid) ?: false
+        if (!restored && isStillValid()) firstChipRequester.requestFocus()
         return true
     }
 
@@ -179,23 +187,27 @@ fun HomeScreen(
             viewModel.initialFocusDone = true
             restoreDone = true
         } else if (!restoreDone) {
-            if (restoreSavedCard()) restoreDone = true
+            if (restoreSavedCard(isStillValid = { !modalOpenState.value })) restoreDone = true
         } else if (shouldRecoverFocusAfterRetry(wasEmpty, uiState.rows.isNotEmpty(), restoreDone)) {
-            restoreSavedCard()
+            restoreSavedCard(isStillValid = { !modalOpenState.value })
         }
     }
     // effect B：弹窗关闭后 tick 变化重跑恢复；行还在加载时跳过
     // （等 effect A 在行回来时恢复），不回落首 chip。
     // C11-P1-2：effect A 因弹窗跳过时 initialFocusDone 仍为假，tick 恢复
     // 也要能走首次落焦那条路（不只恢复已保存的卡片），否则首 chip 永远落不上。
-    LaunchedEffect(focusRestoreTick) {
+    // Jewel 第 9 轮 P2-1：补第 8 轮 P2-8 同款门控——key 加 globalModalOpen，
+    // 弹窗开着时跳过本次抢焦（关闭后 tick +1 重跑再恢复）；恢复本身经
+    // restoreSavedCard 的重试谓词复核门控（见上）。
+    LaunchedEffect(focusRestoreTick, globalModalOpen) {
+        if (globalModalOpen) return@LaunchedEffect
         if (focusRestoreTick > 0) {
             if (!viewModel.initialFocusDone) {
                 firstChipRequester.requestFocus()
                 viewModel.initialFocusDone = true
                 restoreDone = true
             } else {
-                restoreSavedCard()
+                restoreSavedCard(isStillValid = { !modalOpenState.value })
             }
         }
     }

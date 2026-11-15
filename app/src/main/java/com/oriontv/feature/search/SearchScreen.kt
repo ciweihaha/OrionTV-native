@@ -21,6 +21,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -115,6 +116,12 @@ fun SearchScreen(
     var resultsAreaHadFocus by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
+    // Jewel 第 9 轮 P2-1：活的门控读数（与详情/首页同款）——tick/error effect
+    // 块捕获的 globalModalOpen/showRemoteInputModal 是启动时快照，弹窗在重试
+    // 窗口内打开时旧块读不到；State 随重组更新，重试每次复核都读最新值。
+    // 注意：必须放在 showRemoteInputModal 声明之后（Kotlin 局部变量先声明后引用）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
+    val remoteModalOpenState = rememberUpdatedState(showRemoteInputModal)
     // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
     // 状态不丢（普通 remember 随组合处置而丢失）。
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
@@ -170,8 +177,10 @@ fun SearchScreen(
                 gridState.scrollToItem(target)
                 // C4-P2-2/B4-P2-23：目标卡片尚未组合完成时重试请求，仍失败才回搜索框，
                 // 不再靠 120ms 固定延时猜时序、也不再静默丢焦点。
-                val restored = resultRequesters[target]?.requestFocusWithRetry() ?: false
-                if (!restored) searchRequester.requestFocus()
+                val restored = resultRequesters[target]?.requestFocusWithRetry(
+                    isStillValid = { shouldRunSearchTickRestore(modalOpenState.value, remoteModalOpenState.value) },
+                ) ?: false
+                if (!restored && shouldRunSearchTickRestore(modalOpenState.value, remoteModalOpenState.value)) searchRequester.requestFocus()
             } else {
                 searchRequester.requestFocus()
             }
@@ -208,12 +217,15 @@ fun SearchScreen(
     LaunchedEffect(uiState.error, globalModalOpen) {
         if (!shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal)) return@LaunchedEffect
         val error = uiState.error ?: return@LaunchedEffect
+        // Jewel 第 9 轮 P2-1：重试每次复核门控，弹窗在窗口内打开即停；
+        // 耗尽后的回落搜索框也先复核，不在弹窗背后偷焦。
+        val stillValid = { shouldRunSearchTickRestore(modalOpenState.value, remoteModalOpenState.value) }
         val landed = if (error is SearchError.Empty) {
-            changeKeywordRequester.requestFocusWithRetry()
+            changeKeywordRequester.requestFocusWithRetry(isStillValid = stillValid)
         } else {
-            retryRequester.requestFocusWithRetry()
+            retryRequester.requestFocusWithRetry(isStillValid = stillValid)
         }
-        if (!landed) searchRequester.requestFocus()
+        if (!landed && stillValid()) searchRequester.requestFocus()
     }
 
     // B6-P2-12：requester map 只增不减——结果数缩减时清掉越界下标的旧

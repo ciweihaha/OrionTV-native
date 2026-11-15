@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +110,10 @@ fun FavoritesScreen(
     // 拉回卡片。区分依据：导航返回时组合是重建的（restorePending 初值 true），
     // 后台回前台时组合还在（restorePending 已消费为 false）；删除落点由
     // ViewModel 的 focusRestoreRequest 显式通知，tick 由 lastHandledTick 比对。
+    // Jewel 第 9 轮 P2-1：活的门控读数（与详情/首页同款）——恢复 effect 块
+    // 捕获的 globalModalOpen 是启动时快照，弹窗在重试窗口内打开时旧块读不到；
+    // State 随重组更新，重试每次复核都读最新值。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     var restorePending by remember { mutableStateOf(true) }
     var lastHandledTick by remember { mutableIntStateOf(0) }
     // C12-P1-2：加载失败“重试”成功后焦点丢失——refresh() 不置 restorePending、
@@ -133,8 +138,8 @@ fun FavoritesScreen(
         lastHandledTick = focusRestoreTick
         if (!viewModel.initialFocusDone) {
             // A8-P2-2：空态/首卡的单次焦点请求改重试版（卡片尚未组合完成时静默失败）。
-            if (uiState.items.isNotEmpty()) firstCardRequester.requestFocusWithRetry()
-            else goHomeRequester.requestFocusWithRetry()
+            if (uiState.items.isNotEmpty()) firstCardRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+            else goHomeRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             viewModel.initialFocusDone = true
         } else {
             // P2-9（第 5 轮）：按记录键（source+id）锚定，不按 index——
@@ -150,11 +155,11 @@ fun FavoritesScreen(
                     gridState.scrollToItem(savedIndex)
                     // C4-P2-2：目标卡片尚未组合完成时重试请求，仍失败才回首张卡片，
                     // 不再静默丢焦点。
-                    val restored = cardRequesters[savedIndex]?.requestFocusWithRetry() ?: false
-                    if (!restored) firstCardRequester.requestFocusWithRetry()
+                    val restored = cardRequesters[savedIndex]?.requestFocusWithRetry(isStillValid = { !modalOpenState.value }) ?: false
+                    if (!restored && !modalOpenState.value) firstCardRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
                 }
-                uiState.items.isNotEmpty() -> firstCardRequester.requestFocusWithRetry()
-                else -> goHomeRequester.requestFocusWithRetry()
+                uiState.items.isNotEmpty() -> firstCardRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
+                else -> goHomeRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             }
         }
     }
