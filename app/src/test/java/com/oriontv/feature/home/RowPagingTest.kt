@@ -27,7 +27,7 @@ class RowPagingTest {
         assertEquals(20, state.nextCursor)
         state.onPageLoaded(state.advanceCursor(20))
         assertEquals(40, state.nextCursor)
-        assertEquals(20, state.advanceCursor(20))
+        assertEquals(40, state.advanceCursor(20))
     }
 
     @Test
