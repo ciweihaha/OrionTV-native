@@ -342,7 +342,7 @@ class RnMigration @Inject constructor(
                     title = record.title,
                     sourceName = record.source_name,
                     cover = record.cover,
-                    episodeIndex = record.index,
+                    episodeIndex = toLocalEpisodeIndex(record.index),
                     totalEpisodes = record.total_episodes,
                     playTimeSeconds = record.play_time,
                     totalTimeSeconds = record.total_time,
@@ -457,3 +457,12 @@ internal fun shouldImportUrlSetting(currentValue: String, incoming: String?): Bo
  */
 internal fun fallbackSaveTime(saveTime: Long?, now: Long, index: Int): Long =
     saveTime?.takeIf { it > 0 } ?: (now - index)
+
+/**
+ * 第 8 轮 D8-P1-2：RN 播放记录的 `index` 是 1 基（旧 RN 端 playerStore.ts
+ * 写 `currentEpisodeIndex + 1`，与服务端一致），原生 Room 是 0 基——
+ * 迁移时减 1，钳到 ≥0（脏记录 index=0/缺省时不变成 -1）。
+ * 局限：只对本次迁移生效；`rnMigrationDone` 已打标记的旧迁移行不会重跑，
+ * 已按 1 基入库的旧断点仍错位一位，需用户重播一次覆盖。
+ */
+internal fun toLocalEpisodeIndex(rnIndex: Int): Int = (rnIndex - 1).coerceAtLeast(0)

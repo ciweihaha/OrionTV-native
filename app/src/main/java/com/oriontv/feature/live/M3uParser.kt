@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 /**
  * M3U 解析（plan §5.3）：
  * - 逐行解析 `#EXTINF:`，取第一个不在双引号内的逗号之后为台名；
- * - 属性取 `tvg-logo`、`group-title`、`tvg-id`；
+ * - 属性取 `tvg-logo`、`group-title`、`tvg-id`（属性名大小写不敏感）；
  * - 下一行非 `#` 开头且含 `://` 的为流地址；`#EXTINF` 与地址之间的
  *   `#` 行（`#EXTVLCOPT`、`#EXTGRP` 等）跳过继续找地址，遇下一个
  *   `#EXTINF` 才停；
@@ -25,6 +25,16 @@ object M3uParser {
      * 真实源远达不到；超限截断并记日志，不静默丢数据。
      */
     const val MAX_CHANNELS = 20_000
+
+    /**
+     * 第 8 轮 D8-P2-4：`#EXTINF:` 行头大小写不敏感——源文件用小写 `#extinf:`
+     * 时旧实现整份解析出 0 台、直播空态；行内属性名同样不区分大小写
+     * （extractAttrs 把 key 归一化成小写，`TVG-LOGO`/`TVG-ID` 不再丢失）。
+     * 内外两处循环都要走这里：内层不认小写时，无地址的频道会把
+     * 下一个小写 `#extinf:` 行当 `#` 行跳过、误吞下一台的地址。
+     */
+    internal fun isExtinfLine(line: String): Boolean =
+        line.startsWith("#EXTINF:", ignoreCase = true)
 
     @Serializable
     data class Channel(
@@ -45,7 +55,7 @@ object M3uParser {
         var i = 0
         while (i < lines.size) {
             val line = lines[i].trim()
-            if (line.startsWith("#EXTINF:")) {
+            if (isExtinfLine(line)) {
                 val name = extractName(line)
                 val attrs = extractAttrs(line)
                 // 下一行非 # 开头且含 :// 的为流地址；#EXTINF 与地址之间的
@@ -58,7 +68,7 @@ object M3uParser {
                         j++
                         continue
                     }
-                    if (next.startsWith("#EXTINF:")) break
+                    if (isExtinfLine(next)) break
                     if (next.startsWith("#")) {
                         j++
                         continue
@@ -147,12 +157,12 @@ object M3uParser {
         return "Unknown"
     }
 
-    /** 取 key="value" 形式的属性。 */
+    /** 取 key="value" 形式的属性；属性名不区分大小写（key 归一化成小写）。 */
     internal fun extractAttrs(extinf: String): Map<String, String> {
         val result = mutableMapOf<String, String>()
         val regex = Regex("""([\w-]+)="([^"]*)"""")
         for (match in regex.findAll(extinf)) {
-            result[match.groupValues[1]] = match.groupValues[2]
+            result[match.groupValues[1].lowercase()] = match.groupValues[2]
         }
         return result
     }

@@ -53,7 +53,13 @@ class M3uRepository @Inject constructor(
         forceRefresh: Boolean = false,
     ): List<M3uParser.Channel> =
         withContext(ioDispatcher) {
-            if (m3uUrl.isBlank()) return@withContext emptyList()
+            // D8-P2-8：空地址不算一次加载——复位失败信号再返回，否则一次
+            // 失败后用户清空 M3U 地址，loadFailed 仍滞留 true，后续调用方
+            // 会误报“刷新失败”。（现调用方均先判空，不可达，仅作防御。）
+            if (m3uUrl.isBlank()) {
+                _loadFailed.value = false
+                return@withContext emptyList()
+            }
             val cached = cacheStore.readM3uCache(m3uUrl)
             if (!forceRefresh && cached != null && nowMs - cached.ts <= LiveController.M3U_CACHE_TTL_MS) {
                 _loadFailed.value = false

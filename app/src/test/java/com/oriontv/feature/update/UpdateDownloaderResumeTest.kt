@@ -1,9 +1,12 @@
 package com.oriontv.feature.update
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -14,9 +17,12 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSource
 import okio.ForwardingSource
+import okio.Source
+import okio.Timeout
 import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -25,6 +31,7 @@ import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -257,6 +264,203 @@ class UpdateDownloaderResumeTest {
         assertFalse(shouldTreat416AsComplete(400, 1000))
         assertFalse(shouldTreat416AsComplete(1000, null))
         assertFalse(shouldTreat416AsComplete(0, 1000))
+    }
+
+    /**
+     * 服务端中途停顿、read() 一直阻塞的响应体（模拟弱网下未到 60 秒读超时
+     * 的停顿）。体被关掉时放行阻塞的读并抛错——与真实 OkHttp 关响应体断
+     * socket 的行为同款。source() 只建一个实例（真实 ResponseBody 的
+     * source() 是同一源）：关体关的必须是读正在用的那个源。
+     *
+     * [stallTimeoutMs] 是停顿兜底：无修复时取消递送不到阻塞的读，读会等满
+     * 它后返回 -1、下载“正常”下完（0 字节）。取消测试用 60 秒（与真实读
+     * 超时一致）：之前用 10 秒时，CI 负载下测试线程唤醒延迟，10 秒兜底
+     * 可能在 5 秒 withTimeout 之前先到期、下载先“正常”完成，join 正常
+     * 返回、thrown 为空——不是取消机制的问题，是测试自身的竞态；60 秒
+     * 让 withTimeout 永远先到，下载不可能在取消前“正常”完成。
+     */
+    private class StallingBody(private val stallTimeoutMs: Long = 10_000L) : ResponseBody() {
+        override fun contentLength() = 1024L
+        override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
+
+        /** 第一次 read() 已进入阻塞（测试据此再取消）。 */
+        val readStarted = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+
+        @Volatile
+        var closed = false
+
+        /** 诊断计数：读进了几次、回 -1 还是抛错、关了几次。 */
+        val readCalls = AtomicInteger(0)
+        val readReturnedMinusOne = AtomicBoolean(false)
+        val readThrew = AtomicBoolean(false)
+        val closeCalls = AtomicInteger(0)
+
+        private var cachedSource: BufferedSource? = null
+
+        override fun source(): BufferedSource {
+            return cachedSource ?: object : Source {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    readCalls.incrementAndGet()
+                    readStarted.countDown()
+                    // 有修复时关体立即放行，远不到兜底；无修复时等满兜底后
+                    // 返回 -1，外面的 withTimeout(5 秒) 先抛超时取消异常。
+                    release.await(stallTimeoutMs, TimeUnit.MILLISECONDS)
+                    if (closed) {
+                        readThrew.set(true)
+                        throw IOException("body closed")
+                    }
+                    readReturnedMinusOne.set(true)
+                    return -1
+                }
+
+                override fun timeout(): Timeout = Timeout.NONE
+
+                override fun close() {
+                    closeCalls.incrementAndGet()
+                    closed = true
+                    release.countDown()
+                }
+            }.buffer().also { cachedSource = it }
+        }
+    }
+
+    @Test
+    fun `stalled body read blocks until body is closed`() {
+        // 诊断探针（不取消）：只确认停顿的 read() 真的会堵住下载。若 read()
+        // 立即回 -1，下载会立刻“成功”，取消测试的失败就与取消机制无关。
+        val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
+        try {
+            val body = StallingBody()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.method == "HEAD") {
+                    Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", "1024")
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    responseFor(request, 200, body)
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.IO)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            var stillRunning = false
+            runBlocking {
+                val job = async(Dispatchers.IO) {
+                    downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                }
+                assertTrue(body.readStarted.await(10, TimeUnit.SECONDS))
+                delay(3_000)
+                stillRunning = job.isActive
+                job.cancel()
+                // 收尾：取消后最多等 15 秒让任务收尾（10 秒停顿兜底），
+                // 不让 runBlocking 挂住整个测试任务。
+                withTimeoutOrNull(15_000) { job.join() }
+            }
+            assertTrue("停顿的体读应堵住下载（3 秒后仍在跑）", stillRunning)
+            assertTrue(dest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `cancel during stalled body read stops promptly`() {
+        // D8-P2-2：服务端停顿、read() 阻塞时取消下载，必须立即停（关体断读），
+        // 不等 60 秒读超时；取消后残文件保留，下次可断点续传。
+        // 注意：下载器用 Dispatchers.IO 构造（与生产侧 AppModule 一致）——
+        // Dispatchers.Unconfined 下取消递送语义不同，不是生产形态，不测它。
+        val dir = Files.createTempDirectory("oriontv-cancel-test").toFile()
+        try {
+            // 停顿兜底 60 秒（与真实读超时一致）：见 StallingBody 注释，
+            // 10 秒兜底会在 CI 线程延迟下先于 5 秒 withTimeout 到期、
+            // 让下载“正常”完成，是测试竞态而非取消机制问题。
+            val body = StallingBody(stallTimeoutMs = 60_000L)
+            val getCalls = AtomicInteger(0)
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.method == "HEAD") {
+                    Response.Builder()
+                        .request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                        .header("Content-Length", "1024")
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    getCalls.incrementAndGet()
+                    responseFor(request, 200, body)
+                }
+            }.build()
+            val downloader = UpdateDownloader(client, Dispatchers.IO)
+            val dest = File(dir, "OrionTV_v2.0.0.apk")
+            // 断言一律放在 runBlocking 外面、各自独立一行：挂起 lambda 里的
+            // 断言失败时堆栈只报 runBlocking 行，分不清是哪一环；放外面后
+            // 失败行号直接指明卡点。joinMs 的分段：<8 秒且 thrown 为空
+            // = 读立即回 -1（假体问题）；>=8 秒 = 停顿兜底先到期
+            //（取消未递送或测试线程被饿死）；5 秒左右且为超时异常 = 取消
+            // 未递送到阻塞的读。
+            val readEntered: Boolean
+            val thrown: CancellationException?
+            var joinMs = -1L
+            // 诊断时序：cancel() 调用点、调用后 Job 是否已取消/已完成。
+            var cancelAt = 0L
+            var cancelledImmediately = false
+            var completedImmediately = false
+            runBlocking {
+                // 下载跑在 IO 线程：阻塞的 read() 占一条线程，主线程仍可取消。
+                val job = async(Dispatchers.IO) {
+                    downloader.downloadApk("https://example.com/orionTV.apk", dest)
+                }
+                readEntered = body.readStarted.await(10, TimeUnit.SECONDS)
+                cancelAt = System.nanoTime()
+                job.cancel()
+                // 诊断：cancel() 之后 Job 必须已取消；若 isCancelled 为 false
+                // 且 isCompleted 为 true，说明下载在取消前已完成、cancel 是
+                // 空操作——外层复核自然看不到已取消的 Job。
+                cancelledImmediately = job.isCancelled
+                completedImmediately = job.isCompleted
+                // D8-P2-2 跟进（第 13 轮复测确诊）：join() 永远拿不到取消异常——
+                // Job.join() 只等任务结束，已取消任务的 join() 正常返回、不重抛
+                // CancellationException，所以 thrown 恒为 null，前面三次生产侧
+                // 修复（watcher 关体、withContext 外复核）都是对的、测法是错的。
+                // 同 ApiClientTest 的 D7-P2-4 写法：对 Deferred 用 await() 才
+                // 能拿到下载自身的 CancellationException；若取消递送不到，
+                // withTimeout 先抛 TimeoutCancellationException。
+                thrown = try {
+                    withTimeout(5_000) { job.await() }
+                    null
+                } catch (e: CancellationException) {
+                    e
+                }
+                joinMs = (System.nanoTime() - cancelAt) / 1_000_000
+            }
+            assertTrue("下载应在 10 秒内进入体读", readEntered)
+            // 诊断（先于行为断言）：cancel() 必须真的取消了 Job，否则下载在
+            // 取消前已完成、cancel 是空操作。（关体/读抛错相对 cancelAt 的时序
+            // 断言已删——随 CI 线程调度抖动，第 13 轮复测与合并轮同代码一过一挂。）
+            assertTrue("cancel() 后 Job 应已取消（否则下载在取消前已完成，completed=$completedImmediately）", cancelledImmediately)
+            // 先断言读的行为本身（失败行号直接说明读干了什么）：
+            // 正常取消路径：读进 1 次、因关体抛错、不回 -1。
+            assertEquals("读应只进 1 次（无重试）", 1, body.readCalls.get())
+            assertTrue("读应因关体抛错", body.readThrew.get())
+            assertTrue("读不应回 -1（回 -1 即下载‘正常’完成）", !body.readReturnedMinusOne.get())
+            // GET 只发 1 次：若发了 2 次，说明读的异常到了 attempt 的 catch
+            // 但 Job 未取消、走了 3 秒退避 + 重试（取消未递送到下载协程）；
+            // 若只 1 次且后面 assertNotNull 失败，说明异常在
+            // suspendCancellableCoroutine/withContext 里被吞、下载直接
+            // “正常”返回。
+            assertEquals("GET 应只发 1 次（无重试）", 1, getCalls.get())
+            assertTrue("join 应在 8 秒内返回（否则是停顿兜底）", joinMs < 8_000)
+            assertNotNull("取消的下载应抛 CancellationException", thrown)
+            assertTrue(
+                "取消应在 5 秒内生效（不应是 withTimeout 的超时取消异常）",
+                thrown !is TimeoutCancellationException,
+            )
+            assertTrue(dest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test

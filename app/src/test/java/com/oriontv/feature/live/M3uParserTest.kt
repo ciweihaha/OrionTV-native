@@ -207,4 +207,68 @@ class M3uParserTest {
         assertEquals("Channel0", channels.first().name)
         assertEquals("Channel${M3uParser.MAX_CHANNELS - 1}", channels.last().name)
     }
+
+    @Test
+    fun `lowercase extinf lines parse`() {
+        // D8-P2-4：#EXTINF: 行头大小写不敏感——源文件用小写 #extinf: 时
+        // 旧实现整份解析出 0 台、直播空态。
+        val content = """
+            #EXTM3U
+            #extinf:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1.m3u8
+            #extinf:-1 tvg-id="cctv2",CCTV2
+            http://example.com/cctv2.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV2"), channels.map { it.name })
+    }
+
+    @Test
+    fun `mixed case extinf lines parse`() {
+        // D8-P2-4 的另一半：大小写混用的行头同样识别，行内属性名不区分大小写。
+        val content = """
+            #EXTM3U
+            #ExTiNf:-1 tvg-id="cctv1",CCTV1
+            http://example.com/cctv1.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(1, channels.size)
+        assertEquals("CCTV1", channels[0].name)
+        assertEquals("cctv1", channels[0].tvgId)
+    }
+
+    @Test
+    fun `uppercase attr names parse`() {
+        // S4 补完：属性名大小写不敏感——源写 TVG-LOGO/TVG-ID/GROUP-TITLE
+        // 时旧 extractAttrs 原样取 key，attrs["tvg-logo"] 查不到，台标丢失。
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 TVG-ID="cctv1" TVG-LOGO="http://example.com/cctv1.png" GROUP-TITLE="央视",CCTV1
+            http://example.com/cctv1.m3u8
+            #extinf:-1 Tvg-Id="cctv2" Tvg-Logo="http://example.com/cctv2.png" Group-Title="卫视",CCTV2
+            http://example.com/cctv2.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("CCTV1", "CCTV2"), channels.map { it.name })
+        assertEquals("cctv1", channels[0].tvgId)
+        assertEquals("http://example.com/cctv1.png", channels[0].logo)
+        assertEquals("央视", channels[0].group)
+        assertEquals("cctv2", channels[1].tvgId)
+        assertEquals("http://example.com/cctv2.png", channels[1].logo)
+        assertEquals("卫视", channels[1].group)
+    }
+
+    @Test
+    fun `lowercase channel without url does not swallow the next channel`() {
+        // D8-P2-4 的内层循环同款：小写 #extinf 行缺地址时，下一台的地址
+        // 不得被错认成上一台的——内层遇小写 #extinf 即停。
+        val content = """
+            #EXTM3U
+            #extinf:-1 tvg-id="a",ChannelA
+            #extinf:-1 tvg-id="b",ChannelB
+            http://example.com/b.m3u8
+        """.trimIndent()
+        val channels = M3uParser.parse(content)
+        assertEquals(listOf("ChannelB"), channels.map { it.name })
+    }
 }

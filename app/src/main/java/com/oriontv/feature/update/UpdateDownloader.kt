@@ -5,13 +5,14 @@ import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -19,6 +20,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -84,165 +86,211 @@ class UpdateDownloader @Inject constructor(
         url: String,
         destFile: File,
         onProgress: ((written: Long, total: Long) -> Unit)? = null,
-    ): File = withContext(ioDispatcher) {
-        val declared = headApkSizeBytes(url)
-        if (declared != null && declared > MAX_APK_BYTES) {
-            throw UpdateDownloadException(
-                UpdateError.TooLarge,
-                "安装包体积 ${formatSize(declared)}，超过 200MB 上限",
-            )
-        }
-        // D-P1-5：下载专用客户端，读超时 60 秒（共享客户端 15 秒，抖动 WiFi 下一次
-        // 停顿就丢掉全部进度）。
-        val downloadClient = okHttpClient.newBuilder()
-            .readTimeout(ApiClient.DOWNLOAD_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
-        var lastError: Exception? = null
-        // MAX_RETRIES 是重试次数（不含首次），与 ApiClient 一致：1 次初试 + 3 次重试。
-        // 原来 repeat(MAX_RETRIES) 只发 3 次（初试 + 2 次重试），与文档“失败重试 3 次”不符。
-        repeat(MAX_RETRIES + 1) { attempt ->
-            try {
-                destFile.parentFile?.mkdirs()
-                val resumedFrom = if (destFile.exists()) destFile.length() else 0L
-                val requestBuilder = Request.Builder().url(url).get()
-                if (resumedFrom > 0) {
-                    requestBuilder.header("Range", "bytes=$resumedFrom-")
+    ): File {
+        // D8-P2-2：取消到达标志——监听协程在取消时置位（见下），外层凭它补抛
+        // CE。不用 Job/ensureActive() 判断：实测 withContext 会吞掉内部
+        // 抛出的 CE，且外层 ensureActive() 在 Job 已取消时仍不抛（单测时序
+        // 诊断证实：cancel() 后 Job.isCancelled 为 true、关体与读抛错均在
+        // 取消之后、无重试、join 快速返回，唯独 join 不抛 CE）；监听协程
+        // provably 在取消时触发（关体发生在取消后），故以它为准。
+        // copyDone 区分“取消时拷贝已正常完成”与“取消打断了拷贝”：正常完成
+        // 后的 watcher.cancel() 也会进 finally，不能误标为取消。
+        val cancelledDuringCopy = AtomicBoolean(false)
+        val copyDone = AtomicBoolean(false)
+        val downloaded = coroutineScope {
+            async(ioDispatcher) {
+                val declared = headApkSizeBytes(url)
+                if (declared != null && declared > MAX_APK_BYTES) {
+                    throw UpdateDownloadException(
+                        UpdateError.TooLarge,
+                        "安装包体积 ${formatSize(declared)}，超过 200MB 上限",
+                    )
                 }
-                val request = requestBuilder.build()
-                downloadClient.newCall(request).executeCancellable().use { response ->
-                    if (!response.isSuccessful) {
-                        if (response.code == 416 && resumedFrom > 0) {
-                            // 第 6 轮 P2-2：416 未必是断点失效——本地文件已与服务端
-                            // 声明体积相等时，很可能是上次已下完、未及校验就中断
-                            //（或 Range 起点恰好在 EOF）；直接当下完走校验，不删
-                            // 整包重下（110MB 弱网下等于白下一次）。体积对不上
-                            //（服务端文件已换）才删残文件重下；拿不到声明体积时
-                            // 沿用旧行为（删残文件重下）。
-                            if (shouldTreat416AsComplete(resumedFrom, declared)) {
-                                return@withContext destFile
+                // D-P1-5：下载专用客户端，读超时 60 秒（共享客户端 15 秒，抖动 WiFi 下一次
+                // 停顿就丢掉全部进度）。
+                val downloadClient = okHttpClient.newBuilder()
+                    .readTimeout(ApiClient.DOWNLOAD_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                var lastError: Exception? = null
+                // MAX_RETRIES 是重试次数（不含首次），与 ApiClient 一致：1 次初试 + 3 次重试。
+                // 原来 repeat(MAX_RETRIES) 只发 3 次（初试 + 2 次重试），与文档“失败重试 3 次”不符。
+                repeat(MAX_RETRIES + 1) { attempt ->
+                    try {
+                        destFile.parentFile?.mkdirs()
+                        val resumedFrom = if (destFile.exists()) destFile.length() else 0L
+                        val requestBuilder = Request.Builder().url(url).get()
+                        if (resumedFrom > 0) {
+                            requestBuilder.header("Range", "bytes=$resumedFrom-")
+                        }
+                        val request = requestBuilder.build()
+                        downloadClient.newCall(request).executeCancellable().use { response ->
+                            if (!response.isSuccessful) {
+                                if (response.code == 416 && resumedFrom > 0) {
+                                    // 第 6 轮 P2-2：416 未必是断点失效——本地文件已与服务端
+                                    // 声明体积相等时，很可能是上次已下完、未及校验就中断
+                                    //（或 Range 起点恰好在 EOF）；直接当下完走校验，不删
+                                    // 整包重下（110MB 弱网下等于白下一次）。体积对不上
+                                    //（服务端文件已换）才删残文件重下；拿不到声明体积时
+                                    // 沿用旧行为（删残文件重下）。
+                                    if (shouldTreat416AsComplete(resumedFrom, declared)) {
+                                        return@async destFile
+                                    }
+                                    // 断点失效（服务端文件已换）：删残文件，可重试重下。
+                                    destFile.delete()
+                                    throw IOException("下载失败：HTTP 416，断点失效，从头重下")
+                                }
+                                if (!ApiClient.shouldRetryOnStatus(response.code)) {
+                                    // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
+                                    // UpdateDownloadException 有专用 catch，直接重抛不重试。
+                                    throw UpdateDownloadException(
+                                        UpdateError.Network,
+                                        "下载失败：HTTP ${response.code}，不重试",
+                                    )
+                                }
+                                throw IOException("下载失败：HTTP ${response.code}")
                             }
-                            // 断点失效（服务端文件已换）：删残文件，可重试重下。
-                            destFile.delete()
-                            throw IOException("下载失败：HTTP 416，断点失效，从头重下")
-                        }
-                        if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                            // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
-                            // UpdateDownloadException 有专用 catch，直接重抛不重试。
-                            throw UpdateDownloadException(
-                                UpdateError.Network,
-                                "下载失败：HTTP ${response.code}，不重试",
-                            )
-                        }
-                        throw IOException("下载失败：HTTP ${response.code}")
-                    }
-                    val body = response.body ?: throw IOException("下载失败：响应体为空")
-                    val isResume = response.code == 206
-                    if (isResume) {
-                        // 206 必须从断点处续上，否则追加会写坏文件：起点不对就删残文件重下。
-                        // B8-P2-9：缺 Content-Range 头时旧实现直接当续传成功追加——
-                        // 服务端没确认起点就追加，文件必然写坏、SHA 校验才暴露；
-                        // 缺头与起点不一致同等处理：删残文件、抛错重下。
-                        val rangeStart = response.header("Content-Range")
-                            ?.substringAfter("bytes ", "")
-                            ?.substringBefore("-")
-                            ?.toLongOrNull()
-                        if (rangeStart == null) {
-                            destFile.delete()
-                            throw IOException("下载失败：服务端 206 响应缺 Content-Range 头，无法确认续传起点，从头重下")
-                        }
-                        if (rangeStart != resumedFrom) {
-                            destFile.delete()
-                            throw IOException("下载失败：服务端续传起点 $rangeStart 与断点 $resumedFrom 不一致，从头重下")
-                        }
-                    }
-                    val total = if (isResume) {
-                        response.header("Content-Range")
-                            ?.substringAfterLast("/", "")
-                            ?.toLongOrNull()
-                            ?: (resumedFrom + body.contentLength())
-                    } else {
-                        body.contentLength()
-                    }
-                    var written = if (isResume) resumedFrom else 0L
-                    // B14-P2-1：体读取阶段的取消不能只靠每 64KB 读完后的 ensureActive()——
-                    // 阻塞读本身可停满 60 秒读超时，期间取消到达、重下也被拦。
-                    // 拷贝循环包进 suspendCancellableCoroutine，取消到达时由
-                    // cont.invokeOnCancellation 关响应体流，中断 socket 读
-                    // （与 readStreamCapped 同款；Job.invokeOnCompletion 的
-                    // 处理器只在任务真正完成后才跑，正在阻塞读时根本到不了，
-                    // 救不了这条路——实测 29.5 秒才停。executeCancellable 的
-                    // Call.cancel() 钩子在拿到响应头、continuation 恢复后即解除，
-                    // 体读取阶段再无中断路径）。关流引发的读错在下面按取消处理，
-                    // 不当可重试失败；其余异常原样经 continuation 抛回外层。
-                    // suspendCancellableCoroutine 的 block 不是协程体，调不了
-                    // currentCoroutineContext()——先在外面取一次。
-                    val copyContext = currentCoroutineContext()
-                    suspendCancellableCoroutine { cont ->
-                        cont.invokeOnCancellation { runCatching { body.close() } }
-                        try {
+                            val body = response.body ?: throw IOException("下载失败：响应体为空")
+                            val isResume = response.code == 206
+                            if (isResume) {
+                                // 206 必须从断点处续上，否则追加会写坏文件：起点不对就删残文件重下。
+                                // B8-P2-9：缺 Content-Range 头时旧实现直接当续传成功追加——
+                                // 服务端没确认起点就追加，文件必然写坏、SHA 校验才暴露；
+                                // 缺头与起点不一致同等处理：删残文件、抛错重下。
+                                val rangeStart = response.header("Content-Range")
+                                    ?.substringAfter("bytes ", "")
+                                    ?.substringBefore("-")
+                                    ?.toLongOrNull()
+                                if (rangeStart == null) {
+                                    destFile.delete()
+                                    throw IOException("下载失败：服务端 206 响应缺 Content-Range 头，无法确认续传起点，从头重下")
+                                }
+                                if (rangeStart != resumedFrom) {
+                                    destFile.delete()
+                                    throw IOException("下载失败：服务端续传起点 $rangeStart 与断点 $resumedFrom 不一致，从头重下")
+                                }
+                            }
+                            val total = if (isResume) {
+                                response.header("Content-Range")
+                                    ?.substringAfterLast("/", "")
+                                    ?.toLongOrNull()
+                                    ?: (resumedFrom + body.contentLength())
+                            } else {
+                                body.contentLength()
+                            }
+                            var written = if (isResume) resumedFrom else 0L
                             body.byteStream().use { input ->
-                                // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
-                                FileOutputStream(destFile, isResume).use { output ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    while (true) {
-                                        // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
-                                        copyContext.ensureActive()
-                                        val read = try {
-                                            input.read(buffer)
-                                        } catch (e: IOException) {
-                                            // 关流中断的阻塞读：已取消按取消抛，不进重试；
-                                            // 未取消的真 IO 错原样抛，走重试。
-                                            copyContext.ensureActive()
-                                            throw e
+                                // D8-P2-2：第 7 轮 D7-P2-4 给 ApiClient 体读加了“取消时关流
+                                // 断 socket”的 readStreamCapped，这里是同款缺口的下载器版：
+                                // executeCancellable 的取消挂钩只在 execute() 调用期间
+                                // 有效，响应头回来后挂钩即摘掉；拷贝循环只在每 64KB 块
+                                // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
+                                // 最坏要等 60 秒读超时。取消时由监听协程关响应体，中断
+                                // socket 读；读抛错直接由外层 attempt 的 catch 分流。
+                                // 注意不用 suspendCancellableCoroutine：隔离诊断已证实
+                                // 吞没点是 withContext 本身（readStreamCapped 在
+                                // withContext 里取消后照常返回、不抛 CE；不带
+                                // withContext 时 CE 正常传出），三种收尾写法
+                                // resumeWithException / 直接 throw / 不截获直抛都
+                                // 走不通——故下载体改用 async + await()（见函数末尾
+                                // 注释），不再用 withContext 包起来。
+                                // 也不能用 Job.invokeOnCompletion 挂钩——它只在任务
+                                // 完成时跑，阻塞的读不返回、任务完不成，挂钩永远等不到
+                                // 触发；也不能在块里调 currentCoroutineContext()（块
+                                // 不是 suspend 上下文），context 先在外面捕获。
+                                val context = currentCoroutineContext()
+                                coroutineScope {
+                                    // 取消监听：父协程取消时一并取消，finally 关体断读。
+                                    // awaitCancellation() 永远挂起，只在取消时以 CE 返回。
+                                    val watcher = launch {
+                                        try {
+                                            awaitCancellation()
+                                        } finally {
+                                            // 取消到达即记下（拷贝已正常完成时不记——正常完成
+                                            // 后的 watcher.cancel() 也会进 finally，不能误标
+                                            // 为取消）；先置标志再关体：读因关体抛错，标志一
+                                            // 定在读抛错之前已置位，外层复核读到它时无竞态。
+                                            if (!copyDone.get()) cancelledDuringCopy.set(true)
+                                            runCatching { body.close() }
                                         }
-                                        if (read < 0) break
-                                        written += read
-                                        if (written > MAX_APK_BYTES) {
-                                            throw UpdateDownloadException(
-                                                UpdateError.TooLarge,
-                                                "安装包体积超过 200MB 上限，已停止下载",
-                                            )
+                                    }
+                                    try {
+                                        // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
+                                        FileOutputStream(destFile, isResume).use { output ->
+                                            val buffer = ByteArray(64 * 1024)
+                                            while (true) {
+                                                // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
+                                                context.ensureActive()
+                                                val read = input.read(buffer)
+                                                if (read < 0) {
+                                                    copyDone.set(true)
+                                                    break
+                                                }
+                                                written += read
+                                                if (written > MAX_APK_BYTES) {
+                                                    throw UpdateDownloadException(
+                                                        UpdateError.TooLarge,
+                                                        "安装包体积超过 200MB 上限，已停止下载",
+                                                    )
+                                                }
+                                                output.write(buffer, 0, read)
+                                                onProgress?.invoke(written, total)
+                                            }
                                         }
-                                        output.write(buffer, 0, read)
-                                        onProgress?.invoke(written, total)
+                                    } finally {
+                                        watcher.cancel()
                                     }
                                 }
                             }
-                            if (cont.isActive) cont.resume(Unit)
-                        } catch (e: Exception) {
-                            if (cont.isCancelled) {
-                                cont.resumeWithException(
-                                    e as? CancellationException
-                                        ?: CancellationException("下载已取消").apply { initCause(e) },
-                                )
-                            } else {
-                                cont.resumeWithException(e)
-                            }
+                        }
+                        // D8-P2-2：成功返回前再查一次取消（辅助兜底——await() 才是
+                        // 真正把 CE 传出的地方，见函数末尾；这里多查一次无害，
+                        // 取消时尽早收尾）。
+                        currentCoroutineContext().ensureActive()
+                        return@async destFile
+                    } catch (e: UpdateDownloadException) {
+                        // 超限不重试（再下也一样大）。
+                        destFile.delete()
+                        throw e
+                    } catch (e: CancellationException) {
+                        // 取消不重试；残文件保留，下次下载从断点续下（D-P1-5）。
+                        throw e
+                    } catch (e: Exception) {
+                        // D8-P2-2：取消到达时读抛的可能是普通 IOException（关体断读），
+                        // 不是 CancellationException；先查取消：已取消即按取消收尾，
+                        // 不重试、不包成下载失败（末次尝试无退避时尤其需要这行，
+                        // 否则取消会被包成 UpdateDownloadException）。
+                        currentCoroutineContext().ensureActive()
+                        lastError = e
+                        // B4-P2-9：可重试失败保留半截文件，下次尝试用 Range 续传；不再每次删。
+                        // 中途失败不删残文件，下一次尝试从断点续下（D-P1-5）。
+                        if (attempt < MAX_RETRIES) {
+                            delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
                         }
                     }
                 }
-                return@withContext destFile
-            } catch (e: UpdateDownloadException) {
-                // 超限不重试（再下也一样大）。
-                destFile.delete()
-                throw e
-            } catch (e: CancellationException) {
-                // 取消不重试；残文件保留，下次下载从断点续下（D-P1-5）。
-                throw e
-            } catch (e: Exception) {
-                lastError = e
-                // B4-P2-9：可重试失败保留半截文件，下次尝试用 Range 续传；不再每次删。
-                // 中途失败不删残文件，下一次尝试从断点续下（D-P1-5）。
-                if (attempt < MAX_RETRIES) {
-                    delay(ApiClient.backoffMs(attempt + 1, baseMs = 3_000L))
-                }
-            }
+                throw UpdateDownloadException(
+                    UpdateError.Network,
+                    "下载失败，已重试 $MAX_RETRIES 次：${lastError?.message ?: "网络错误"}",
+                    lastError,
+                )
+            }.await()
         }
-        throw UpdateDownloadException(
-            UpdateError.Network,
-            "下载失败，已重试 $MAX_RETRIES 次：${lastError?.message ?: "网络错误"}",
-            lastError,
-        )
+        // D8-P2-2：取消复核。下载体改用 coroutineScope + async(IO) + await()
+        // 而不用 withContext：隔离诊断证实 withContext 会吞掉内部抛出的 CE
+        // （readStreamCapped 在 withContext 里取消后照常返回、不抛 CE；不带
+        // withContext 时 CE 正常传出），且单测时序诊断证实外层 ensureActive()
+        // 在 Job 已取消时仍不抛（cancel() 后 Job.isCancelled 为 true、关体与
+        // 读抛错均在取消之后、无重试、join 快速返回，唯独 join 不抛 CE）。
+        // await() 原样重抛 async 体内的异常（含 CE），取消能传出；线程仍在
+        // IO 上，调用方（Main）不受影响。这里的 ensureActive() 与监听标志
+        // 是辅助复核，已取消的下载绝不能当成成功返回。
+        currentCoroutineContext().ensureActive()
+        // D8-P2-2：监听协程置位的取消标志——取消到达时读被关体打断；
+        // 若 await() 仍未把 CE 传出，这里凭标志补抛 CE。
+        if (cancelledDuringCopy.get()) {
+            throw CancellationException("下载已取消")
+        }
+        return downloaded
     }
 
     /**

@@ -243,6 +243,14 @@ class MoonTvApi @Inject constructor(
                 (key?.let { "?key=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
             val body = execute(Request.Builder().url(url).get().build())
             if (body.isBlank()) return@withContext emptyMap()
+            // D8-P1-1：带 key 的单条查询，服务端“未收藏”时合法回 JSON null
+            // （moontv-my favorites/route.ts：`Favorite | null`，getFavorite
+            // 无行时 return null）——“不存在”是合法答案，不是错误，按空表
+            // 处理，不得抛错；否则 favoriteState() 误判 UNKNOWN（详情页收藏
+            // 按钮置灰）、toggle() 的 existsCheck 抛错，服务端模式下收藏加不上。
+            // 仅限单条查询：整表查询服务端恒回对象表（空为 `{}`），null 体仍
+            // 走下面的 B8-P2-8 抛错路径，保留旧表。
+            if (key != null && body.trim() == "null") return@withContext emptyMap()
             // 服务端可能返回整表 Record，也可能返回单条 Favorite。
             // 整表解码失败时保留可解析条目（P1-8），而不是整个变空；
             // 整表逐条解出来是空时，再看对象里有没有 Favorite 的字段名，
@@ -316,8 +324,17 @@ class MoonTvApi @Inject constructor(
     /**
      * 第 7 轮 D7-P2-7：单条查询（`?key=`，与 [getFavorites] 同款）——
      * 断点续播查一条记录不再全表拉取；服务端若不支持该参数会忽略它回整表，
-     * 客户端按 key 取值结果仍正确（只是省不下流量）；服务端若直接回单条
-     * PlayRecord 对象（与 getFavorites 的单条兜底同款），按 key 包成单条表。
+     * 客户端按 key 取值结果仍正确（只是省不下流量）。
+     *
+     * 第 8 轮 D8-P2-5：对服务端行为的实测修正（moontv-my HEAD bff2f79
+     * `playrecords/route.ts:14-28`）——GET 完全忽略 `searchParams`、恒回
+     * 整表，永不回单对象、永不 400：`?key=` 的省流量优化是零收益，单对象
+     * 分支只是“服务端将来 honours `?key=`”的防御性代码，保留但不再声称
+     * 服务端会回单条；整表查询（key==null）遇单对象时与 [getFavorites]
+     * 统一口径，按派生键包成单条表（见 [singlePlayRecordKey]）。
+     *
+     * 第 8 轮 D8-P1-2：服务端 `index` 是 1 基，本地模型是 0 基——返回的
+     * 记录统一减 1（见 [toLocalRecordIndex]），写侧见 [savePlayRecord]。
      * 整表查询（key==null）保持 B8-P2-8 行为：对象体逐条解出空仍按空表。
      */
     suspend fun getPlayRecords(baseUrl: String, key: String? = null): Map<String, PlayRecord> =
@@ -330,29 +347,50 @@ class MoonTvApi @Inject constructor(
             // B8-P2-8：体不是对象时不再静默返回空表（调用方会拿空表覆盖
             // lastGoodRecords 并清 loadFailed）；对象体逐条解出来是空时
             // （例如 {} 或全是坏条目）仍按空表——那是合法的空记录。
-            runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }.getOrElse { e ->
+            val records = runCatching { json.decodeFromString<Map<String, PlayRecord>>(body) }.getOrElse { e ->
                 val raw = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
                 if (raw == null) {
                     AppLog.w("MoonTvApi", "getPlayRecords 收到非对象体，抛错保留旧表")
                     throw IOException("播放记录返回格式异常：期望对象表：${e.message}")
                 }
-                if (key != null && raw.keys.any { it in PLAY_RECORD_KEYS }) {
+                if (raw.keys.any { it in PLAY_RECORD_KEYS }) {
                     val single = runCatching { json.decodeFromString<PlayRecord>(body) }.getOrElse { decodeError ->
                         throw IOException("播放记录返回格式异常：无法解析：${decodeError.message}")
                     }
-                    mapOf(key to single)
+                    mapOf(singlePlayRecordKey(key, single) to single)
                 } else {
                     LenientDecode.decodeMap(json, raw, PlayRecord.serializer())
                 }
             }
+            // D8-P1-2：读侧统一把服务端 1 基 index 换算成本地 0 基。
+            records.mapValues { (_, record) -> record.copy(index = toLocalRecordIndex(record.index)) }
         }
+
+    /**
+     * 单条 PlayRecord 对象的记录键（D8-P2-5，与 [singleFavoriteKey] 同款口径）：
+     * 调用方带 key 时用它；整表拉取（key==null）时按影片自身的 source_name +
+     * 标题派生（recordKey 的空 id 兜底），不用 "" 作键；来源与标题都空白时
+     * 无法归属，抛错让调用方保留旧表。
+     */
+    private fun singlePlayRecordKey(key: String?, record: PlayRecord): String {
+        key?.let { return it }
+        if (record.source_name.isBlank() && record.title.isBlank()) {
+            throw IOException("播放记录返回格式异常：单条记录无来源与标题，无法归属")
+        }
+        return recordKey(record.source_name, "", record.title)
+    }
 
     suspend fun savePlayRecord(baseUrl: String, key: String, record: PlayRecord): Boolean =
         withContext(ioDispatcher) {
             val url = "${baseUrl.trimEnd('/')}/api/playrecords"
+            // D8-P1-2：服务端 index 是 1 基（POST 校验 `index < 1` 即 400；
+            // 网页端 play/page.tsx 与旧 RN 端 playerStore.ts 均写 `当前集 + 1`），
+            // 本地模型是 0 基，写侧统一加 1（见 [toServerRecordIndex]）——
+            // 否则第 1 集（index=0）永远 400 存不上，其余集存的也是错位值。
+            val wireRecord = record.copy(index = toServerRecordIndex(record.index))
             val bodyJson = buildJsonObject {
                 put("key", JsonPrimitive(key))
-                put("record", json.encodeToJsonElement(PlayRecord.serializer(), record))
+                put("record", json.encodeToJsonElement(PlayRecord.serializer(), wireRecord))
             }.toString().toRequestBody("application/json".toMediaType())
             val body = execute(Request.Builder().url(url).post(bodyJson).build())
             runCatching { json.decodeFromString<SuccessResponse>(body).success }.getOrDefault(false)
@@ -531,6 +569,15 @@ class MoonTvApi @Inject constructor(
          * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
          * 拆键时按最后一个 + 切分（见 [splitKey]）。
          * 数据层代理合入同名实现时以该实现为准，两者语义一致，不冲突。
+         *
+         * 第 8 轮 D8-P2-3（已知跨端契约缺口，单边改不动）：服务端与网页端用
+         * 原始拼接 `${source}+${id}`、不转义，服务端路由按第一个 `+` 切分
+         * （moontv-my favorites/playrecords route.ts 的 `key.split('+')`）；
+         * 原生端按段转义 + 按最后一个 `+` 切分。单端内自洽（单条 `?key=` 与
+         * 整表读写走的都是同一套转义键），但网页端建的、source/id 含 `+`/`%`
+         * 的记录，原生按转义键查不到，反之亦然。根治需服务端改切分（按最后
+         * 一个 `+` 切 + 反转义）或两端统一转义规则，属跨仓库工作——这里只
+         * 记契约，不改转义（单边去掉转义会先把原生自己的 `+` 源名写坏）。
          */
         fun generateKey(source: String, id: String): String =
             escapeKeySegment(source) + "+" + escapeKeySegment(id)
@@ -562,6 +609,20 @@ class MoonTvApi @Inject constructor(
         /** 键段反转义：%2B→+、%25→%（顺序不能反，见 RN storage.ts 的 unescapeKeyPart）。 */
         fun unescapeKeySegment(segment: String): String =
             segment.replace("%2B", "+").replace("%25", "%")
+
+        /**
+         * 第 8 轮 D8-P1-2：播放记录 `index` 的基数换算——服务端是 1 基（第 1 集 = 1，
+         * POST 校验 `index < 1` 即 400；网页端 play/page.tsx 与旧 RN 端
+         * playerStore.ts 均写 `当前集 + 1`），本地模型（PlayViewModel.episodeIndex、
+         * Room episodeIndex）是 0 基。只在服务端边界换算（[savePlayRecord] 写侧、
+         * [getPlayRecords] 读侧），本地 Room 分支不动；PlayViewModel 与
+         * HomeModels 不动，收到的已是 0 基记录。
+         * 脏数据兜底：服务端下发的 0/负 index（网页端亦有脏记录）读侧钳到 0；
+         * 写侧钳到 ≥1，不让 400 漏网。
+         */
+        fun toServerRecordIndex(localIndex: Int): Int = (localIndex + 1).coerceAtLeast(1)
+
+        fun toLocalRecordIndex(serverIndex: Int): Int = (serverIndex - 1).coerceAtLeast(0)
 
         /**
          * 拆记录键（D-P2-3）：按最后一个 `+` 切分后反转义，与 [generateKey] 配对；
