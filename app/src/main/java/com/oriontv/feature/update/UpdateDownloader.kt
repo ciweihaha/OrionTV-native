@@ -5,12 +5,13 @@ import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.executeCancellable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -169,44 +170,52 @@ class UpdateDownloader @Inject constructor(
                         // executeCancellable 的取消挂钩只在 execute() 调用期间
                         // 有效，响应头回来后挂钩即摘掉；拷贝循环只在每 64KB 块
                         // 之间查 ensureActive，取消到达时阻塞的 read() 不响应，
-                        // 最坏要等 60 秒读超时。改走 suspendCancellableCoroutine
-                        //（与 readStreamCapped 同款）：取消到达时 continuation
-                        // 的 invokeOnCancellation 关响应体，中断 socket 读。
-                        // 注意不能用 Job.invokeOnCompletion 挂钩——它只在任务
-                        // 完成时跑，阻塞的读不返回、任务完不成，挂钩永远等不到
-                        // 触发；也不能在块里调 currentCoroutineContext()
-                        //（块不是 suspend 上下文），context 先在外面捕获。
-                        // 更关键：块里不要 catch 后再 resumeWithException——
-                        // 取消到达时 continuation 已是已取消态，对它的 resume
-                        // 会被静默忽略，块正常返回后 suspendCancellableCoroutine
-                        // 也会正常返回，取消就被吞掉、下载“正常”完成（单测计数
-                        // 证实：读只进 1 次且因关体抛错、无重试，join 却正常
-                        // 返回；已取消时直接 throw 同样走不通）。所以这里不截
-                        // 获异常：读抛错直接抛出去，由外层 attempt 的 catch 按
-                        // CE/可重试错分流；成功时才 resume。
+                        // 最坏要等 60 秒读超时。取消时由监听协程关响应体，中断
+                        // socket 读；读抛错直接由外层 attempt 的 catch 分流。
+                        // 注意不用 suspendCancellableCoroutine：实测它在此结构
+                        // （withContext 里包阻塞读）下吞取消——块里 catch 后
+                        // resumeWithException、直接 throw、不截获直抛，三种收尾
+                        // 都走不通（单测计数：读只进 1 次且因关体抛错、无重试、
+                        // GET 只发 1 次，join 却正常返回；连成功返回前的
+                        // ensureActive 兜底也没拦住）。也不能用
+                        // Job.invokeOnCompletion 挂钩——它只在任务完成时跑，
+                        // 阻塞的读不返回、任务完不成，挂钩永远等不到触发；也
+                        // 不能在块里调 currentCoroutineContext()（块不是
+                        // suspend 上下文），context 先在外面捕获。
                         val context = currentCoroutineContext()
-                        suspendCancellableCoroutine { cont ->
-                            cont.invokeOnCancellation { runCatching { body.close() } }
-                            // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
-                            FileOutputStream(destFile, isResume).use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                while (true) {
-                                    // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
-                                    context.ensureActive()
-                                    val read = input.read(buffer)
-                                    if (read < 0) break
-                                    written += read
-                                    if (written > MAX_APK_BYTES) {
-                                        throw UpdateDownloadException(
-                                            UpdateError.TooLarge,
-                                            "安装包体积超过 200MB 上限，已停止下载",
-                                        )
-                                    }
-                                    output.write(buffer, 0, read)
-                                    onProgress?.invoke(written, total)
+                        coroutineScope {
+                            // 取消监听：父协程取消时一并取消，finally 关体断读。
+                            // awaitCancellation() 永远挂起，只在取消时以 CE 返回。
+                            val watcher = launch {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    runCatching { body.close() }
                                 }
                             }
-                            if (cont.isActive) cont.resume(Unit)
+                            try {
+                                // 服务端不支持 Range（回 200）时截断重下；206 时追加续写。
+                                FileOutputStream(destFile, isResume).use { output ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    while (true) {
+                                        // D-P2-2：拷贝循环加挂起点，取消后不再把整个 APK 下完才停。
+                                        context.ensureActive()
+                                        val read = input.read(buffer)
+                                        if (read < 0) break
+                                        written += read
+                                        if (written > MAX_APK_BYTES) {
+                                            throw UpdateDownloadException(
+                                                UpdateError.TooLarge,
+                                                "安装包体积超过 200MB 上限，已停止下载",
+                                            )
+                                        }
+                                        output.write(buffer, 0, read)
+                                        onProgress?.invoke(written, total)
+                                    }
+                                }
+                            } finally {
+                                watcher.cancel()
+                            }
                         }
                     }
                 }
