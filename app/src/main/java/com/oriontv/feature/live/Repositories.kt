@@ -18,7 +18,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * M3U 仓库（plan §5.3）：
- * 直播源地址是用户在设置里填的 m3uUrl（默认空串），代码里不写死地址；
+ * 直播源地址是设置里的 m3uUrl，未配过时默认 https://live.ciweihaha.win/live.m3u
+ * （见 SettingsDataStore.DEFAULT_M3U_URL）；用户可在设置里改，清空后即无直播源。
  * 拉取 15 秒超时、体积上限 5MB，失败返回空列表（不抛错）。
  * 缓存：TTL 7 天、M3U JSON 上限 5MB（与拉取上限对齐，3–5MB 的源也能离线）；缓存秒显 + 后台刷新：
  * 缓存新鲜直接用，过期才拉网，拉网失败回落旧缓存。
