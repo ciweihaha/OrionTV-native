@@ -340,13 +340,17 @@ class PlayViewModel @Inject constructor(
         // 重开当前集；不用 !isPlaying 作门控——用户暂停后去详情页再回时自己
         // 仍是所有者，不会误把暂停的片自动续播；错误页仍走“重试”；起点走
         // resolveSwitchStartMs（A15-P2-1/A16-P2-1 同款），播完态从 0 播。
+        // A18-P2-1：isEnded 还要并上 state.isEnded——本集播完后 state.isEnded
+        // 冻结为真、positionMs 冻结在片长，但播放器可能已被新页停掉/播别片，
+        // playerManager.isEnded 恒 false；只读它会以片长为起点重开，ExoPlayer
+        // 钳到片尾立即 STATE_ENDED，误判起点溢出换源/落错误页。
         val state = _uiState.value
         val current = state.current
         if (current != null && shouldReclaimPlayback(state.error == null, playerManager.isCurrentOwner(playbackToken))) {
             launchStartEpisode(
                 current,
                 state.episodeIndex,
-                resolveSwitchStartMs(playerManager.isEnded, state.positionMs.takeIf { it > 0 }),
+                resolveSwitchStartMs(playerManager.isEnded || state.isEnded, state.positionMs.takeIf { it > 0 }),
             )
         }
     }
@@ -1078,6 +1082,11 @@ class PlayViewModel @Inject constructor(
 
     /** 保存播放记录（无痕模式不写；播完/播错/退出时立即存）。 */
     fun saveRecordNow(scope: CoroutineScope = viewModelScope) {
+        // A18-P2-2：存盘前复核播放器归属——多弹回栈时 onCleared() 可能读到
+        // 别页正在播的位置/片长，却以本集 key + 集号存盘；轮询、播完回调、
+        // 播错处理三处存/读位置前都有同款 isCurrentOwner 门控，这里补上。
+        // 正常返回清掉的页面必是所有者，断点照常存。
+        if (!playerManager.isCurrentOwner(playbackToken)) return
         val state = _uiState.value
         val current = state.current ?: return
         val position = playerManager.currentPositionMs

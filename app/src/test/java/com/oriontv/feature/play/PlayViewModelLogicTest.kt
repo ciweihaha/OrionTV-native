@@ -109,6 +109,20 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `reclaim after finished episode restarts from zero even when player was stopped by another page`() {
+        // A18-P2-1：onPageResumed() 的 reclaim 起点是
+        // resolveSwitchStartMs(playerManager.isEnded || state.isEnded, positionMs)——
+        // 本集播完后 state.isEnded 冻结为真、positionMs 冻结在片长，但播放器可能
+        // 已被新页停掉/播别片、playerManager.isEnded 恒 false；只读播放器侧会以
+        // 片长为起点重开、被起点溢出守卫误判播错。任一侧播完即从 0 播。
+        val durationMs = 3_600_000L
+        assertEquals(0L, PlayViewModel.resolveSwitchStartMs(isEnded = false || true, positionMs = durationMs))
+        assertEquals(0L, PlayViewModel.resolveSwitchStartMs(isEnded = true || false, positionMs = durationMs))
+        assertEquals(0L, PlayViewModel.resolveSwitchStartMs(isEnded = true || true, positionMs = durationMs))
+        assertEquals(123_000L, PlayViewModel.resolveSwitchStartMs(isEnded = false || false, positionMs = 123_000L))
+    }
+
+    @Test
     fun `ok replays only after natural end not after user pause`() {
         // 第 6 轮 P1-1：播完态（STATE_ENDED）下 play() 不重启，OK 须先 seekTo(0) 重播；
         // 单纯暂停（未播完）时 OK 只是恢复播放，不重播、不回 0。
