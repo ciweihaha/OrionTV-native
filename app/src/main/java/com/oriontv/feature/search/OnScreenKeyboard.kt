@@ -96,12 +96,15 @@ class NineKeyInput(
 
 /**
  * 电视端屏上键盘（P1-8，最小可用实现）：
- * 全键 QWERTY + 9 键多击两档切换；能逐字输入、退格、确认搜索、收起。
+ * 全键 QWERTY + 9 键多击 + 符号板三档切换；能逐字输入、退格、确认搜索、收起。
  * 输入直接进搜索框（走 onQueryChange，300ms 防抖后自动搜）。
  *
- * 缺口（未做）：没有拼音输入法——敲出的是拼音字母，中文候选只来自搜索历史联想
- * （SearchViewModel.suggest）；没有数字符号全键盘、没有中文联想接口。
- * 遥控逐字输入英文/拼音可用，搜中文词仍需点历史联想或用手机扫码输入。
+ * Jewel 第 9 轮 P2-6：补 `[123]` 符号板（搜含 `_`、`-`、`@` 等符号的词不用再
+ * 绕手机扫码）与拼音候选——敲出的拼音字母由 SearchViewModel 发给 iQIYI 联想
+ * 接口出中文候选（见 IqiyiSuggest），候选 chips 在键盘下方联想行展示、点选
+ * 填入搜索框；拼音切分走 PinyinTable（TV v5.9.6 前例的 423 标准音节表）。
+ * 仍缺：没有本地中文输入法——中文候选只来自历史联想 + iQIYI 联想，无网时
+ * 只剩历史联想。
  */
 @Composable
 fun OnScreenKeyboard(
@@ -112,6 +115,8 @@ fun OnScreenKeyboard(
     modifier: Modifier = Modifier,
 ) {
     var nineKeyMode by remember { mutableStateOf(false) }
+    // Jewel 第 9 轮 P2-6：符号板档（三档互斥：全键 / 9 键 / 符号，切档即清另一档）。
+    var symbolMode by remember { mutableStateOf(false) }
     val nineKey = remember { NineKeyInput() }
     val firstKeyRequester = remember { FocusRequester() }
 
@@ -119,7 +124,8 @@ fun OnScreenKeyboard(
     // 第 6 轮 P2-8：按 nineKeyMode 键——QWERTY↔9 键切换后当前聚焦的切换
     // 按钮随模式重组离开组合，之前没有任何重新请求焦点的调用，焦点丢失；
     // 切换后把焦点还给新模式的首键（首次打开也走同一条路）。
-    LaunchedEffect(nineKeyMode) { firstKeyRequester.requestFocus() }
+    // Jewel 第 9 轮 P2-6：符号板切档同款——三档任一切换都回新模式首键。
+    LaunchedEffect(nineKeyMode, symbolMode) { firstKeyRequester.requestFocus() }
 
     Column(
         modifier = modifier
@@ -133,14 +139,21 @@ fun OnScreenKeyboard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = if (nineKeyMode) "9 键（连按同键切换字母）" else "全键",
+                text = when {
+                    nineKeyMode -> "9 键（连按同键切换字母）"
+                    symbolMode -> "符号"
+                    else -> "全键"
+                },
                 style = OrionTextStyles.Body,
                 color = OrionColors.TextSecondary,
             )
             Spacer(modifier = Modifier.weight(1f))
             KeyboardKey(
                 label = if (nineKeyMode) "切全键" else "切 9 键",
-                onClick = { nineKeyMode = !nineKeyMode },
+                onClick = {
+                    nineKeyMode = !nineKeyMode
+                    if (nineKeyMode) symbolMode = false
+                },
             )
         }
         if (nineKeyMode) {
@@ -192,6 +205,55 @@ fun OnScreenKeyboard(
                     modifier = Modifier.weight(1f),
                 )
             }
+        } else if (symbolMode) {
+            // Jewel 第 9 轮 P2-6：[123] 符号板——搜含 `_`、`-`、`@` 等符号的词
+            // 不用再绕手机扫码；行宽与 QWERTY 同款 10 键折算对齐。点符号直接追加
+            // 进搜索框（不做大小写变换），退格清多击状态与字母档共用。
+            val rows = listOf("_-@#&*%+", ".,!?;:'\"", "()[]{}<>=")
+            rows.forEachIndexed { rowIndex, row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // P2-10（第 5 轮）：各行键宽对齐——短行两侧补空白占位（权重
+                    // 按 10 键行折算），不再让短行按键更宽、跨行空间导航跳格。
+                    val sideWeight = (10 - row.length) / 2f
+                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
+                    row.forEachIndexed { index, ch ->
+                        KeyboardKey(
+                            label = ch.toString(),
+                            onClick = { onQueryChange(query + ch) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(
+                                    if (rowIndex == 0 && index == 0) {
+                                        Modifier.preferredFocus(firstKeyRequester)
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                        )
+                    }
+                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KeyboardKey(
+                    label = "ABC",
+                    onClick = { symbolMode = false },
+                    modifier = Modifier.weight(1f),
+                )
+                KeyboardKey(
+                    label = "空格",
+                    onClick = { onQueryChange(query + " ") },
+                    modifier = Modifier.weight(2f),
+                )
+                KeyboardKey(
+                    label = "退格",
+                    onClick = {
+                        nineKey.reset()
+                        onQueryChange(query.dropLast(1))
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
         } else {
             val rows = listOf("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM")
             rows.forEachIndexed { rowIndex, row ->
@@ -221,7 +283,19 @@ fun OnScreenKeyboard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 KeyboardKey(
                     label = "9 键",
-                    onClick = { nineKeyMode = true },
+                    onClick = {
+                        nineKeyMode = true
+                        symbolMode = false
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                // Jewel 第 9 轮 P2-6：符号板入口——切符号档（同时清 9 键档）。
+                KeyboardKey(
+                    label = "[123]",
+                    onClick = {
+                        symbolMode = true
+                        nineKeyMode = false
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 KeyboardKey(
@@ -253,7 +327,7 @@ fun OnScreenKeyboard(
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "提示：敲拼音字母后，中文候选只来自搜索历史；搜中文词可用“手机扫码输入”。",
+            text = "提示：敲拼音字母后，下方出现中文候选（iQIYI 联想），点选填入搜索框；搜含符号的词可切 [123] 符号板；搜中文词也可用“手机扫码输入”。",
             style = OrionTextStyles.Small,
             color = OrionColors.TextSecondary,
         )
