@@ -480,7 +480,12 @@ private fun SettingsInputRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                    .onFocusChanged { focused = it.isFocused }
+                    .onFocusChanged {
+                        focused = it.isFocused
+                        // Jewel 第 8 轮 P2-5：失焦即清快照——焦点切走后残留的
+                        // 旧快照不能再用来判定下一次 KeyUp（无配对 KeyDown 的 KeyUp）。
+                        if (!it.isFocused) cursorBeforeLeftMove = -1
+                    }
                     .onPreviewKeyEvent { event ->
                         // C7-P2-3：隧道阶段先于输入框自己的光标移动，读到的是
                         // 移动前位置；只快照、不消费。
@@ -493,7 +498,12 @@ private fun SettingsInputRow(
                         if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionLeft) {
                             // C7-P2-3：按移动前光标位置判断——不在行首时消费松键，
                             // 只移光标，不回菜单；已在行首时放行，冒泡到父级回左菜单。
-                            shouldConsumeSettingsLeftKeyUp(cursorBeforeLeftMove)
+                            // Jewel 第 8 轮 P2-5：判定后立即复位快照——一次 KeyDown
+                            // 只配一次 KeyUp，复位后无配对的 KeyUp 按“未知”处理，
+                            // 不再拿旧快照误判。
+                            val consume = shouldConsumeSettingsLeftKeyUp(cursorBeforeLeftMove)
+                            cursorBeforeLeftMove = -1
+                            consume
                         } else {
                             false
                         }
@@ -511,9 +521,13 @@ private fun SettingsInputRow(
 
 /** 设置输入框左键松键是否消费（可单测，C7-P2-3）：按移动前光标位置判断——
  * 不在行首（>0）时消费，只移光标、不回左菜单；已在行首时放行回菜单。
- * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。 */
+ * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。
+ * Jewel 第 8 轮 P2-5：-1（未知/无配对 KeyDown）时默认消费、不放行——
+ * 旧实现把 -1 按行首处理，无配对的 KeyUp 会把光标实际在文本中间的
+ * 输入框误判成“行首”放行回菜单；留在输入框内是可恢复的安全方向。
+ * （遥控 KeyDown/KeyUp 是否成对分发仍需真机验证，见审计 P2-5。） */
 internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int): Boolean =
-    cursorBeforeMove > 0
+    cursorBeforeMove != 0
 
 /** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画 + 片头时长。 */
 @Composable
