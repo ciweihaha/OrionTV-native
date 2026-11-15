@@ -557,6 +557,13 @@ class LiveViewModel @Inject constructor(
     fun changeChannel(delta: Int) {
         val state = _uiState.value
         if (state.channels.isEmpty()) return
+        // A27-P2-2：单频道列表按上/下换台无台可换——prev/nextChannel 会算回
+        // 当前台，无守卫时一路走到 afterManualChannelChange → playCurrent()，
+        // 同 URL 先 stop() 再 playUrl()，整台从头重缓、丢掉已缓冲的分片；
+        // 与单线路切线路（changeLine 返回 false、无动作）与面板点当前台
+        // （只关面板、不重播）同款：无可换即无动作。自动跳台路径不走这里
+        // （走 nextChannel(isAuto = true)，单频道已有显式处理），不受影响。
+        if (state.channels.size <= 1) return
         if (delta < 0) controller.prevChannel() else controller.nextChannel()
         afterManualChannelChange()
     }
