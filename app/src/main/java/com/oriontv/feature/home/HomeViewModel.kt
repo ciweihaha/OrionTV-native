@@ -41,6 +41,14 @@ class HomeViewModel @Inject constructor(
     private var generation = 0
 
     /**
+     * 分类浏览分页：每行一个状态机（行标题为键），记该行第 1 页实际走的源与
+     * 下一页游标。refresh() 重建行时清空、loadCategory 建行时重建；
+     * 最近播放行是本地记录，不分页，不建状态机。只在 viewModelScope
+     *（Main）里读写，不跨线程。
+     */
+    private val pagingStates = mutableMapOf<String, RowPagingState>()
+
+    /**
      * B13-P2-2：最近播放行的独立代次——两次并发 refreshRecent() 各 load 各合并
      * 时，先启动的旧快照后完成会盖掉新的行；落态前复核，旧代次丢弃。
      * 另见 refreshRecent() 里对共享 generation 的快照：refresh() 在本次加载
@@ -99,6 +107,8 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         val gen = ++generation
+        // 分页从第 1 页重新开始：旧状态机丢弃，loadCategory 建行时重建。
+        pagingStates.clear()
         viewModelScope.launch {
             // B4-P2-5：仓库调用失败不崩溃——保留旧行并置错误提示（首次加载失败
             // 时行是空的，错误文案由下面 error 分支给出）。
@@ -213,20 +223,150 @@ class HomeViewModel @Inject constructor(
                 },
             )
         }
-        cache.get(category.title)?.let { return HomeRow(category.title, it) }
-        val items: List<HomeRowItem> = when {
+        cache.get(category.title)?.let { cached ->
+            // 缓存命中：按存的源重建分页状态机（没记源的老条目不分页，等下次新鲜加载再建）。
+            cache.getSourceKind(category.title)?.let { kind ->
+                pagingStates[category.title] = newPagingState(category, kind)
+                return HomeRow(category.title, cached, hasMore = true)
+            }
+            return HomeRow(category.title, cached)
+        }
+        val (items, kind) = when {
             category.cmsType != null -> loadCmsCategory(category, baseUrl)
-            else -> loadDoubanCategory(category, baseUrl)
+            else -> loadDoubanCategory(category, baseUrl) to RowSource.DOUBAN
         }
         if (items.isEmpty()) return null
         val deduped = dedupeAggItems(items)
-        cache.put(category.title, deduped)
-        return HomeRow(category.title, deduped)
+        cache.put(category.title, deduped, kind)
+        pagingStates[category.title] = newPagingState(category, kind)
+        return HomeRow(category.title, deduped, hasMore = true)
     }
 
-    /** CMS 分类：agg 首屏；失败或空列表时回落豆瓣（无筛选时才回落）。 */
-    private suspend fun loadCmsCategory(category: HomeCategory, baseUrl: String): List<HomeRowItem> {
-        val cmsType = category.cmsType ?: return emptyList()
+    /**
+     * 分类浏览分页：焦点移到行尾附近时由 HomeScreen 调，取该行的下一页追加到行尾。
+     * 同一时间一行只取一页（状态机门控）；取到空页时链式续取下一页，
+     * 连续两页空才判到底；取失败不丢已有卡片，行尾留失败文案，焦点移开再回来即重试。
+     * 刷新中途（generation 变了）取回的结果丢弃，不往新行里掺旧页。
+     */
+    fun loadMore(title: String) {
+        val state = pagingStates[title] ?: return
+        if (!state.canLoadMore()) return
+        val category = HomeCategory.entries.firstOrNull { it.title == title } ?: return
+        if (category == HomeCategory.RECENT) return
+        val gen = generation
+        state.onLoadStarted()
+        _uiState.update { current ->
+            current.copy(rows = current.rows.map {
+                if (it.title == title) it.copy(isLoadingMore = true, loadMoreError = null) else it
+            })
+        }
+        viewModelScope.launch {
+            try {
+                val baseUrl = settingsRepository.currentApiBaseUrl()
+                var newItems: List<HomeRowItem>? = null
+                var failed = false
+                // 空页链式续取：单次空页不判死，接着取再下一页；连续两页空状态机判到底，循环自停。
+                while (state.canLoadMore()) {
+                    // 每次链式续取前重上加载中——onEmptyPage 会清掉它，不重上会让并发的
+                    // loadMore 在续取途中溜进来（两路同时取同一页）。
+                    state.onLoadStarted()
+                    val cursor = state.nextCursor
+                    val page = try {
+                        fetchPage(state, cursor, baseUrl)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (gen != generation) return@launch
+                    when {
+                        page == null -> {
+                            state.onLoadFailed()
+                            failed = true
+                            break
+                        }
+                        page.isEmpty() -> state.onEmptyPage(state.advanceCursor(cursor))
+                        else -> {
+                            newItems = page
+                            state.onPageLoaded(state.advanceCursor(cursor))
+                            break
+                        }
+                    }
+                }
+                if (gen != generation) return@launch
+                _uiState.update { current ->
+                    current.copy(rows = current.rows.map { row ->
+                        if (row.title != title) {
+                            row
+                        } else {
+                            row.copy(
+                                items = if (newItems != null) appendPageItems(row.items, newItems) else row.items,
+                                isLoadingMore = false,
+                                hasMore = state.hasMore,
+                                loadMoreError = if (failed) "加载更多失败，移开焦点再回来可重试" else null,
+                            )
+                        }
+                    })
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // baseUrl 读取失败等：状态机复位可重试，行尾留失败文案，已有卡片不动。
+                state.onLoadFailed()
+                if (gen != generation) return@launch
+                _uiState.update { current ->
+                    current.copy(rows = current.rows.map {
+                        if (it.title == title) {
+                            it.copy(isLoadingMore = false, loadMoreError = "加载更多失败，移开焦点再回来可重试")
+                        } else {
+                            it
+                        }
+                    })
+                }
+            }
+        }
+    }
+
+    /** 取一页：CMS 按页号，豆瓣按偏移（pageStart）；失败抛错由调用方处理。 */
+    private suspend fun fetchPage(
+        state: RowPagingState,
+        cursor: Int,
+        baseUrl: String,
+    ): List<HomeRowItem> = when (state.kind) {
+        RowSource.CMS -> {
+            val cmsType = state.cmsType ?: return emptyList()
+            aggApi.videoList(cmsType, cursor).list.orEmpty().map(::mapAggItem)
+        }
+        RowSource.DOUBAN -> {
+            val type = state.doubanType ?: return emptyList()
+            val tag = state.doubanTag ?: return emptyList()
+            moonTvApi.getDoubanData(
+                baseUrl, type, tag,
+                pageSize = RowPagingState.DOUBAN_PAGE_SIZE, pageStart = cursor,
+            ).list.orEmpty().map(::mapDoubanItem)
+        }
+    }
+
+    /**
+     * 按第 1 页实际走的源建分页状态机（翻页用第 1 页解析出的实际参数，不混源）。
+     * CMS 回落豆瓣时用回落的 tag/type；纯豆瓣分类用自身的 tag/type。
+     */
+    private fun newPagingState(category: HomeCategory, kind: RowSource): RowPagingState =
+        when (kind) {
+            RowSource.CMS -> RowPagingState(kind, cmsType = category.cmsType)
+            RowSource.DOUBAN -> {
+                val (doubanType, doubanTag) = if (category.cmsType != null) {
+                    (category.doubanType ?: "tv") to (category.fallbackTag ?: category.doubanTag ?: "热门")
+                } else {
+                    (category.doubanType ?: "movie") to (category.doubanTag ?: "热门")
+                }
+                RowPagingState(kind, doubanType = doubanType, doubanTag = doubanTag)
+            }
+        }
+
+    /** CMS 分类：agg 首屏；失败或空列表时回落豆瓣（无筛选时才回落）。返回（条目，实际走的源）。 */
+    private suspend fun loadCmsCategory(category: HomeCategory, baseUrl: String): Pair<List<HomeRowItem>, RowSource> {
+        val cmsType = category.cmsType ?: return emptyList<HomeRowItem>() to RowSource.CMS
         // B4-P2-4：runCatching 会吞 CancellationException，改 try/catch 前置重抛。
         val aggItems = try {
             aggApi.videoList(cmsType, 1).list.orEmpty()
@@ -235,12 +375,12 @@ class HomeViewModel @Inject constructor(
         } catch (_: Exception) {
             emptyList()
         }
-        if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem)
+        if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem) to RowSource.CMS
         // 回落豆瓣：走用户服务器的 /api/douban。
         // B12-P2-5：agg 失败 + 豆瓣失败时行不再静默丢弃——loadDouban 失败即抛错，
         // 走 loadRows() 的占位行；只有豆瓣成功返回空时才是双源都返回空，行不展示。
-        val fallbackTag = category.fallbackTag ?: return emptyList()
-        return loadDouban(category.doubanType ?: "tv", fallbackTag, baseUrl)
+        val fallbackTag = category.fallbackTag ?: return emptyList<HomeRowItem>() to RowSource.CMS
+        return loadDouban(category.doubanType ?: "tv", fallbackTag, baseUrl) to RowSource.DOUBAN
     }
 
     private suspend fun loadDoubanCategory(category: HomeCategory, baseUrl: String): List<HomeRowItem> =
