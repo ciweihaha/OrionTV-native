@@ -182,12 +182,22 @@ class LiveViewModel @Inject constructor(
             }
             _uiState.update { it.copy(m3uConfigured = true, favorites = favorites) }
             val channels = m3uRepository.loadChannels(m3uUrl)
+            // 第 47 轮 A47-P2-1/C47-P2-1：loadFailed 是 M3uRepository 单例上的
+            // 共享标志（Repositories.kt:46-47），loadChannels() 返回时已同步
+            // 置位（:72），但 :246 读它之前隔着 playCurrent()/loadEpg()
+            // （EPG 拉网可挂起数秒）；面板在频道表写入 state 后即可打开，
+            // refreshChannels()（:286）只守 refreshJob、不守 initJob，EPG
+            // 窗口内并发刷新会改写该标志——刷新失败误弹 init 的 Toast（文案
+            // 与事实不符且与 :292 的 Toast 重复），刷新成功则吞掉 init 自身
+            // 的失败信号。立即快照本次 init 加载的结果，后面两处都判快照。
+            val m3uLoadFailed = m3uRepository.loadFailed.value
             if (channels.isEmpty()) {
                 // 第 10 轮 L10-P2-2（D9-P2-8 残口）：空表不再恒当失败——
                 // 仓库层已区分“拉取失败”与“成功但空表”，调用点也要分：
                 // loadFailed 为真才是加载失败；否则是源本身 0 个频道，
                 // 置 emptySource 态（EmptyState 另分支提示），不误报失败。
-                val failed = m3uRepository.loadFailed.value
+                // 快照与 :184 之间无挂起点，读值与直接读标志相同，统一判快照。
+                val failed = m3uLoadFailed
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -222,14 +232,18 @@ class LiveViewModel @Inject constructor(
                 _uiState.value.epg != null,
             )?.let { showToast(it) }
             // A46-P2-1：首启 M3U 拉取失败回落旧缓存也要轻提示（A8-P1-2 只修了
-            // refreshChannels，init() 的非空分支漏了同一信号）：loadChannels()
-            // 返回后 loadFailed 已同步置位——decideLoad 只有 Failed 分支报
-            // loadFailed=true，且此时必回落旧缓存，非空表 + loadFailed=true
-            // 只可能是这一条；失败时旧表里的失效 URL 会逐个断流换台，用户却
-            // 看不到任何提示。放 EPG 提示之后：两者共用同一 toastMessage 槽位，
-            // 后弹的会覆盖先弹的；M3U 旧表失效比 EPG 旧节目单更影响观看，两路
-            // 同失败时以 M3U 提示为准。reload() 走同一 init()，顺带覆盖。
-            if (m3uRepository.loadFailed.value) {
+            // refreshChannels，init() 的非空分支漏了同一信号）：decideLoad
+            // 只有 Failed 分支报 loadFailed=true，且此时必回落旧缓存，非空表
+            // + loadFailed=true 只可能是这一条；失败时旧表里的失效 URL 会逐
+            // 个断流换台，用户却看不到任何提示。第 47 轮 A47-P2-1/C47-P2-1：
+            // 这里判的是 :184 之后立即快照的 m3uLoadFailed，不是共享标志的
+            // 现值——A46 注释“loadChannels() 返回后 loadFailed 已同步置位”
+            // 只在无并发写入时成立，loadEpg() 的挂起窗口内 refreshChannels()
+            // 可改写它；快照才代表本次 init 的加载结果。放 EPG 提示之后：
+            // 两者共用同一 toastMessage 槽位，后弹的会覆盖先弹的；M3U 旧表
+            // 失效比 EPG 旧节目单更影响观看，两路同失败时以 M3U 提示为准。
+            // reload() 走同一 init()，顺带覆盖。
+            if (m3uLoadFailed) {
                 showToast("直播源刷新失败，仍用旧频道表")
             }
             startTicker()
