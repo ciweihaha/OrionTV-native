@@ -1072,7 +1072,7 @@ private fun ChannelPanel(
             if (filtered.isEmpty()) {
                 // 第 18 轮 C18-P2-1：重试每次复核活门控——弹窗在重试窗口内打开即停。
                 // C44-P2-1：先把分组行滚回首 chip 再落焦——分组行滚动后首 chip
-                // 可能已卸载，裸重试 5 次全失败即丢焦点；与非空分支 :1072
+                // 可能已卸载，裸重试 5 次全失败即丢焦点；与非空分支
                 // 及 C23-P1-1 频道列表行同款“先滚后焦”。
                 groupRowState.scrollToItem(0)
                 firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
