@@ -267,6 +267,14 @@ class SearchViewModel @Inject constructor(
         //（不走 searchNow 的存档，避免循环写；executeSearch 自己落态时存）。
         if (shouldResumeInterruptedSearch(query, results, restoredError)) {
             val gen = ++generation
+            // B41-P2-2：恢复重跑先同步置 isLoading=true——executeSearch 的缓存命中
+            // 分支先走 recordSearchHistory（DataStore 读 + 服务端写历史 POST +
+            // 读最新历史 GET 两次网络往返，写失败还重试一次），全程结束才落态；
+            // 不等它，历史往返耗时内 isLoading=false、results=[]、error=null、
+            // query 非空，SearchScreen 四分支全不命中、只剩 24dp Spacer。只改
+            // 恢复重跑分支，不动 executeSearch 开头（那会改正常缓存命中路径的
+            // 行为——旧结果先闪成“正在搜索…”）。
+            _uiState.value = _uiState.value.copy(isLoading = true)
             searchJob = viewModelScope.launch { executeSearch(query, gen) }
         }
     }

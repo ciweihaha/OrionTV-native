@@ -389,7 +389,20 @@ class UpdateViewModel @Inject constructor(
                         skippedVersionMemory,
                         currentSkipVersionOrEmpty(),
                     )
-                    if (shouldNotifyDownloadComplete(latest, skipVersion)) {
+                    // B41-P2-1：完成时还要复核快照仍是当前最新版且仍需更新——
+                    // 下载中途重查出新版（或服务端版本回落到当前版、重查已报
+                    // “已是最新版本”）后旧下载跑完，旧包不能再按开始时的快照
+                    // 写路径/版本、发完成 Toast、持久化并重弹卡片（那与 NavHost
+                    // B40-P2-3 的判定自相矛盾：isDownloadedForLatestVersion=false
+                    // 时卡片主按钮是“立即更新”）。对不上时走已跳过分支同款：
+                    // 不发完成 Toast、不写路径/版本、不重弹卡片、删刚下好的旧包。
+                    if (shouldAcceptDownloadComplete(
+                            latest,
+                            _uiState.value.latestVersion,
+                            _uiState.value.currentVersion,
+                            skipVersion,
+                        )
+                    ) {
                         _uiState.update {
                             it.copy(
                                 downloading = false,
@@ -583,6 +596,26 @@ class UpdateViewModel @Inject constructor(
  */
 internal fun shouldNotifyDownloadComplete(latestVersion: String, skippedVersion: String?): Boolean =
     !UpdateService.isSkippedVersion(latestVersion, skippedVersion.orEmpty())
+
+/**
+ * B41-P2-1：下载完成时是否按开始时的快照版本落盘（纯逻辑，可单测）——
+ * 只在快照仍是当前最新版、且仍需更新、且未被跳过时才写路径/版本、发完成
+ * Toast、持久化并重弹卡片。下载中途重查出新版（或服务端版本回落到当前版、
+ * 重查已报“已是最新版本”）后旧下载跑完，快照已不是当前最新版（或已不需
+ * 更新），按已跳过分支同款处理：不发完成 Toast、不写路径/版本、不重弹
+ * 卡片、删掉刚下好的旧包（调用方 else 分支）。与 isDownloadedForLatestVersion
+ * 对称：那边卡住“旧包当新版”的显示，这边卡住“旧包落盘”的写入。
+ */
+internal fun shouldAcceptDownloadComplete(
+    snapshotLatestVersion: String,
+    currentLatestVersion: String?,
+    currentVersion: String,
+    skippedVersion: String?,
+): Boolean =
+    snapshotLatestVersion == currentLatestVersion &&
+        currentLatestVersion != null &&
+        VersionUtils.isOlderThan(currentVersion, stripVersionPrefix(currentLatestVersion)) &&
+        shouldNotifyDownloadComplete(snapshotLatestVersion, skippedVersion)
 
 /**
  * Jewel 第 8 轮 P2-1：完成分支 / 检查分支读跳过版本的口径（纯逻辑，可单测）——

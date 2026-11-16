@@ -919,7 +919,16 @@ class PlayViewModel @Inject constructor(
             nextEpisodeDismissedForIndex = -1
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
-            _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }
+            // A41-P2-1：重播也要重置自动换源预算与失败源集合（与 retry()/
+            // startEpisode 同款）——重播是新的一次播出，上一轮播完前换源
+            // 已耗 2 次时不重置，重播首次播错即直接报错；failedSources 是
+            // 当次播出的换源跳过表，不清会一直跳过之前失败过的源。
+            // 断点节流基线 lastSavedPositionMs 也要重置（与 startEpisode :553
+            // 同款）——不重置时它仍是片尾附近的旧值，轮询 10 秒节流
+            // （position-lastSaved >= 10_000）要到重播播过旧值+10 秒才第
+            // 一次存断点，长片重播全程一次也不存。
+            lastSavedPositionMs = -1L
+            _uiState.update { it.copy(showNextEpisode = false, isEnded = false, autoSwitchAttempts = 0, failedSources = emptySet()) }
             seekTo(0L, userInitiated = false)
             playerManager.play()
             userPaused = false

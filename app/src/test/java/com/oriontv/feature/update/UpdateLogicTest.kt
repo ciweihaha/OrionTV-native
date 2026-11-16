@@ -209,6 +209,23 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `stale download completion is rejected when latest changed`() {
+        // B41-P2-1：下载中途重查出新版，旧版跑完不落盘（不发完成 Toast、不写
+        // 路径/版本、不重弹卡片）；服务端版本回落到当前版、重查已报“已是最新
+        // 版本”时同样拒绝；快照仍是当前最新版且仍需更新、未跳过时才接受。
+        assertTrue(shouldAcceptDownloadComplete("2.0.11", "2.0.11", "2.0.10", null))
+        assertTrue(shouldAcceptDownloadComplete("2.0.11", "2.0.11", "2.0.10", "2.0.9"))
+        // 重查出新版：快照已不是当前最新版。
+        assertFalse(shouldAcceptDownloadComplete("2.0.10", "2.0.11", "2.0.10", null))
+        // 服务端版本回落到当前版：已不需更新。
+        assertFalse(shouldAcceptDownloadComplete("2.0.10", "2.0.10", "2.0.10", null))
+        // 当前最新版未知：不接受。
+        assertFalse(shouldAcceptDownloadComplete("2.0.11", null, "2.0.10", null))
+        // 已跳过该版：不接受。
+        assertFalse(shouldAcceptDownloadComplete("2.0.11", "2.0.11", "2.0.10", "2.0.11"))
+    }
+
+    @Test
     fun `restored download validates file existence and versioned name`() {
         // 第 7 轮 P2-5：启动恢复校验——文件仍在且文件名与版本匹配才复用。
         val dir = Files.createTempDirectory("oriontv-restore-test").toFile()

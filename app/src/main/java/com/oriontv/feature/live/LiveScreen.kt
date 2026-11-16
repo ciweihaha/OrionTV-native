@@ -137,8 +137,8 @@ internal fun shouldFocusFailedOverlay(panelOpen: Boolean, globalModalOpen: Boole
 
 /**
  * EPG 弹窗落焦 effect 是否应落焦点（可单测，C14-P2-1）：节目单晚到
- * （empty→non-empty 翻转）时重跑落焦，全仓唯一没有全局弹窗门控的数据到达型
- * 落焦 effect——全局弹窗开着时不抢，关闭后由 key 里的 tick 重跑补落。
+ * （empty→non-empty 翻转）时重跑落焦；全局弹窗开着时不抢（C14-P2-1），
+ * 关闭后由 key 里的 tick 重跑补落。
  */
 internal fun shouldFocusEpgDialog(globalModalOpen: Boolean): Boolean = !globalModalOpen
 
@@ -245,7 +245,7 @@ internal fun shouldRetryOnOk(playbackFailed: Boolean, failCount: Int): Boolean =
  * 断流自动切备用线路或下一台（超过 5 次停手并提示）；
  * 菜单键收藏当前台；数字键直接切台；菜单键/长按 OK 收藏面板里的台；
  * EPG 全天节目单弹窗（面板里菜单键打开，左右键切台）；
- * 返回键层级：退出确认 > EPG 弹窗 > 频道面板 > 退出确认。
+ * 返回键层级：关闭退出确认 > 关闭 EPG 弹窗 > 关闭频道面板 > 打开退出确认。
  */
 @Composable
 fun LiveScreen(
