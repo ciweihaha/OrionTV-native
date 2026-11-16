@@ -133,6 +133,29 @@ class LiveControllerTest {
     }
 
     @Test
+    fun `single channel retry message does not claim next channel`() {
+        // A31-P2-2：单频道列表耗尽备用线路后是重播同一台主线路，不是换台——
+        // 文案不得含“下一频道”；多频道列表真换台时仍用原有文案。
+        val single = listOf(channel("CCTV-1", listOf("http://a/1.m3u8", "http://a/1b.m3u8")))
+        val c = LiveController(single)
+        c.onPlaybackError(panelOpen = false) // 试备用线路
+        val retry = c.onPlaybackError(panelOpen = false) // 线路耗尽，重播同一台
+        assertTrue(retry is LiveErrorAction.NextChannel)
+        assertEquals(
+            "信号异常，正在重试当前频道主线路…",
+            (retry as LiveErrorAction.NextChannel).message,
+        )
+        assertEquals(0, c.currentIndex)
+        // 多频道：真换台，文案不变
+        val multi = LiveController(threeChannels)
+        multi.onPlaybackError(panelOpen = false) // 试备用线路
+        val hop = multi.onPlaybackError(panelOpen = false) // 跳下一台
+        assertTrue(hop is LiveErrorAction.NextChannel)
+        assertEquals("信号异常，自动切换下一频道…", (hop as LiveErrorAction.NextChannel).message)
+        assertEquals(1, multi.currentIndex)
+    }
+
+    @Test
     fun `playback error while panel open only notifies`() {
         val c = LiveController(threeChannels)
         val action = c.onPlaybackError(panelOpen = true)

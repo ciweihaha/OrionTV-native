@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
@@ -719,6 +720,8 @@ fun LiveScreen(
                     panelGroupRowFocused = focused
                     panelGroupFirstChipFocused = firstChip
                 },
+                // A31-P2-1：平板触摸滚动频道面板也要续 15 秒自动关闭定时器。
+                onPanelScroll = { viewModel.pokePanelTimer() },
                 focusRestoreTick = focusRestoreTick,
                 globalModalOpen = globalModalOpen,
             )
@@ -972,9 +975,16 @@ private fun ChannelPanel(
      * 之前 ChannelPanel 没有这个参数，落焦 effect 只凭启动时快照门控。
      */
     globalModalOpen: Boolean = false,
+    /**
+     * A31-P2-1：面板列表/分组行触摸滚动时的回调（调 viewModel.pokePanelTimer()）——
+     * 遥控器方向键必经 setFocusedChannel 续命，触摸滚动只改 LazyListState、
+     * 不走任何 pokePanelTimer 调用点，连续滚 15 秒会被定时器在手底下关面板。
+     */
+    onPanelScroll: () -> Unit = {},
 ) {
     val currentChannel = uiState.channels.getOrNull(uiState.currentIndex)
     val listState = rememberLazyListState()
+    val groupRowState = rememberLazyListState()
     val currentRequester = remember { FocusRequester() }
     // C8-P2-2：分组为空时无任何行挂 currentRequester，焦点无处可落——
     // 首个分组 chip（★ 收藏/全部恒存在）作空态落点。
@@ -984,6 +994,23 @@ private fun ChannelPanel(
     // 的 State 随重组更新，运行中的重试循环每次复核都读到最新值（与详情/首页/
     // 搜索/收藏页同款）。
     val modalOpenState = rememberUpdatedState(globalModalOpen)
+
+    // A31-P2-1：触摸滚动续面板 15 秒定时器——snapshotFlow 收集首个可见项
+    // 索引/偏移，滚动中每次变化都调一次 pokePanelTimer()（取消旧定时器、
+    // 重挂 15 秒；连续滚动时定时器一直在 15 秒后，不会在手底下关面板）。
+    // 不去抖：去抖要等滚动停下几百毫秒才发一次，连续滚 15 秒仍会到点关闭。
+    // 程序化 scrollToItem（落焦 effect）也会触发一次，重挂而已、无害。
+    // EPG 打开期间 pokePanelTimer 内部门控（shouldArmPanelTimer）会取消
+    // 定时器、不误武装；EPG 自己的列表不在此列（弹窗内滚动不续面板定时器）。
+    val latestOnPanelScroll = rememberUpdatedState(onPanelScroll)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { latestOnPanelScroll.value() }
+    }
+    LaunchedEffect(groupRowState) {
+        snapshotFlow { groupRowState.firstVisibleItemIndex to groupRowState.firstVisibleItemScrollOffset }
+            .collect { latestOnPanelScroll.value() }
+    }
 
     // 打开面板 / 切换分组时：滚到当前台并把焦点落在当前台（plan §3.3 第 1 条）；
     // 分组里没有当前台时焦点落该分组第 0 行，不丢焦点。
@@ -1065,7 +1092,10 @@ private fun ChannelPanel(
             Spacer(modifier = Modifier.height(12.dp))
         }
         // 分组 chip（★ 收藏在最前）。
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+        LazyRow(
+            state = groupRowState,
+            horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing),
+        ) {
             itemsIndexed(groups) { index, group ->
                 CategoryChip(
                     text = group,

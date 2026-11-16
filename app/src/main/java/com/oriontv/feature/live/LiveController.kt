@@ -257,6 +257,10 @@ class LiveController(
             // 否则之后每次失败直接跳台，不再重试主线路。
             lineIndex = 0
             triedLines.clear()
+            // A31-P2-2：单频道时实际是重播同一台主线路，不是“下一频道”——
+            // 旧文案无条件返回“自动切换下一频道”误导用户以为已换台；
+            // 多频道列表真换台时仍用原有文案。
+            return LiveErrorAction.NextChannel("信号异常，正在重试当前频道主线路…")
         }
         return LiveErrorAction.NextChannel("信号异常，自动切换下一频道…")
     }
