@@ -71,6 +71,37 @@ class LiveViewModelLogicTest {
     }
 
     @Test
+    fun `epg cache is stale only when no programme is still playing`() {
+        // A35-P2-1：回页时先判 stale 再拉——空缓存 stale；任一频道有正在播的
+        // 节目（endAt > now）即新鲜；全部播完（尤其午夜跨天）即 stale；空表 stale。
+        val now = 1_000_000L
+        assertTrue(LiveViewModel.isEpgStale(null, now))
+        val live = EpgParser.EpgData(
+            programmesByChannel = mapOf(
+                "cctv1" to listOf(
+                    EpgParser.Programme("cctv1", "新闻联播", now - 1_000, now + 1_000),
+                ),
+            ),
+            channelNames = mapOf("cctv1" to "CCTV-1"),
+        )
+        assertFalse(LiveViewModel.isEpgStale(live, now))
+        val expired = EpgParser.EpgData(
+            programmesByChannel = mapOf(
+                "cctv1" to listOf(
+                    EpgParser.Programme("cctv1", "新闻联播", now - 2_000, now - 1_000),
+                ),
+            ),
+            channelNames = mapOf("cctv1" to "CCTV-1"),
+        )
+        assertTrue(LiveViewModel.isEpgStale(expired, now))
+        val empty = EpgParser.EpgData(
+            programmesByChannel = emptyMap(),
+            channelNames = emptyMap(),
+        )
+        assertTrue(LiveViewModel.isEpgStale(empty, now))
+    }
+
+    @Test
     fun `page resume replays only when not already owner and playing`() {
         // 第 6 轮 P1-4：应用内导航返回（导航轨切走再回来）也要恢复——
         // 已是本页 token 所有者且在播时不动；被抢走/停掉时重开播当前台。

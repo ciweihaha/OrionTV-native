@@ -232,6 +232,21 @@ class LiveScreenLogicTest {
     }
 
     @Test
+    fun `failed overlay left right keys do not switch line`() {
+        // A35-P1-1：失败页在时左/右是两按钮（“重试 / 频道面板”）的行内移动——
+        // 按钮不消费方向键 KeyUp，根 onKeyUp 的 else 分支无条件 changeLine
+        // 会切线并顶掉失败页；失败页下不切线，返回 false 让焦点行内移动。
+        assertFalse(shouldChangeLineOnKeyUp(playbackFailed = true, key = Key.DirectionLeft))
+        assertFalse(shouldChangeLineOnKeyUp(playbackFailed = true, key = Key.DirectionRight))
+        // 失败页关闭后左/右仍切线
+        assertTrue(shouldChangeLineOnKeyUp(playbackFailed = false, key = Key.DirectionLeft))
+        assertTrue(shouldChangeLineOnKeyUp(playbackFailed = false, key = Key.DirectionRight))
+        // 上/下换台不在此谓词内（失败页文案本身写“请按上下键手动换台”）
+        assertFalse(shouldChangeLineOnKeyUp(playbackFailed = false, key = Key.DirectionUp))
+        assertFalse(shouldChangeLineOnKeyUp(playbackFailed = true, key = Key.DirectionDown))
+    }
+
+    @Test
     fun `failed overlay refocuses only when panel closed and no global modal`() {
         // A14-P2-1（= C14-P1-1）：失败页仍在时关面板，根 effect 重跑抢回根部，
         // 失败页 effect key 加 panelOpen、面板关闭时重跑补落“重试”按钮；

@@ -185,6 +185,19 @@ internal fun shouldInterceptLiveLineKeys(
     (key == Key.DirectionLeft || key == Key.DirectionRight)
 
 /**
+ * A35-P1-1：失败页在时根部左/右松键是否切线路（可单测）——失败页
+ * （playbackFailed）出现时左/右是失败页两按钮（“重试 / 频道面板”）的行内
+ * 移动：按钮只是普通 clickable，不消费方向键 KeyUp，冒泡到根 onKeyUp 的
+ * else 分支若无条件 changeLine，切线成功后 playCurrent() 把 playbackFailed
+ * 置 false、失败页直接卸载、焦点被 yank 回根部。失败页下返回 false（不消费，
+ * 焦点留在按钮行内移动）；失败页关闭后左/右仍切线；单线路频道 changeLine
+ * 本就返回 false，不受影响。上/下换台不在此谓词内（失败页文案本身写
+ * “请按上下键手动换台”，换台是既定行为）。
+ */
+internal fun shouldChangeLineOnKeyUp(playbackFailed: Boolean, key: Key): Boolean =
+    !playbackFailed && (key == Key.DirectionLeft || key == Key.DirectionRight)
+
+/**
  * EPG 弹窗焦点陷阱是否应拦截该方向键（可单测，P2-6）：
  * 焦点在首个节目行按上、或在“关闭”按钮按下时拦截，不让焦点移出弹窗落到
  * 背后频道行（OK 会误触选台）；行间移动、末行下移到“关闭”按钮都放行。
@@ -548,12 +561,23 @@ fun LiveScreen(
                                 }
                             }
                             event.key == Key.DirectionLeft -> {
-                                viewModel.changeLine(-1)
-                                true
+                                // A35-P1-1：失败页在时左/右交给按钮行内移动，不切线路——
+                                // 见 shouldChangeLineOnKeyUp 的 KDoc。
+                                if (shouldChangeLineOnKeyUp(uiState.playbackFailed, event.key)) {
+                                    viewModel.changeLine(-1)
+                                    true
+                                } else {
+                                    false
+                                }
                             }
                             event.key == Key.DirectionRight -> {
-                                viewModel.changeLine(1)
-                                true
+                                // A35-P1-1：同左键，失败页在时不切线路。
+                                if (shouldChangeLineOnKeyUp(uiState.playbackFailed, event.key)) {
+                                    viewModel.changeLine(1)
+                                    true
+                                } else {
+                                    false
+                                }
                             }
                             event.key == Key.Back -> {
                                 viewModel.openExitConfirm()

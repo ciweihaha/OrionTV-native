@@ -337,10 +337,7 @@ class LiveViewModel @Inject constructor(
                 if (!shouldRunTicker(isForeground)) continue
                 val now = System.currentTimeMillis()
                 // 缓存里已无正在播的节目才值得重拉（天光 v2.2.20 教训的反向运用）。
-                val epg = _uiState.value.epg
-                val stale = epg == null ||
-                    epg.programmesByChannel.values.none { list -> list.any { it.endAt > now } }
-                if (stale) {
+                if (isEpgStale(_uiState.value.epg, now)) {
                     // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（读
                     // epgRepository.loadFailed，与 M3U 刷新失败提示同款文案风格）；
                     // loadEpg() 失败时回落旧缓存，state.epg 非空即仍在用旧节目单。
@@ -533,6 +530,21 @@ class LiveViewModel @Inject constructor(
             return
         }
         startTicker()
+        // A35-P2-1（后者修法）：回页时缓存已 stale 即直接拉一次——startTicker
+        // 只重算 10 分钟倒计时，10 分钟内反复切页会让刷新永不到点（尤其午夜
+        // 跨天后节目单过期，信息条与面板长时间显示“暂无节目单”）；只在 stale
+        // 时拉，不新鲜的回页不发请求（见 isEpgStale 的 KDoc）。失败提示与
+        // ticker 同款文案；放 shouldResumePlayback 判断之前——失败页不自动
+        // 重播时节目单仍要刷新，信息条/面板靠它显示。
+        if (isEpgStale(_uiState.value.epg, System.currentTimeMillis())) {
+            viewModelScope.launch {
+                loadEpg()
+                epgRefreshFailedMessage(
+                    epgRepository.loadFailed.value,
+                    _uiState.value.epg != null,
+                )?.let { showToast(it) }
+            }
+        }
         if (!shouldResumePlayback(
                 playerManager.isCurrentOwner(playbackToken),
                 playerManager.isPlaying,
@@ -929,6 +941,19 @@ class LiveViewModel @Inject constructor(
          * 与后台播放开关无关；恢复前台后下一跳继续）。
          */
         internal fun shouldRunTicker(isForeground: Boolean): Boolean = isForeground
+
+        /**
+         * A35-P2-1：回页时 EPG 缓存是否已 stale（可单测）——缓存为空、或任一
+         * 频道都无正在播的节目（无 endAt > now 的节目）即 stale，与 10 分钟
+         * ticker 的判定同款（天光 v2.2.20 教训的反向运用）。只在 stale 时拉，
+         * 不会每次回页都发请求：EpgRepository.loadEpg 本身也是缓存优先，
+         * 缓存新鲜（TTL 内且仍有正在播节目）时直接返回、不拉网；拉取失败/
+         * 拉回过期文件时缓存仍 stale，下次回页再试一次（频率以用户切页为准，
+         * ticker 在同样状态下每 10 分钟也会重试一次）。
+         */
+        internal fun isEpgStale(epg: EpgParser.EpgData?, nowMs: Long): Boolean =
+            epg == null ||
+                epg.programmesByChannel.values.none { list -> list.any { it.endAt > nowMs } }
 
         /**
          * 回页是否应重开播（可单测，P1-4）：已是本页 token 所有者且在播时不动；
