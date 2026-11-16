@@ -74,6 +74,7 @@ import com.oriontv.ui.components.ModalFadeIn
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
+import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.components.orionFocus
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -1034,7 +1035,11 @@ private fun ChannelPanel(
             .width(OrionDimens.LivePanelWidth)
             .fillMaxHeight()
             .background(OrionColors.Overlay)
-            .padding(16.dp),
+            .padding(16.dp)
+            // A28-P2-2：面板内空白区（顶栏、空分组占位、底部频道信息）的点按
+            // 在此消费掉，不漏到视频点按层关面板；面板外视频区点按不受影响，
+            // 仍走视频层关面板（既定行为）。
+            .consumeTaps(),
     ) {
         // 顶栏：标题 + 时钟。
         Row(
@@ -1191,6 +1196,11 @@ private fun ChannelRow(
     // 检测器只注册一次，回调总读最新值，不因 recomposition 重启而丢点按。
     val latestOnClick = rememberUpdatedState(onClick)
     val latestOnLongPress = rememberUpdatedState(onLongPress)
+    // A28-P2-1：EPG 弹窗打开时点按也不选台/收藏，与按键路径的
+    // shouldConsumeChannelRowKey(epgDialogOpen) 同款门控——EPG 根 Box 虽也
+    // 消费点按（A28-P2-2），这里再守一道，免得层级顺序变化时漏网。
+    // 同样走 rememberUpdatedState：检测器只注册一次，闭包里读最新值。
+    val latestEpgDialogOpen = rememberUpdatedState(epgDialogOpen)
     var rowModifier = Modifier
         .fillMaxWidth()
         .focusable()
@@ -1200,8 +1210,16 @@ private fun ChannelRow(
         }
         .pointerInput(Unit) {
             detectTapGestures(
-                onTap = { latestOnClick.value() },
-                onLongPress = { latestOnLongPress.value() },
+                onTap = {
+                    if (shouldConsumeChannelRowKey(latestEpgDialogOpen.value)) {
+                        latestOnClick.value()
+                    }
+                },
+                onLongPress = {
+                    if (shouldConsumeChannelRowKey(latestEpgDialogOpen.value)) {
+                        latestOnLongPress.value()
+                    }
+                },
             )
         }
         .onKeyEvent { event ->
@@ -1399,6 +1417,10 @@ private fun EpgDialog(
         modifier = Modifier
             .fillMaxSize()
             .background(OrionColors.Background.copy(alpha = 0.6f))
+            // A28-P2-2：EPG 弹窗空白区（卡片外、节目行本身）的点按在此消费掉，
+            // 不漏到视频点按层（之前会连面板一起关，还可能触发重播）；遥控
+            // OK/返回只关 EPG 的语义不变，关闭按钮仍是子级 clickable。
+            .consumeTaps()
             .onPreviewKeyEvent { event ->
                 // P2-6 焦点陷阱（静态实现，需真机确认）：首行按上、关闭按钮按下时
                 // 在隧道阶段消费掉，不让焦点移出弹窗落到背后频道行；

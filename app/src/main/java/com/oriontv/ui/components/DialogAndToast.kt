@@ -110,7 +110,11 @@ fun ConfirmDialog(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.6f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f))
+            // A28-P2-2：确认弹窗空白区（卡片外）的点按在此消费掉，不漏到视频
+            // 点按层（之前会在弹窗背后打开频道面板）；“退出/继续看”仍是子级
+            // clickable，不受影响。
+            .consumeTaps(),
         contentAlignment = Alignment.Center,
     ) {
         Column(

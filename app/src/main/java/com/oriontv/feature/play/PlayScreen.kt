@@ -63,6 +63,7 @@ import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.ModalSlideInRight
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
+import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionTextStyles
 import kotlinx.coroutines.delay
@@ -1053,7 +1054,11 @@ private fun PlayDrawerPanel(
                 .width(480.dp)
                 .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
                 .background(OrionColors.Overlay)
-                .padding(24.dp),
+                .padding(24.dp)
+                // A28-P2-2：抽屉内空白区（标题行、网格间隙）的点按在此消费掉，
+                // 不漏到视频点按层关抽屉；只加在内层 Column 上——根 Box 的暗区
+                // 点按关抽屉是既定行为（与遥控返回同款），暗区继续漏到视频层。
+                .consumeTaps(),
         ) {
             Text(text = title, style = OrionTextStyles.SectionTitle)
             Spacer(modifier = Modifier.height(16.dp))
