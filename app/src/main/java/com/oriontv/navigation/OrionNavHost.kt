@@ -382,7 +382,10 @@ fun OrionNavHost(
             )
         }
         // C4-P1-1：首页双按退出的第一次提示。
-        if (showExitHint) {
+        // C42-P2-1：渲染与 BackHandler 同门控——只在首页且无登录弹窗/更新卡片时
+        // 才显示；否则 2 秒计时内切到详情/直播等页，提示会泄漏盖在新页面上
+        // （新页按返回是回首页、不是退出，文案与行为矛盾），还可能盖住更新卡片。
+        if (showExitHint && currentRoute is OrionRoute.Home && !showLoginModal && !showUpdateCard) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,

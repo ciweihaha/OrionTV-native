@@ -172,8 +172,8 @@ fun FavoritesScreen(
     if (uiState.favoriteError != null) {
         Box(
             // B36-P2-1：Toast 先组合、内容根 Box 后组合，同父布局内后组合
-            // 的兄弟画在上面（全仓无一处 zIndex），有内容时 Toast 会被末行
-            // 卡片盖住——置顶一层，early return 结构不动。
+            // 的兄弟画在上面；此前全仓无 zIndex，有内容时 Toast 会被末行
+            // 卡片盖住——此处加 zIndex(1f) 置顶一层，early return 结构不动。
             modifier = Modifier.fillMaxSize().zIndex(1f),
             contentAlignment = Alignment.BottomCenter,
         ) {
