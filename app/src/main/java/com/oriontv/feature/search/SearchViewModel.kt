@@ -142,8 +142,8 @@ class SearchViewModel @Inject constructor(
         // 300ms 内切走会把新 query 与旧 error（种类/文案）、旧 results、
         // 旧 searchedQuery 一并存下，回来后搜索框是新词、错误态却是旧词
         // 的失败，点“重试”实际重搜旧词（重试按钮按 searchedQuery 搜）。
-        // 只清 error：错误分支（SearchScreen :482，优先于结果区、内含按
-        // searchedQuery 的重试按钮）随之消失，错配的失败与错词重试即消除；
+        // 只清 error：错误分支（优先于结果区、内含按 searchedQuery 的
+        // 重试按钮）随之消失，错配的失败与错词重试即消除；
         // 结果区旧结果不碰——它是输入中的既有暂留态（页内输入时旧结果也
         // 留到新搜索返回），每击键清结果会让输入时列表闪空，超出本项范围。
         _uiState.value = _uiState.value.copy(

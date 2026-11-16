@@ -125,6 +125,18 @@ class HomeFocusRestoreTest {
     }
 
     @Test
+    fun `recent error placeholder only when records empty and load failed`() {
+        // B52-P2-1：记录为空且服务端拉取失败时留错误占位行（getAllWithKeys()
+        // 失败不抛错、只置 loadFailed，空 map 不能当成“确实没记录”删行）；
+        // 确实没记录（loadFailed 为假）时不留，调用方返回 null 删行；
+        // 有记录时无论 loadFailed 与否都不走本分支（有缓存走 B-P2-20 提示）。
+        assertTrue(shouldShowRecentErrorRow(recordsEmpty = true, loadFailed = true))
+        assertFalse(shouldShowRecentErrorRow(recordsEmpty = true, loadFailed = false))
+        assertFalse(shouldShowRecentErrorRow(recordsEmpty = false, loadFailed = true))
+        assertFalse(shouldShowRecentErrorRow(recordsEmpty = false, loadFailed = false))
+    }
+
+    @Test
     fun `recent row applies only when all three generations match`() {
         // B14-P2-2：三代次全过才合并——自身代次、共享 generation、行版本。
         // 行版本专防先启动的 refresh() 在本次加载期间跑完写了新行：

@@ -208,7 +208,24 @@ class HomeViewModel @Inject constructor(
         if (category == HomeCategory.RECENT) {
             val records = playRecordsRepository.getAllWithKeys()
                 .take(HomeCache.MAX_ITEMS_PER_CATEGORY)
-            if (records.isEmpty()) return null
+            if (records.isEmpty()) {
+                // B52-P2-1：记录为空且服务端拉取失败时留错误占位行，不 return null——
+                // getAllWithKeys() 失败时不抛错（只置 loadFailed、返回上次成功结果或空 map），
+                // 冷启动无缓存时空 map 会让本分支 return null、首页“最近播放”行静默消失，
+                // 且 refreshRecent() 的 P2-11 区分（抛异常=失败留旧行 / 返回 null=确实没记录删行）
+                // 也被这条静默失败路径绕过。占位行复用 loadRows 的单行失败占位模式
+                // （空 items + error），HomeScreen 对空 items 的行仍渲染标题与错误文案；
+                // 确实没有播放记录时仍返回 null 删行。与 B49-P2-2 的全空错误文案不冲突：
+                // 占位行在位时 rows 非空，全空分支不触发。
+                if (shouldShowRecentErrorRow(records.isEmpty(), playRecordsRepository.loadFailed.value)) {
+                    return HomeRow(
+                        title = category.title,
+                        items = emptyList(),
+                        error = "播放记录加载失败",
+                    )
+                }
+                return null
+            }
             return HomeRow(
                 title = category.title,
                 items = records.map { (key, record) -> mapPlayRecord(key, record) },
@@ -460,6 +477,14 @@ internal fun shouldApplyRecentRow(
     rowsVersion: Int,
 ): Boolean = recentGen == recentGeneration && genAtStart == generation &&
     rowsVersionAtStart == rowsVersion
+
+/**
+ * B52-P2-1：“最近播放”记录为空时是否应留错误占位行（可单测）——记录为空且
+ * 服务端拉取失败时才留占位行；确实没有播放记录（loadFailed 为假）时不留，
+ * 调用方返回 null 删行（P2-11 的“确实没记录删行正确”）。
+ */
+internal fun shouldShowRecentErrorRow(recordsEmpty: Boolean, loadFailed: Boolean): Boolean =
+    recordsEmpty && loadFailed
 
 /**
  * CMS 分类回落豆瓣时是否应抛错走占位行（可单测，B28-P2-1）：agg 已抛错且
