@@ -367,8 +367,8 @@ class LiveController(
         /** 换台信息条 3 秒后消失（ui-design.md §5.4）。 */
         const val INFO_BAR_MS = 3000L
 
-        /** 提示消息条 3 秒后消失（RN MESSAGE_MS）。 */
-        const val MESSAGE_MS = 3000L
+        /** 提示消息条 2 秒后消失（RN MESSAGE_MS）。 */
+        const val MESSAGE_MS = 2000L
 
         /** M3U 缓存 TTL 7 天（plan §5.4）。 */
         const val M3U_CACHE_TTL_MS = 7L * 24 * 60 * 60 * 1000

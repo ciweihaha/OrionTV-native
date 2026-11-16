@@ -861,7 +861,7 @@ class LiveViewModel @Inject constructor(
         _uiState.update { it.copy(infoChannelIndex = null) }
     }
 
-    /** 提示消息条：显示 3 秒后消失。 */
+    /** 提示消息条：显示 2 秒后消失。 */
     private fun showToast(message: String) {
         toastJob?.cancel()
         _uiState.update { it.copy(toastMessage = message) }
