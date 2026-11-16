@@ -16,8 +16,12 @@ import kotlinx.coroutines.delay
  *    Compose 的 onKeyEvent 同样只处理 [KeyEventType.KeyUp]，并在真机上核实是否双发。
  * 2. 首选焦点锚点：每个弹窗/页面打开时 requestFocus 到“当前项”，不是第 0 项。
  * 3. 返回后显式恢复位置：NavHost pop 后保存 index + scrollToItem + requestFocus。
- * 4. 长按后松手会跟一次 onClick，需用 1 秒时间窗挡掉（plan §3.3 的第 8 条：
- * 首页卡片长按 1000ms、直播卡片长按收藏；各组件内联实现，如直播频道行）。
+ * 4. 长按后松手会跟一次 onClick，需用 longPressed 标志挡掉（plan §3.3 的第 8 条：
+ * 直播卡片长按收藏；各组件内联实现，如直播频道行）——重复 KeyDown 置位、
+ * KeyUp 见标志即吞掉（LiveScreen 的直播频道行：repeatCount > 0 置位并触发
+ * onLongPress，KeyUp 见标志只清标志、不跟 onClick）。全仓没有任何“1 秒时间窗”
+ * 守卫；“首页卡片长按 1000ms”未实现——VideoCard 只是普通 clickable，
+ * HomeScreen 无任何 onLongClick/detectTapGestures。
  */
 object FocusUtils {
 

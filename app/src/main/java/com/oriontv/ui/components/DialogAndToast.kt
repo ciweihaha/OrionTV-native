@@ -84,7 +84,7 @@ fun ModalSlideInRight(content: @Composable () -> Unit) {
 /**
  * 确认弹窗（ui-design.md §5.8）：
  * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；焦点默认落在主按钮上
- * （M1 接 FocusRequester 锚点）；登录失败红字提示；弹窗淡入 150ms（§4）。
+ * （主按钮挂 FocusRequester 锚点）；弹窗淡入 150ms（§4）。
  */
 @Composable
 fun ConfirmDialog(

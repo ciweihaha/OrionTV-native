@@ -164,6 +164,22 @@ fun FavoritesScreen(
         }
     }
 
+    // B35-P2-1：删收藏失败 Toast 放在空态 early return 之前——Toast 本在
+    // 下面根 Box 内、return 之后，列表变空时永不组合（“该收藏已不存在”
+    // 提示静默丢失）；放这里与根 Box 同级、覆盖层位置，空态与有内容两种
+    // 状态下都可达（2 秒消费 effect 在上面，不受影响）。
+    if (uiState.favoriteError != null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            OrionToast(
+                message = uiState.favoriteError?.message ?: "",
+                modifier = Modifier.padding(bottom = 48.dp),
+            )
+        }
+    }
+
     if (!uiState.isLoading && uiState.items.isEmpty()) {
         Column(
             modifier = Modifier
@@ -280,18 +296,6 @@ fun FavoritesScreen(
                     }
                 }
             }
-        }
-    }
-    // B7-P0-1：删收藏失败 Toast，底部居中。
-    if (uiState.favoriteError != null) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.BottomCenter,
-        ) {
-            OrionToast(
-                message = uiState.favoriteError?.message ?: "",
-                modifier = Modifier.padding(bottom = 48.dp),
-            )
         }
     }
     }
