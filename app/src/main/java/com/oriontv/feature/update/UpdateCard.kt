@@ -23,6 +23,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.components.ModalFadeIn
+import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.theme.OrionColors
@@ -112,7 +113,9 @@ fun UpdateCard(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.6f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f))
+            // B29-P2-1：更新卡片空白区点按在此消费掉，不漏到视频点按层。
+            .consumeTaps(),
         contentAlignment = Alignment.Center,
     ) {
             Column(

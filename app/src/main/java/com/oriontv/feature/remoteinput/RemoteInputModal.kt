@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.components.ModalFadeIn
+import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -117,7 +118,9 @@ fun RemoteInputModal(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.6f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f))
+            // B29-P2-2：远程输入弹窗空白区点按在此消费掉，不漏到底下设置行。
+            .consumeTaps(),
         contentAlignment = Alignment.Center,
     ) {
             Column(
