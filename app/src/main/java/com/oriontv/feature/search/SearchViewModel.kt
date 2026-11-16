@@ -482,9 +482,13 @@ class SearchViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // B8-P2-3：无 IP 时 start() 抛 IllegalStateException，旧实现
-                // 静默吞掉，弹窗里看着像已开启；弹提示让用户知道没开成。
-                _uiState.update { it.copy(toast = nextToastEvent("远程输入开启失败，请检查网络后重试")) }
+                // 第 49 轮 B49-P2-1：B8-P2-3 原注释已过时——start() 内部已吞异常
+                //（RemoteInputManager 通用 catch 只重抛 CancellationException，
+                // 无 IP 抛的 IllegalStateException 到不了这里）；启动失败信号走
+                // state.error，扫码弹窗已按 state.error 渲染红字。本 catch 唯一
+                // 可达的真实原因是 setRemoteInputEnabled 的 DataStore 写盘失败，
+                // 故用写盘失败口径（与 SettingsViewModel.saveSetting 同款）。
+                _uiState.update { it.copy(toast = nextToastEvent("保存失败，请重试")) }
             }
         }
     }

@@ -263,6 +263,10 @@ fun LiveScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val rootRequester = remember { FocusRequester() }
+    // 第 49 轮 C49-P2-2：活的门控读数（与 ChannelPanel / EPG 弹窗同款）——
+    // 挂载 effect 的重试窗口内全局弹窗打开时即停，不偷焦；不能只把
+    // globalModalOpen 加进挂载 effect 的 key（会重跑 init/onPageResumed）。
+    val modalOpenState = rememberUpdatedState(globalModalOpen)
     // P2-7：长按上/下换台的状态——某次重复事件换过台时，松手那次 KeyUp 不再多换一台。
     var liveRepeatConsumed by remember { mutableStateOf(false) }
     var lastRepeatChangeMs by remember { mutableLongStateOf(0L) }
@@ -295,7 +299,8 @@ fun LiveScreen(
         // 定时器、重开播。Home/PiP 返回仍走 ON_RESUME，两条路不重叠。
         viewModel.onPageResumed()
         // A8-P2-2：单次请求在根尚未组合完成时静默失败，改重试版。
-        rootRequester.requestFocusWithRetry()
+        // 第 49 轮 C49-P2-2：重试每次复核活门控——弹窗在重试窗口内打开即停。
+        rootRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
     }
 
     // A5-P1-1/A5-P1-2/A5-P2-10：离页/回页的播放与定时器接线。
@@ -799,7 +804,9 @@ private fun EmptyState(
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(focusRestoreTick) { if (!globalModalOpen) requester.requestFocusWithRetry() }
+    // 第 49 轮 C49-P2-2：key 加 globalModalOpen——弹窗在重试窗口内打开时
+    // 重启取消重试（与 PlayScreen 错误 effect 同款），关闭后重跑补落焦点。
+    LaunchedEffect(focusRestoreTick, globalModalOpen) { if (!globalModalOpen) requester.requestFocusWithRetry() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -875,7 +882,9 @@ private fun PlaybackFailedOverlay(
 ) {
     val requester = remember { FocusRequester() }
     // A8-P2-2：单次请求在按钮尚未组合完成时静默失败，改重试版。
-    LaunchedEffect(focusRestoreTick, panelOpen) {
+    // 第 49 轮 C49-P2-2：key 加 globalModalOpen——弹窗在重试窗口内打开时
+    // 重启取消重试（与 PlayScreen 错误 effect 同款），关闭后重跑补落焦点。
+    LaunchedEffect(focusRestoreTick, panelOpen, globalModalOpen) {
         if (shouldFocusFailedOverlay(panelOpen, globalModalOpen)) {
             requester.requestFocusWithRetry()
         }
@@ -1082,8 +1091,9 @@ private fun ChannelPanel(
             if (filtered.isEmpty()) {
                 // C44-P2-1：与面板主 effect 空分支同款——先把分组行滚回首 chip
                 // 再落焦，首 chip 滚出可视区被卸载时裸重试全失败即丢焦点。
+                // 第 49 轮 C49-P2-2：补同款活门控——此前唯独此处漏了。
                 groupRowState.scrollToItem(0)
-                firstChipRequester.requestFocusWithRetry()
+                firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             } else {
                 listState.scrollToItem(resolvePanelFocusIndex(filtered, currentChannel))
                 if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
