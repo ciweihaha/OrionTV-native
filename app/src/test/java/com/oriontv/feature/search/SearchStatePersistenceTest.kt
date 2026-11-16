@@ -60,4 +60,43 @@ class SearchStatePersistenceTest {
         }.getOrDefault(emptyList())
         assertTrue(decoded.isEmpty())
     }
+
+    @Test
+    fun `search error kind round-trips for every failure type`() {
+        // B33-P2-1：错误种类持久化后按原样恢复——失败不再被写成 Empty。
+        val cases: List<Pair<SearchError, String?>> = listOf(
+            SearchError.NotConfigured to null,
+            SearchError.Empty to null,
+            SearchError.Unauthorized to null,
+            SearchError.DataError to null,
+            SearchError.Timeout to null,
+            SearchError.Network() to "网络错误，请检查网络后重试",
+            SearchError.Network("搜索失败：custom") to "搜索失败：custom",
+            SearchError.Server() to "服务器错误，请稍后重试",
+            SearchError.Server("服务器错误（HTTP 503），请稍后重试") to
+                "服务器错误（HTTP 503），请稍后重试",
+        )
+        for ((error, message) in cases) {
+            val kind = encodeSearchError(error)
+            assertEquals(error, decodeSearchError(kind, message))
+        }
+    }
+
+    @Test
+    fun `failure error never decodes as empty`() {
+        // B33-P2-1 的回归断言：Timeout/Network/NotConfigured 恢复后仍是
+        // 原来的失败（“重试”/“去设置”按钮的门控才在），不是 Empty。
+        assertTrue(decodeSearchError(encodeSearchError(SearchError.Timeout), null) != SearchError.Empty)
+        assertTrue(decodeSearchError(encodeSearchError(SearchError.Network()), null) != SearchError.Empty)
+        assertTrue(decodeSearchError(encodeSearchError(SearchError.NotConfigured), null) != SearchError.Empty)
+        assertEquals(SearchError.Empty, decodeSearchError(encodeSearchError(SearchError.Empty), null))
+    }
+
+    @Test
+    fun `missing or unknown saved error kind decodes to null`() {
+        assertEquals(null, decodeSearchError(null, null))
+        assertEquals(null, encodeSearchError(null))
+        // 旧版本没存过该键、或键值损坏时不凭空造错误。
+        assertEquals(null, decodeSearchError("BogusKind", "xxx"))
+    }
 }

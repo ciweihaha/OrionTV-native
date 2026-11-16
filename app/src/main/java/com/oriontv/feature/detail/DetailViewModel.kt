@@ -376,13 +376,10 @@ class DetailViewModel @Inject constructor(
         _uiState.update { it.copy(favoriteError = null) }
     }
 
-    /** 播放失败时标记当前源失败（供播放页自动换源用；详情页内标灰）。 */
-    fun markSourceAsFailed(source: String) {
-        val state = _uiState.value
-        if (source in state.failedSources) return
-        _uiState.value = state.copy(failedSources = state.failedSources + source)
-    }
-
+    // B33-P2-2：markSourceAsFailed 已删——全仓零调用方（B31-P2-1 起失败源
+    // 回传走 SavedStateHandle：写方 OrionNavHost，读方本类 init 的
+    // SAVED_FAILED_SOURCES collect + mergePlaybackFailedSources）；
+    // failedSources 字段与 DetailScreen 的标灰渲染是 B31 接线在用的，保留。
     private fun friendlyError(e: Exception): String = mapDetailError(e.message)
 }
 

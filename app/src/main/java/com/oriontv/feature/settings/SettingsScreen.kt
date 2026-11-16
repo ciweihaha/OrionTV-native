@@ -321,30 +321,33 @@ fun SettingsScreen(
             }
         }
         // 更新失败红字：除卡片内已显示外，这里也给一行（卡片关闭后仍可见）。
-        if (updateState.error != null && !updateState.showUpdateCard) {
+        // B33-P2-3：两行红字曾各占一个 fillMaxSize + BottomCenter +
+        // padding(bottom = 96.dp)，同时置位时两行无背景文字精确重叠、都读不清；
+        // 改放进同一个 Column 上下排列，位置与常驻语义不变。
+        if ((updateState.error != null && !updateState.showUpdateCard) || uiState.error != null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,
             ) {
-                Text(
-                    text = updateState.error ?: "",
-                    style = OrionTextStyles.Body,
-                    color = OrionColors.Error,
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(bottom = 96.dp),
-                )
-            }
-        }
-        if (uiState.error != null) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                Text(
-                    text = uiState.error ?: "",
-                    style = OrionTextStyles.Body,
-                    color = OrionColors.Error,
-                    modifier = Modifier.padding(bottom = 96.dp),
-                )
+                ) {
+                    if (updateState.error != null && !updateState.showUpdateCard) {
+                        Text(
+                            text = updateState.error ?: "",
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.Error,
+                        )
+                    }
+                    if (uiState.error != null) {
+                        Text(
+                            text = uiState.error ?: "",
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.Error,
+                        )
+                    }
+                }
             }
         }
     }

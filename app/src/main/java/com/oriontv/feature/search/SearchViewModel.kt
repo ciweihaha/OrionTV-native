@@ -202,6 +202,12 @@ class SearchViewModel @Inject constructor(
         val state = _uiState.value
         savedStateHandle[SAVED_QUERY_KEY] = state.query
         savedStateHandle[SAVED_SEARCHED_QUERY_KEY] = state.searchedQuery
+        // B33-P2-1：错误种类也持久化（种类 + 自定义文案，Network/Server 用）——
+        // 之前只存 query/searchedQuery/results，恢复时失败（Timeout/Network/
+        // NotConfigured 等、results 为空）被一律写成 Empty，“重试”和 NotConfigured
+        // 的“去设置”按钮都消失。恢复时按原样解回，见 restoreSearchState。
+        savedStateHandle[SAVED_ERROR_KEY] = encodeSearchError(state.error)
+        savedStateHandle[SAVED_ERROR_MESSAGE_KEY] = state.error?.message
         // B5-P2-10：每次按键都把全部搜索结果 JSON 写进 SavedStateHandle；
         // 只在 results 引用变化时才编码写（query/searchedQuery 是廉价字符串，每次写无妨）。
         if (state.results !== lastSavedResults) {
@@ -225,7 +231,14 @@ class SearchViewModel @Inject constructor(
             query = query,
             results = results,
             searchedQuery = searchedQuery,
-            error = if (results.isEmpty() && searchedQuery.isNotBlank()) SearchError.Empty else null,
+            // B33-P2-1：错误按保存的种类原样恢复，不再从“结果为空 + 搜过词”
+            // 推导 Empty——失败（Timeout/Network/NotConfigured 等）恢复后
+            // 仍是原来的失败，“重试”/“去设置”按钮才在；Empty 只来自成功后
+            // 零结果的落态（缓存命中 :277、新鲜搜索 :317 仍写 Empty，别动）。
+            error = decodeSearchError(
+                savedStateHandle.get<String>(SAVED_ERROR_KEY),
+                savedStateHandle.get<String>(SAVED_ERROR_MESSAGE_KEY),
+            ),
         )
     }
 
@@ -297,6 +310,9 @@ class SearchViewModel @Inject constructor(
                     isLoading = false,
                     error = SearchError.NotConfigured,
                 )
+                // B33-P2-1：失败落态也要存一次，否则 NotConfigured 只在内存里，
+                // 切走再回恢复时丢了种类（旧实现还会被写成 Empty）。
+                saveSearchState()
                 return
             }
             val results = moonTvApi.searchVideos(baseUrl, query)
@@ -333,6 +349,8 @@ class SearchViewModel @Inject constructor(
                 isLoading = false,
                 error = SearchError.Timeout,
             )
+            // B33-P2-1：失败落态也要存一次，种类才进 SavedStateHandle。
+            saveSearchState()
         } catch (e: CancellationException) {
             // B-P1-9：取消必须原样抛出；否则旧搜索被取消后仍置错误态，覆盖新搜索。
             throw e
@@ -342,6 +360,8 @@ class SearchViewModel @Inject constructor(
                 isLoading = false,
                 error = SearchError.classify(e),
             )
+            // B33-P2-1：失败落态也要存一次，种类才进 SavedStateHandle。
+            saveSearchState()
         }
     }
 
@@ -436,10 +456,46 @@ class SearchViewModel @Inject constructor(
         const val SAVED_SEARCHED_QUERY_KEY = "search_searched_query"
         const val SAVED_RESULTS_KEY = "search_results_json"
 
+        /**
+         * B33-P2-1：SavedStateHandle 键（搜索错误种类 + 自定义文案，Network/
+         * Server 的 message 是动态拼的，种类之外另存一份文案才不丢原话）。
+         */
+        const val SAVED_ERROR_KEY = "search_error_kind"
+        const val SAVED_ERROR_MESSAGE_KEY = "search_error_message"
+
         /** C6-P1-2：焦点锚点键（首进标记 + 上次结果条目键，导航轨切走/进程重建也不丢）。 */
         const val SAVED_INITIAL_FOCUS_DONE = "search_initial_focus_done"
         const val SAVED_RESULT_KEY = "search_saved_result_key"
     }
+}
+
+/**
+ * B33-P2-1：搜索错误种类进 SavedStateHandle 的编解码（纯逻辑，可单测）——
+ * 恢复时按原样解回：失败（Timeout/Network/NotConfigured 等）不再被写成
+ * Empty；Empty 只在成功后零结果时由落态写、经 save/restore 原样往返。
+ * 未知种类解回 null（旧版本没存过该键时也是 null，不凭空造错误）。
+ */
+internal fun encodeSearchError(error: SearchError?): String? = when (error) {
+    null -> null
+    SearchError.NotConfigured -> "NotConfigured"
+    SearchError.Empty -> "Empty"
+    SearchError.Unauthorized -> "Unauthorized"
+    SearchError.DataError -> "DataError"
+    SearchError.Timeout -> "Timeout"
+    is SearchError.Network -> "Network"
+    is SearchError.Server -> "Server"
+}
+
+internal fun decodeSearchError(kind: String?, message: String?): SearchError? = when (kind) {
+    null -> null
+    "NotConfigured" -> SearchError.NotConfigured
+    "Empty" -> SearchError.Empty
+    "Unauthorized" -> SearchError.Unauthorized
+    "DataError" -> SearchError.DataError
+    "Timeout" -> SearchError.Timeout
+    "Network" -> SearchError.Network(message ?: "网络错误，请检查网络后重试")
+    "Server" -> SearchError.Server(message ?: "服务器错误，请稍后重试")
+    else -> null
 }
 
 /** P2-11：只缓存非空结果；空结果不进缓存（纯逻辑，可单测）。 */
