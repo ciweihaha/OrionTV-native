@@ -603,6 +603,20 @@ fun shouldKeepDownloadedFile(downloadedVersion: String?, latestVersion: String):
     downloadedVersion != null && downloadedVersion == latestVersion
 
 /**
+ * B40-P2-3：卡片“已下载”是否成立（纯逻辑，可单测）——路径在、且已下载包的
+ * 版本就是当前最新版。下载中途重查出新版后旧版下载跑完，完成分支仍按开始时
+ * 的快照写路径/版本；只判路径会把旧包当新版叫用户“立即安装”。版本对不上
+ * 时卡片不显示已下载，用户重下新版。B24-P2-1 的兜底只覆盖“下载完成后重查”
+ *（重查时 keepDownload==false 即清），不覆盖“重查发生在下载中途”本窗口。
+ */
+fun isDownloadedForLatestVersion(
+    downloadedFilePath: String?,
+    downloadedVersion: String?,
+    latestVersion: String?,
+): Boolean =
+    downloadedFilePath != null && downloadedVersion != null && downloadedVersion == latestVersion
+
+/**
  * P2-22：版本号先去 "v"/"V" 前缀再比较/拼下载地址。
  * B4-P2-13：AggApi.version() 内部已 strip v 前缀（根治），这里的 strip
  * 是死防御，留着无害；第 5 轮起根治点在 AggApi（先 strip 再校验），这里只留兼容委托。

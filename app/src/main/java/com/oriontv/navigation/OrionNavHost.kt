@@ -44,6 +44,7 @@ import com.oriontv.feature.search.SearchScreen
 import com.oriontv.feature.settings.SettingsScreen
 import com.oriontv.feature.update.UpdateCard
 import com.oriontv.feature.update.UpdateViewModel
+import com.oriontv.feature.update.isDownloadedForLatestVersion
 import com.oriontv.ui.components.NavRail
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.theme.OrionColors
@@ -366,7 +367,11 @@ fun OrionNavHost(
                 apkSizeBytes = updateState.apkSizeBytes,
                 downloading = updateState.downloading,
                 downloadProgress = updateState.downloadProgress,
-                downloaded = updateState.downloadedFilePath != null,
+                downloaded = isDownloadedForLatestVersion(
+                    updateState.downloadedFilePath,
+                    updateState.downloadedVersion,
+                    updateState.latestVersion,
+                ),
                 error = updateState.error,
                 onUpdate = { updateViewModel.startDownload() },
                 onInstall = { updateViewModel.installUpdate() },

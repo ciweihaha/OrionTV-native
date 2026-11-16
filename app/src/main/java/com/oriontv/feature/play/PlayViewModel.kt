@@ -911,7 +911,12 @@ class PlayViewModel @Inject constructor(
             // A13-P2-3：重播也要重置片头状态（与 retry() 经 startEpisode 的
             // 重 arm 语义对齐）——重播不走 startEpisode，introSkippedThisEpisode
             // 仍是真、胶囊已记“出现过”时，重播的片头既不自动跳、胶囊也不出现。
+            // A40-P2-1：重播也要重置 nextEpisodeDismissedForIndex（与 retry()/
+            // selectEpisode/nextEpisode 一致）——只重置 shown 时，取消过预告卡
+            // 的集重播后 shouldShowNextEpisode 仍被 dismissed 挡住，片尾前
+            // 10 秒不再提前出卡、播完也不重弹、不自动切下一集。
             nextEpisodeShownForIndex = -1
+            nextEpisodeDismissedForIndex = -1
             introSkippedThisEpisode = false
             skipIntroCapsule.resetForEpisode()
             _uiState.update { it.copy(showNextEpisode = false, isEnded = false) }

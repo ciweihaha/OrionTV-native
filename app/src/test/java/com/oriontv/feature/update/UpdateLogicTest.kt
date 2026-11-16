@@ -188,6 +188,17 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun `downloaded flag requires downloaded version to match latest`() {
+        // B40-P2-3：下载中途重查出新版，旧版跑完也不能算“已下载”——卡片不
+        // 能把旧包当新版叫用户“立即安装”；同版、路径在时才算已下载。
+        assertTrue(isDownloadedForLatestVersion("/x/OrionTV_v2.0.11.apk", "2.0.11", "2.0.11"))
+        assertFalse(isDownloadedForLatestVersion("/x/OrionTV_v2.0.10.apk", "2.0.10", "2.0.11"))
+        assertFalse(isDownloadedForLatestVersion(null, "2.0.11", "2.0.11"))
+        assertFalse(isDownloadedForLatestVersion("/x/OrionTV_v2.0.11.apk", null, "2.0.11"))
+        assertFalse(isDownloadedForLatestVersion("/x/OrionTV_v2.0.11.apk", "2.0.11", null))
+    }
+
+    @Test
     fun `download complete toast suppressed for skipped version`() {
         // 第 7 轮 P2-4：已跳过版本的完成回调不再弹 Toast（跳过与完成竞态时
         // 完成分支凭此复核）；未跳过的正常弹。

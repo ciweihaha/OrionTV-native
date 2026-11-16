@@ -196,7 +196,16 @@ class SearchViewModel @Inject constructor(
         // B25-P2-3：同步清掉旧联想（与 clearQuery() 同款一行）——之前只置
         // query、不碰 suggestions，点历史/联想 chip 后旧联想仍渲染在新
         // 搜索结果上方，直到下一次 onQueryChange 才重算。
-        _uiState.value = _uiState.value.copy(query = trimmed, suggestions = emptyList())
+        // B40-P2-1：searchNow 入口也先清旧错误再存档（与 B34-P2-1 的 onQueryChange
+        // 同款顺序）——之前只置 query/suggestions，不碰 error/searchedQuery，
+        // 切走再回会把新 query B + 旧 searchedQuery=A + 旧 error 一并恢复，
+        // 搜索框是 B、错误态却是 A 的失败，点“重试”实际重搜 A。
+        _uiState.value = _uiState.value.copy(
+            query = trimmed,
+            suggestions = emptyList(),
+            error = null,
+            searchedQuery = trimmed,
+        )
         saveSearchState()
         searchJob = viewModelScope.launch {
             if (gen != generation) return@launch
@@ -237,19 +246,29 @@ class SearchViewModel @Inject constructor(
             json.decodeFromString(ListSerializer(SearchResult.serializer()), resultsJson)
         }.getOrDefault(emptyList())
         if (query.isBlank() && results.isEmpty()) return
+        // B33-P2-1：错误按保存的种类原样恢复，不再从“结果为空 + 搜过词”
+        // 推导 Empty——失败（Timeout/Network/NotConfigured 等）恢复后
+        // 仍是原来的失败，“重试”/“去设置”按钮才在；Empty 只来自成功后
+        // 零结果的落态（缓存命中 :319、新鲜搜索 :366 仍写 Empty，别动）。
+        val restoredError = decodeSearchError(
+            savedStateHandle.get<String>(SAVED_ERROR_KEY),
+            savedStateHandle.get<String>(SAVED_ERROR_MESSAGE_KEY),
+        )
         _uiState.value = _uiState.value.copy(
             query = query,
             results = results,
             searchedQuery = searchedQuery,
-            // B33-P2-1：错误按保存的种类原样恢复，不再从“结果为空 + 搜过词”
-            // 推导 Empty——失败（Timeout/Network/NotConfigured 等）恢复后
-            // 仍是原来的失败，“重试”/“去设置”按钮才在；Empty 只来自成功后
-            // 零结果的落态（缓存命中 :277、新鲜搜索 :317 仍写 Empty，别动）。
-            error = decodeSearchError(
-                savedStateHandle.get<String>(SAVED_ERROR_KEY),
-                savedStateHandle.get<String>(SAVED_ERROR_MESSAGE_KEY),
-            ),
+            error = restoredError,
         )
+        // B40-P2-2：在途搜索切走再回——ViewModel 随页面销毁（init :101-102），
+        // 存档只有 query/results=[]/error=null，恢复后结果区 when 四分支全不
+        // 命中、除 24dp Spacer 外什么都不渲染，且没有任何地方再发起搜索。
+        // 恢复出“有词、无结果、无错误”时立即对该 query 重跑一次 executeSearch
+        //（不走 searchNow 的存档，避免循环写；executeSearch 自己落态时存）。
+        if (shouldResumeInterruptedSearch(query, results, restoredError)) {
+            val gen = ++generation
+            searchJob = viewModelScope.launch { executeSearch(query, gen) }
+        }
     }
 
     /**
@@ -597,6 +616,17 @@ sealed interface SearchError {
         }
     }
 }
+
+/**
+ * B40-P2-2：恢复后是否立即重跑一次搜索（纯逻辑，可单测）——只在“有词、无结果、
+ * 无错误”时重跑，即恢复出的正是搜索在途被切走丢掉的那种态。已搜到结果、已落
+ * 失败/空结果（error 非空，含 Empty）时不重跑；词为空时也不重跑。
+ */
+internal fun shouldResumeInterruptedSearch(
+    query: String,
+    results: List<SearchResult>,
+    error: SearchError?,
+): Boolean = query.isNotBlank() && results.isEmpty() && error == null
 
 /**
  * 远程输入应搜哪条文本（纯逻辑，可单测，B9-P2-5）：以 state 的最新一条为准，

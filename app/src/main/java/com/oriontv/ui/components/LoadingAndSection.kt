@@ -26,9 +26,10 @@ import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionTextStyles
 
 /**
- * 加载态（C4-P2-10）：原来只是静态条、零调用，改成真正的转圈动画
- *（品牌色 270° 圆弧 1 秒一圈无限旋转 + 文案）；仍无调用方时也不留死代码隐患，
- * 各页的“正在加载…”文案可随时换成它。
+ * 加载态（C4-P2-10）：各页加载态共用的转圈动画——品牌色 270° 圆弧 1 秒一圈
+ * 无限旋转 + 可传 message 文案。调用方 5 处：HomeScreen、DetailScreen、
+ * FavoritesScreen、LiveScreen、PlayScreen。C40-P2-1：修正过时 KDoc（原写
+ * “仍无调用方”，C5-P2-3 起 5 页已陆续接入）。
  */
 @Composable
 fun LoadingAnimation(

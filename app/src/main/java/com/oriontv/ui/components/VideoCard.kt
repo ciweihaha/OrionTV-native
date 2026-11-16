@@ -28,7 +28,6 @@ import coil3.network.httpHeaders
 import coil3.request.ImageRequest
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionTextStyles
-import coil3.compose.AsyncImage
 
 /**
  * 视频卡片（ui-design.md §6）：

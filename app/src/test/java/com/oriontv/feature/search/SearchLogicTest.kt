@@ -1,6 +1,7 @@
 package com.oriontv.feature.search
 
 import com.oriontv.data.api.SearchResponseException
+import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -82,5 +83,23 @@ class SearchLogicTest {
         assertTrue(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = true, globalModalOpen = false))
         assertFalse(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = true, globalModalOpen = true))
         assertFalse(shouldEnableRemoteInputBackHandler(remoteInputModalOpen = false, globalModalOpen = false))
+    }
+
+    @Test
+    fun `interrupted search resumes after restore only with query and no results or error`() {
+        // B40-P2-2：恢复出“有词、无结果、无错误”时重跑在途被丢掉的搜索；
+        // 已有结果、已落失败/空结果、词为空时都不重跑。
+        assertTrue(shouldResumeInterruptedSearch("庆余年", emptyList(), null))
+        assertFalse(shouldResumeInterruptedSearch("", emptyList(), null))
+        assertFalse(shouldResumeInterruptedSearch("   ", emptyList(), null))
+        assertFalse(
+            shouldResumeInterruptedSearch(
+                "庆余年",
+                listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年")),
+                null,
+            ),
+        )
+        assertFalse(shouldResumeInterruptedSearch("庆余年", emptyList(), SearchError.Empty))
+        assertFalse(shouldResumeInterruptedSearch("庆余年", emptyList(), SearchError.Network()))
     }
 }

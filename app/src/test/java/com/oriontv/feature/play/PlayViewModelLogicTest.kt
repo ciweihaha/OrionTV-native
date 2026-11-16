@@ -282,6 +282,32 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `dismissed episode overlay returns after replay resets dismiss`() {
+        // A40-P2-1：取消过预告卡后播完按 OK 重播，dismissed 标记随重播重置为 -1
+        //（与 retry() 一致）——重看完整集时片尾附近仍可提前出卡、播完重弹。
+        val duration = 1_800_000L
+        // 取消过（dismissed = 本集集号）：播完也不弹
+        assertFalse(PlayViewModel.shouldShowNextEpisode(true, 0, 10, 0))
+        // 重播重置后（dismissed = -1）：片尾前 5 秒能提前出卡
+        assertTrue(PlayViewModel.shouldShowNextEpisode(true, 0, 10, -1))
+        assertTrue(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+            ),
+        )
+        // 未重置时（dismissed 仍是本集集号）：片尾前 5 秒也不出卡
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = 0,
+            ),
+        )
+    }
+
+    @Test
     fun `start position beyond new source duration is overflow`() {
         // A7-P2-2：起点 >= 时长即溢出（ExoPlayer 会把 seek 钳到片尾、立刻播完）；
         // 起点为 0、时长未知时不算。
