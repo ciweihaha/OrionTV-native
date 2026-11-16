@@ -126,7 +126,6 @@ class HomeViewModel @Inject constructor(
                 // B14-P2-2：写新行时推进版本——先启动的 refreshRecent 落态前复核。
                 rowsVersion++
                 _uiState.value = HomeUiState(
-                    serverConfigured = true,
                     rows = rows,
                     error = if (rows.isEmpty()) "加载失败，请检查网络或服务器地址" else null,
                 )
@@ -372,6 +371,10 @@ class HomeViewModel @Inject constructor(
             aggApi.videoList(cmsType, cursor).list.orEmpty().map(::mapAggItem)
         }
         RowSource.DOUBAN -> {
+            // B28-P2-2：豆瓣分支先判空地址，与 loadDouban 同款短路——缓存豆瓣行
+            // 在清掉地址后翻页时返回空列表、走既有空页链式续取（到底即停），
+            // 不再把“未配置服务器”报成“加载更多失败”。
+            if (baseUrl.isBlank()) return emptyList()
             val type = state.doubanType ?: return emptyList()
             val tag = state.doubanTag ?: return emptyList()
             moonTvApi.getDoubanData(
@@ -402,11 +405,14 @@ class HomeViewModel @Inject constructor(
     private suspend fun loadCmsCategory(category: HomeCategory, baseUrl: String): Pair<List<HomeRowItem>, RowSource> {
         val cmsType = category.cmsType ?: return emptyList<HomeRowItem>() to RowSource.CMS
         // B4-P2-4：runCatching 会吞 CancellationException，改 try/catch 前置重抛。
+        // B28-P2-1：记下 agg 是否抛错——抛错与返回空列表是两回事，分开记。
+        var aggFailed = false
         val aggItems = try {
             aggApi.videoList(cmsType, 1).list.orEmpty()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
+            aggFailed = true
             emptyList()
         }
         if (aggItems.isNotEmpty()) return aggItems.map(::mapAggItem) to RowSource.CMS
@@ -414,6 +420,12 @@ class HomeViewModel @Inject constructor(
         // B12-P2-5：agg 失败 + 豆瓣失败时行不再静默丢弃——loadDouban 失败即抛错，
         // 走 loadRows() 的占位行；只有豆瓣成功返回空时才是双源都返回空，行不展示。
         val fallbackTag = category.fallbackTag ?: return emptyList<HomeRowItem>() to RowSource.CMS
+        // B28-P2-1：agg 已抛错、豆瓣又因未配置返回空时，抛错走占位行——否则
+        // “agg 失败（网络错）”与“豆瓣未配置”被混成同一个空列表，分类行静默
+        // 丢弃（未配服务器 + agg 不可达时首页只剩“最近播放”一行）。
+        if (shouldThrowCmsFallbackError(aggFailed, baseUrl)) {
+            throw IllegalStateException("agg unavailable and douban unconfigured")
+        }
         return loadDouban(category.doubanType ?: "tv", fallbackTag, baseUrl) to RowSource.DOUBAN
     }
 
@@ -450,6 +462,15 @@ internal fun shouldApplyRecentRow(
     rowsVersionAtStart == rowsVersion
 
 /**
+ * CMS 分类回落豆瓣时是否应抛错走占位行（可单测，B28-P2-1）：agg 已抛错且
+ * 豆瓣因未配置返回空时抛错——“agg 失败”与“未配置”是两种不同的空，不能混成
+ * 同一个空列表静默丢行。agg 只是返回空列表时不抛（双源都返回空，行不展示，
+ * 是 B12-P2-5 的既定语义）；配了服务器时豆瓣失败由 loadDouban 自行抛错。
+ */
+internal fun shouldThrowCmsFallbackError(aggFailed: Boolean, baseUrl: String): Boolean =
+    aggFailed && baseUrl.isBlank()
+
+/**
  * “最近播放”行合并（可单测，B11-P2-2）：去掉旧的最近播放行、新行插到首位；
  * recent 为 null（确实没有播放记录）时只删旧行，不动其他行。
  * 调用方须在 _uiState.update { … } 的 lambda 内调它（对最新态原子合并），
@@ -464,7 +485,6 @@ internal fun mergeRecentRow(existing: List<HomeRow>, recent: HomeRow?): List<Hom
 
 data class HomeUiState(
     val isLoading: Boolean = false,
-    val serverConfigured: Boolean = true,
     val rows: List<HomeRow> = emptyList(),
     val error: String? = null,
 )

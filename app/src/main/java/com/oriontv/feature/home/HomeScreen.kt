@@ -41,7 +41,6 @@ import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.navigation.OrionRoute
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.LoadingAnimation
-import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.VideoCard
 import com.oriontv.ui.theme.OrionColors
@@ -79,9 +78,6 @@ fun HomeScreen(
     // C21-P2-1：首载失败时错误页“重试”按钮的焦点锚点（详情页 C4-P1-4 同款范式；
     // 之前失败页焦点落在首 chip 上，“重试”须多按一次下键才到）。
     val retryRequester = remember { FocusRequester() }
-    // C4-P0-1：未配置空态“去设置”按钮的焦点锚点（空态分支在焦点请求前 return，
-    // 首装无焦点、遥控失灵；锚点与请求都放在 return 之前）。
-    val goSettingsRequester = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     // 每行横向滚动状态 + 每张卡片的焦点锚点（返回恢复用；键为 "行:卡片"）。
@@ -100,41 +96,6 @@ fun HomeScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // C4-P0-1：空态分支内请求焦点（必须放在下面 return 之前，否则到不了；
-    // 按钮未组合时 requestFocus 只是空操作，等 serverConfigured 变 false
-    // 的那次重组、按钮已组合时才真正落焦）。
-    LaunchedEffect(uiState.serverConfigured) {
-        if (!uiState.serverConfigured) goSettingsRequester.requestFocus()
-    }
-
-    // C12-P1-6：未配置空态的 tick 监听（必须放在下面 return 之前）——effect B
-    // 在 return 之后，更新卡片关闭后 tick +1 到不了空态，焦点丢失、只能杀进程
-    // 重进；空态专用的 tick 监听放这里，tick 变化且仍未配置时落焦“去设置”。
-    LaunchedEffect(focusRestoreTick) {
-        if (shouldFocusEmptyStateOnTick(focusRestoreTick, uiState.serverConfigured)) {
-            goSettingsRequester.requestFocus()
-        }
-    }
-
-    if (!uiState.serverConfigured) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(OrionDimens.ContentPadding),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(text = "还没有配置源地址，先去设置里添加吧", style = OrionTextStyles.Body)
-            Spacer(modifier = Modifier.height(24.dp))
-            PrimaryButton(
-                text = "去设置",
-                onClick = { onNavigate(OrionRoute.Settings) },
-                modifier = Modifier.preferredFocus(goSettingsRequester),
-            )
-        }
-        return
     }
 
     // P1-4/P2-9：焦点默认只在首次进入时落在分类栏“最近播放”上；

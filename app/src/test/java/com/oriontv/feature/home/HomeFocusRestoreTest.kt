@@ -125,15 +125,6 @@ class HomeFocusRestoreTest {
     }
 
     @Test
-    fun `unconfigured empty state recovers focus on tick`() {
-        // C12-P1-6：未配置空态不在 tick 恢复覆盖内（effect B 在 early return
-        // 之后）；更新卡片关闭后 tick +1、仍未配置时落焦“去设置”，已配置时不动作。
-        assertTrue(shouldFocusEmptyStateOnTick(focusRestoreTick = 1, serverConfigured = false))
-        assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 0, serverConfigured = false))
-        assertFalse(shouldFocusEmptyStateOnTick(focusRestoreTick = 1, serverConfigured = true))
-    }
-
-    @Test
     fun `recent row applies only when all three generations match`() {
         // B14-P2-2：三代次全过才合并——自身代次、共享 generation、行版本。
         // 行版本专防先启动的 refresh() 在本次加载期间跑完写了新行：

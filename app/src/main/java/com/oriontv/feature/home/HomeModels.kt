@@ -206,11 +206,3 @@ internal fun shouldFocusHomeRetryOnErrorArrival(
     rows: List<HomeRow>,
     lastErrorFocused: String?,
 ): Boolean = error != null && error != lastErrorFocused && shouldFocusHomeRetry(error, rows)
-
-/**
- * C12-P1-6：首页未配置空态是否应在 tick 时落焦“去设置”（纯函数，可单测）——
- * 空态分支在 effect B 声明之前 return，tick 恢复到不了空态；更新卡片关闭后
- * tick +1、仍未配置时落焦空态按钮，已配置时空态根本不在组合里、不动作。
- */
-internal fun shouldFocusEmptyStateOnTick(focusRestoreTick: Int, serverConfigured: Boolean): Boolean =
-    focusRestoreTick > 0 && !serverConfigured
