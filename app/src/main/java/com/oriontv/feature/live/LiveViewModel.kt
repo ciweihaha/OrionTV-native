@@ -221,6 +221,17 @@ class LiveViewModel @Inject constructor(
                 epgRepository.loadFailed.value,
                 _uiState.value.epg != null,
             )?.let { showToast(it) }
+            // A46-P2-1：首启 M3U 拉取失败回落旧缓存也要轻提示（A8-P1-2 只修了
+            // refreshChannels，init() 的非空分支漏了同一信号）：loadChannels()
+            // 返回后 loadFailed 已同步置位——decideLoad 只有 Failed 分支报
+            // loadFailed=true，且此时必回落旧缓存，非空表 + loadFailed=true
+            // 只可能是这一条；失败时旧表里的失效 URL 会逐个断流换台，用户却
+            // 看不到任何提示。放 EPG 提示之后：两者共用同一 toastMessage 槽位，
+            // 后弹的会覆盖先弹的；M3U 旧表失效比 EPG 旧节目单更影响观看，两路
+            // 同失败时以 M3U 提示为准。reload() 走同一 init()，顺带覆盖。
+            if (m3uRepository.loadFailed.value) {
+                showToast("直播源刷新失败，仍用旧频道表")
+            }
             startTicker()
         }
     }

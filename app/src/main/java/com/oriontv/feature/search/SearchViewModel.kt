@@ -137,7 +137,7 @@ class SearchViewModel @Inject constructor(
     /** 输入变化：防抖 300ms 后搜；清空输入时只清结果、不清历史。 */
     fun onQueryChange(query: String) {
         val historySuggestions = suggest(query, _uiState.value.history)
-        // B34-P2-1：输入新词先清旧错误再存档（与空串分支 :149 同款顺序）——
+        // B34-P2-1：输入新词先清旧错误再存档（与空串分支同款顺序：先清 error 再存档）——
         // 之前先存档：error 要到 300ms 防抖后 executeSearch 开始时才清，
         // 300ms 内切走会把新 query 与旧 error（种类/文案）、旧 results、
         // 旧 searchedQuery 一并存下，回来后搜索框是新词、错误态却是旧词
@@ -249,7 +249,7 @@ class SearchViewModel @Inject constructor(
         // B33-P2-1：错误按保存的种类原样恢复，不再从“结果为空 + 搜过词”
         // 推导 Empty——失败（Timeout/Network/NotConfigured 等）恢复后
         // 仍是原来的失败，“重试”/“去设置”按钮才在；Empty 只来自成功后
-        // 零结果的落态（缓存命中 :319、新鲜搜索 :366 仍写 Empty，别动）。
+        // 零结果的落态（缓存命中 :327、新鲜搜索 :374 仍写 Empty，别动）。
         val restoredError = decodeSearchError(
             savedStateHandle.get<String>(SAVED_ERROR_KEY),
             savedStateHandle.get<String>(SAVED_ERROR_MESSAGE_KEY),
