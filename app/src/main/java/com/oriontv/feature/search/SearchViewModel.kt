@@ -300,10 +300,14 @@ class SearchViewModel @Inject constructor(
                 error = if (cached.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
                 history = freshHistory,
+                // B37-P2-1：历史保存成功时保留现有 Toast，不写 null——toast 是共用字段，
+                // enableRemoteInput() 失败也往这里写“远程输入开启失败…”；在途搜索完成时
+                // 若无条件清掉，那条失败提示未满 2 秒即消失。保留同一事件对象时消费
+                // effect 的 key（toast.id）不变，原 2 秒计时继续走、不会赖着不走。
                 toast = if (!historySaved) {
                     nextToastEvent("搜索历史保存失败，本次搜索不受影响")
                 } else {
-                    null
+                    _uiState.value.toast
                 },
             )
             saveSearchState()
@@ -343,10 +347,11 @@ class SearchViewModel @Inject constructor(
                 error = if (results.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
                 history = freshHistory,
+                // B37-P2-1：同缓存命中分支——历史保存成功时保留现有 Toast（见上）。
                 toast = if (!historySaved) {
                     nextToastEvent("搜索历史保存失败，本次搜索不受影响")
                 } else {
-                    null
+                    _uiState.value.toast
                 },
             )
             saveSearchState()

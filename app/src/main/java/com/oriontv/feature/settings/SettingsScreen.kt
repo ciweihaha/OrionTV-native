@@ -311,13 +311,31 @@ fun SettingsScreen(
         }
 
         // Toast：底部居中，2 秒消失。
-        val toast = uiState.toast ?: updateState.toast
-        if (toast != null) {
+        // B37-P2-2：两个 Toast 上下叠放、各渲染各的——之前只有一个渲染位、设置 Toast
+        // 优先，更新 Toast 被压住时仍走自己的 2 秒消费 effect，到期即被静默清掉、一次
+        // 也没显示过。设置 Toast 在下（沿用旧位置）、更新 Toast 在上；只有一个时与旧
+        // 渲染位置完全一致；各自的 2 秒消费 effect 不动。未选另一修法（更新 Toast 的
+        // 消费 effect 只在实际渲染后才计时）：那要把两个 ViewModel 的 effect 时序耦合
+        // 在一起，叠放改动更小、各自生命周期仍独立。
+        if (uiState.toast != null || updateState.toast != null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,
             ) {
-                OrionToast(message = toast.message, modifier = Modifier.padding(bottom = 48.dp))
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(bottom = 48.dp),
+                ) {
+                    updateState.toast?.let {
+                        OrionToast(
+                            message = it.message,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
+                    uiState.toast?.let {
+                        OrionToast(message = it.message)
+                    }
+                }
             }
         }
         // 更新失败红字：除卡片内已显示外，这里也给一行（卡片关闭后仍可见）。
