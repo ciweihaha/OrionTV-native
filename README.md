@@ -8,7 +8,7 @@ OrionTV 原生重写：Kotlin + Jetpack Compose for TV，只做 Android TV。
 | 项 | 值 |
 |---|---|
 | 包名 | `com.oriontv` |
-| 版本 | 2.0.2（versionCode 10705） |
+| 版本 | 2.0.3（versionCode 10706） |
 | minSdk / targetSdk / compileSdk | 24 / 35 / 35 |
 | 目标设备 | Android TV 横屏（arm64-v8a） |
 | APK 体积目标 | < 25MB |
