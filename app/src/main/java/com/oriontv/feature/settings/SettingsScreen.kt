@@ -310,46 +310,30 @@ fun SettingsScreen(
             }
         }
 
-        // Toast：底部居中，2 秒消失。
+        // Toast 与红字：底部居中，Toast 2 秒消失、红字常驻（卡片关闭后仍可见）。
         // B37-P2-2：两个 Toast 上下叠放、各渲染各的——之前只有一个渲染位、设置 Toast
         // 优先，更新 Toast 被压住时仍走自己的 2 秒消费 effect，到期即被静默清掉、一次
-        // 也没显示过。设置 Toast 在下（沿用旧位置）、更新 Toast 在上；只有一个时与旧
-        // 渲染位置完全一致；各自的 2 秒消费 effect 不动。未选另一修法（更新 Toast 的
-        // 消费 effect 只在实际渲染后才计时）：那要把两个 ViewModel 的 effect 时序耦合
-        // 在一起，叠放改动更小、各自生命周期仍独立。
-        if (uiState.toast != null || updateState.toast != null) {
+        // 也没显示过。设置 Toast 在下、更新 Toast 在上；各自的 2 秒消费 effect 不动。
+        // B38-P2-1：红字行与两个 Toast 放进同一个 BottomCenter Column 统一排布
+        // （红字在上、更新 Toast、设置 Toast 在下，共用 bottom 48.dp）——之前是
+        // 两个独立的 BottomCenter Box，红字 Box 在后声明、画在上层、无背景；双 Toast
+        // 同时出现时上方的更新 Toast 会与红字短暂重叠（≤2 秒）。现在三类行同列排布，
+        // 永不重叠；红字常驻语义不变（B33-P2-3 的两行红字同列叠放沿用）。
+        // C38-P2-1：间隔改由 Column 的 spacedBy(8.dp) 统一管三类行，删掉更新 Toast
+        // 自带的 Modifier.padding(bottom = 8.dp)——之前更新 Toast 单独出现时底边
+        // 是 48 + 8 = 56.dp，比旧的单个 Toast 位置（48.dp）高 8.dp；现在单 Toast
+        // （任一）底边均为 48.dp，与旧位置一致，双 Toast 时仍保持 8.dp 间隔。
+        if (uiState.toast != null || updateState.toast != null ||
+            (updateState.error != null && !updateState.showUpdateCard) || uiState.error != null
+        ) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(bottom = 48.dp),
-                ) {
-                    updateState.toast?.let {
-                        OrionToast(
-                            message = it.message,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
-                    }
-                    uiState.toast?.let {
-                        OrionToast(message = it.message)
-                    }
-                }
-            }
-        }
-        // 更新失败红字：除卡片内已显示外，这里也给一行（卡片关闭后仍可见）。
-        // B33-P2-3：两行红字曾各占一个 fillMaxSize + BottomCenter +
-        // padding(bottom = 96.dp)，同时置位时两行无背景文字精确重叠、都读不清；
-        // 改放进同一个 Column 上下排列，位置与常驻语义不变。
-        if ((updateState.error != null && !updateState.showUpdateCard) || uiState.error != null) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(bottom = 96.dp),
                 ) {
                     if (updateState.error != null && !updateState.showUpdateCard) {
                         Text(
@@ -364,6 +348,12 @@ fun SettingsScreen(
                             style = OrionTextStyles.Body,
                             color = OrionColors.Error,
                         )
+                    }
+                    updateState.toast?.let {
+                        OrionToast(message = it.message)
+                    }
+                    uiState.toast?.let {
+                        OrionToast(message = it.message)
                     }
                 }
             }
