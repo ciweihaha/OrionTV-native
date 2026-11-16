@@ -143,7 +143,7 @@ class UpdateDownloader @Inject constructor(
                                     throw IOException("下载失败：HTTP 416，断点失效，从头重下")
                                 }
                                 if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                                    // 4xx 不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
+                                    // 4xx（429 除外）不重试：确定性失败，重发也一样（同第 6/7 轮模式）。
                                     // UpdateDownloadException 有专用 catch，直接重抛不重试。
                                     throw UpdateDownloadException(
                                         UpdateError.Network,

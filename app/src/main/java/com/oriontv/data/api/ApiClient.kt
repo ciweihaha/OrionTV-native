@@ -83,7 +83,7 @@ class CircuitBreaker(
 /**
  * OkHttp 客户端骨架（plan §5.5 超时体系）：
  * - 默认请求 15 秒；搜索 60 秒；版本检查 20 秒；m3u/EPG 拉取 15 秒。
- * - 超时/网络错/5xx 最多 3 次，退避 1 秒；4xx、结构异常、JSON 损坏、熔断开启时不重试。
+ * - 超时/网络错/5xx/429 最多 3 次，退避 1 秒；其余 4xx、结构异常、JSON 损坏、熔断开启时不重试。
  * - 302 默认跟随跳转（与 RN fetch 一致，不要把 302 当错误）。
  * - 401 时用已保存凭据重登后重试一次（第 6 轮 D6-P2-8：401 即请求未执行，
  *   重发对 POST 也安全，不再只限幂等方法）。
@@ -126,8 +126,14 @@ object ApiClient {
             method.equals("DELETE", ignoreCase = true) ||
             method.equals("HEAD", ignoreCase = true)
 
-    /** 是否值得重试：超时/网络错（IOException）/5xx 才重试；4xx 不重试。 */
-    fun shouldRetryOnStatus(statusCode: Int): Boolean = statusCode >= 500
+    /**
+     * 是否值得重试：超时/网络错（IOException）/5xx/429 才重试；其余 4xx 不重试。
+     * 429 是限流（瞬时失败，服务端拒收在先、请求未执行，重发安全），与 5xx 同款；
+     * 之前只认 >= 500，429 被当确定性 4xx 立即失败，与 UpdateDownloader
+     * fetchExpectedSha256（B4-P2-10）“5xx/429 是瞬时失败”的约定相悖。
+     */
+    fun shouldRetryOnStatus(statusCode: Int): Boolean =
+        statusCode == 429 || statusCode >= 500
 
     /** 线性退避：baseMs × 次数（默认 1s/2s/3s；版本检查 2s × 次数；APK 下载 3s × 次数）。 */
     fun backoffMs(attempt: Int, baseMs: Long = RETRY_BACKOFF_MS): Long =

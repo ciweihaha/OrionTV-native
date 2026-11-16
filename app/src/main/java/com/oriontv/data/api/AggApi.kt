@@ -28,8 +28,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * agg 接口（点播分类 + 版本检查）：https://ysp.ciweihaha.win/agg，硬编码直连，无登录。
- * 超时/重试照抄 plan §5.1：单次 15 秒；超时/网络错/5xx 最多 3 次，退避 1s/2s/3s 递增；
- * 4xx、结构异常、JSON 损坏、体超时熔断开启时不重试。
+ * 超时/重试照抄 plan §5.1：单次 15 秒；超时/网络错/5xx/429 最多 3 次，退避 1s/2s/3s 递增；
+ * 其余 4xx、结构异常、JSON 损坏、体超时熔断开启时不重试。
  *
  * 熔断器（第 4 轮 P0-3，第 5 轮 D-P1-1 修订）：videoList 与 version 各用一个，互不影响；
  * 只在“请求最终失败且原因为读超时（SocketTimeoutException）”时计数一次
@@ -232,9 +232,9 @@ class AggApi @Inject constructor(
     }
 
     /**
-     * 带重试的执行：超时/网络错/5xx 最多 3 次，退避 1s/2s/3s 递增；熔断开启时直接拒绝。
+     * 带重试的执行：超时/网络错/5xx/429 最多 3 次，退避 1s/2s/3s 递增；熔断开启时直接拒绝。
      *
-     * 4xx 抛 [NonRetryableHttpException]，由专用 catch 原样转成 IOException 抛出，
+     * 4xx（429 除外）抛 [NonRetryableHttpException]，由专用 catch 原样转成 IOException 抛出，
      * 不会被下面的 `catch (e: IOException)` 接住重跑（P0-2；第 6/7 轮约定）；熔断只在请求最终失败且原因为
      * 读超时时计数一次，不按每次重试尝试计数，4xx/5xx 不计数（P0-3）。
      * 协程取消原样抛出，不重试、不计数（P2）。
@@ -272,7 +272,7 @@ class AggApi @Inject constructor(
                     }
                     response.close()
                     if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                        // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                        // 4xx（429 除外）不重试：必须用独立异常类型抛出，否则会被下面的 IOException
                         // catch 吞掉重跑（与文档“4xx 不重试”相悖；第 6/7 轮约定）。
                         throw NonRetryableHttpException(response.code)
                     }
@@ -315,6 +315,6 @@ class AggApi @Inject constructor(
 class AggInvalidResponseException(message: String, cause: Throwable? = null) :
     IOException(message, cause)
 
-/** 不可重试的 HTTP 状态（4xx）：仅用于跳出各 Api execute 的 IOException catch。 */
+/** 不可重试的 HTTP 状态（4xx，429 除外）：仅用于跳出各 Api execute 的 IOException catch。 */
 internal class NonRetryableHttpException(val statusCode: Int) :
     IOException("HTTP $statusCode")

@@ -122,9 +122,12 @@ class CircuitBreakerTest {
 class ApiClientRulesTest {
 
     @Test
-    fun `only 5xx is retryable`() {
+    fun `5xx and 429 are retryable`() {
         assertTrue(ApiClient.shouldRetryOnStatus(500))
         assertTrue(ApiClient.shouldRetryOnStatus(503))
+        // 第 36 轮：429 是限流（瞬时失败），与 5xx 同款可重试——之前只认 >= 500，
+        // 429 被当确定性 4xx 立即失败，与 B4-P2-10“5xx/429 是瞬时失败”的约定相悖。
+        assertTrue(ApiClient.shouldRetryOnStatus(429))
         assertFalse(ApiClient.shouldRetryOnStatus(400))
         assertFalse(ApiClient.shouldRetryOnStatus(401))
         assertFalse(ApiClient.shouldRetryOnStatus(404))

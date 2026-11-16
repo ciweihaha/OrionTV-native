@@ -93,7 +93,8 @@ class MoonTvApi @Inject constructor(
                 password?.let { put("password", JsonPrimitive(it)) }
             }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url(url).post(body).build()
-            // 超时/5xx 做一次重试（401 与 ok=false 不重试，那是密码错）。
+            // 超时/5xx/429 做一次重试（401 与 ok=false 不重试，那是密码错；
+            // 429 是限流、服务端拒收在先，重发安全，与 5xx 同款）。
             // D-P2-2：可取消执行，协程取消时取消底层 Call（不是裸 execute）。
             var lastError: Throwable? = null
             repeat(2) { attempt ->
@@ -110,7 +111,7 @@ class MoonTvApi @Inject constructor(
                                 else LoginResult.WrongCredentials
                             }
                             response.code == 401 -> return@withContext LoginResult.WrongCredentials
-                            response.code in 500..599 ->
+                            response.code == 429 || response.code in 500..599 ->
                                 lastError = IOException("服务器错误（${response.code}）")
                             else -> return@withContext LoginResult.Transient(
                                 IOException("登录失败：HTTP ${response.code}"),
@@ -213,9 +214,9 @@ class MoonTvApi @Inject constructor(
         }
 
     /**
-     * 视频源列表。单次 execute 已对超时/网络错/5xx 重试 3 次（第 3 轮收尾 B-P2-13：
+     * 视频源列表。单次 execute 已对超时/网络错/5xx/429 重试 3 次（第 3 轮收尾 B-P2-13：
      * 外层 repeat(2) 是双重重试，一次超时最多发 8 次请求，已去掉，只留 execute 内重试）；
-     * 4xx、体超限等确定性失败在 execute 里已 fail fast；空体直接返回空列表，
+     * 4xx（429 除外）、体超限等确定性失败在 execute 里已 fail fast；空体直接返回空列表，
      * 整表解码失败时逐条容错保留可解析条目（P1-8）。
      */
     suspend fun getResources(baseUrl: String): List<ApiSite> = withContext(ioDispatcher) {
@@ -449,12 +450,12 @@ class MoonTvApi @Inject constructor(
     // ---- 执行层 ----
 
     /**
-     * 带重试 + 401 续期的执行：超时/网络错/5xx 最多重试 3 次，退避 1 秒；
-     * 4xx 不重试；401 时调 onUnauthorized 重登，成功则重试一次
+     * 带重试 + 401 续期的执行：超时/网络错/5xx/429 最多重试 3 次，退避 1 秒；
+     * 4xx（429 除外）不重试；401 时调 onUnauthorized 重登，成功则重试一次
      * （第 6 轮 D6-P2-8：不限方法，401 即请求未执行，重发安全）；
      * 响应体超 2MB 拒绝。
      *
-     * 4xx 抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
+     * 4xx（429 除外）抛 [NonRetryableHttpException]、响应体超限抛 [ResponseTooLargeException]，
      * 两者都由专用 catch 原样抛出，不会被下面的 `catch (e: IOException)` 接住重跑
      * （P0-2；第 6/7/8 轮约定）。401 续期每趟 execute 最多一次，
      * 否则服务端持续 401 时会连登 4 次（P2-10）。协程取消原样抛出，不重试（P2）。
@@ -496,7 +497,7 @@ class MoonTvApi @Inject constructor(
                     }
                     if (!response.isSuccessful) {
                         if (!ApiClient.shouldRetryOnStatus(response.code)) {
-                            // 4xx 不重试：必须用独立异常类型抛出，否则会被下面的 IOException
+                            // 4xx（429 除外）不重试：必须用独立异常类型抛出，否则会被下面的 IOException
                             // catch 吞掉并继续重试（与文档“4xx 不重试”相悖；同 AggApi 第 6 轮）。
                             throw NonRetryableHttpException(response.code)
                         }
@@ -518,7 +519,7 @@ class MoonTvApi @Inject constructor(
                 // B4-P2-15：取消已触发时（call.cancel() 让 execute 抛
                 // IOException），在这里重抛 CE，不再重试。
                 context.ensureActive()
-                // 4xx 已在上面直接抛；这里只剩超时/网络错/5xx，可重试
+                // 4xx（429 除外）已在上面直接抛；这里只剩超时/网络错/5xx/429，可重试
                 if (attempt < ApiClient.MAX_RETRIES) delay(retryBackoffMs)
             }
         }
