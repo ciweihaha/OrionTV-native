@@ -1062,6 +1062,10 @@ private fun ChannelPanel(
         if (shouldFocusPanelRow(uiState.panelOpen, uiState.epgDialogChannel != null)) {
             if (filtered.isEmpty()) {
                 // 第 18 轮 C18-P2-1：重试每次复核活门控——弹窗在重试窗口内打开即停。
+                // C44-P2-1：先把分组行滚回首 chip 再落焦——分组行滚动后首 chip
+                // 可能已卸载，裸重试 5 次全失败即丢焦点；与非空分支 :1068
+                // 及 C23-P1-1 频道列表行同款“先滚后焦”。
+                groupRowState.scrollToItem(0)
                 firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
             } else {
                 val idx = resolvePanelFocusIndex(filtered, currentChannel)
@@ -1076,10 +1080,15 @@ private fun ChannelPanel(
     LaunchedEffect(uiState.epgDialogChannel) {
         if (uiState.epgDialogChannel == null && uiState.panelOpen) {
             if (filtered.isEmpty()) {
+                // C44-P2-1：与面板主 effect 空分支同款——先把分组行滚回首 chip
+                // 再落焦，首 chip 滚出可视区被卸载时裸重试全失败即丢焦点。
+                groupRowState.scrollToItem(0)
                 firstChipRequester.requestFocusWithRetry()
             } else {
                 listState.scrollToItem(resolvePanelFocusIndex(filtered, currentChannel))
                 if (!currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
+                    // C44-P2-1：回退锚点也是首 chip，同样先滚回 0 再重试。
+                    groupRowState.scrollToItem(0)
                     firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
                 }
             }
