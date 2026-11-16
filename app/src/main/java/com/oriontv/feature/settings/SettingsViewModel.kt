@@ -144,7 +144,24 @@ class SettingsViewModel @Inject constructor(
                     } else {
                         current.m3uUrl
                     }
-                    effective.copy(apiUrl = draftApi, m3uUrl = draftM3u)
+                    // B43-P2-1：合并式保留——流值只更新 DataStore 拥有的字段，
+                    // 瞬时态（isSaving/error/toast）归 _uiState 所有，不被每次
+                    // DataStore 发射整包清掉；否则保存中途一次写盘发射就把
+                    // isSaving 清回 false、“保存中…”提前变回“保存”，窗口内可
+                    // 并发跑第二路保存（绕过 B7-P2-3 守卫、登出打到新服务器，
+                    // 违 B7-P2-9 注释禁令），保存失败红字/Toast 也会被任意一次
+                    // 同文件写入无故清掉。
+                    // 旧态不会赖住：error 在下次保存开始时清（saveSourceAddresses
+                    // 同步置位处 error=null）、toast 由 UI 消费清掉（consumeToast，
+                    // SettingsScreen 调用）；加载失败红字不适用——流抛错后
+                    // collect 协程已结束，不会再有发射。
+                    effective.copy(
+                        apiUrl = draftApi,
+                        m3uUrl = draftM3u,
+                        error = current.error,
+                        toast = current.toast,
+                        isSaving = current.isSaving,
+                    )
                 }
             }
             } catch (e: CancellationException) {

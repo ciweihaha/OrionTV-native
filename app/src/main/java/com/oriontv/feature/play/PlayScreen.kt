@@ -484,7 +484,13 @@ fun PlayScreen(
             controlsVisible = true
         } else if (nextEpisodeFocused) {
             nextEpisodeFocused = false
-            rootRequester.requestFocus()
+            // C43-P2-1：回根加全局弹窗门控——卡片在全局弹窗开着时消失，
+            // 不把焦点偷回弹窗背后的根部；弹窗关闭后 tick effect 补落根部。
+            // 本分支在 effect 重启时同步执行，读到的 globalModalOpen 是当前
+            // 组合的值（与 onNextEpisode 回调的异步调用不同，那里须读
+            // modalOpenState.value）；标记照常复位——卡片已卸载，该事实已
+            // 消费，留着会让 shouldRestoreRootFocusOnUp 误判、上键回根被抑制。
+            if (!globalModalOpen) rootRequester.requestFocus()
         }
     }
 
@@ -524,7 +530,10 @@ fun PlayScreen(
     LaunchedEffect(uiState.skipIntroVisible) {
         if (!uiState.skipIntroVisible && skipIntroFocused) {
             skipIntroFocused = false
-            rootRequester.requestFocus()
+            // C43-P2-2：与 C43-P2-1 同款——胶囊 10 秒计时消失时全局弹窗开着，
+            // 不把焦点偷回弹窗背后的根部；弹窗关闭后 tick effect 补落根部。
+            // 标记照常复位（shouldRestoreRootFocusOnUp 的误判同款理由）。
+            if (!globalModalOpen) rootRequester.requestFocus()
         }
     }
 
@@ -1011,9 +1020,18 @@ fun PlayScreen(
                 onNextEpisode = {
                     viewModel.playNextEpisode()
                     // A9-P1-4：倒计时切集时卡片卸载，焦点在“取消”上则回根。
+                    // C43-P2-1：回根加全局弹窗门控——倒计时窗口内弹出登录/更新
+                    // 弹窗时不把焦点偷回弹窗背后的根部；播集推进不受影响。
+                    // 注意读 modalOpenState.value 而非 globalModalOpen：
+                    // PlayerControls 的倒计时协程在 effect 启动时就捕获了这个
+                    // 回调（其 key 不含弹窗态），弹窗在倒计时中途打开不会重启
+                    // 它，plain 参数是旧值 false、门控会被绕过；rememberUpdatedState
+                    // 的 State 读到的是最新值（与抽屉关闭 effect :513 同款用法）。
+                    // focused 标记照常复位——卡片已卸载，该事实已消费；留着会
+                    // 让 shouldRestoreRootFocusOnUp 误判、上键回根被错误抑制。
                     if (nextEpisodeFocused) {
                         nextEpisodeFocused = false
-                        rootRequester.requestFocus()
+                        if (!modalOpenState.value) rootRequester.requestFocus()
                     }
                     pokeControls()
                 },
