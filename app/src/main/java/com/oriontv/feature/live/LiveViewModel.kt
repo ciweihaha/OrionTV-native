@@ -244,6 +244,11 @@ class LiveViewModel @Inject constructor(
 
     /** 手动刷新直播源（A4-P2-3）：7 天缓存内无刷新入口时强制拉网。 */
     fun refreshChannels() {
+        // A32-P2-2：面板内其余操作都续 15 秒定时器，唯独刷新没有——它是网络
+        // 拉取，弱网下耗时超过面板打开后剩余的窗口，面板会在刷新进行中关闭；
+        // 开头先续一次（面板没开时 pokePanelTimer 内部门控直接跳过，无害），
+        // 刷新成功后 channelsVersion + 1 还会再续一次。
+        pokePanelTimer()
         // A6-P2-5：在途守卫——上一次刷新还没跑完时直接返回，不并发拉网。
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {

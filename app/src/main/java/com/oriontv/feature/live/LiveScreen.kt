@@ -859,7 +859,12 @@ private fun PlaybackFailedOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(OrionColors.Background.copy(alpha = 0.6f)),
+            .background(OrionColors.Background.copy(alpha = 0.6f))
+            // A32-P2-1：失败页空白区点按在此消费掉，不漏到视频点按层（之前会
+            // 走 latestVideoTap 的 playbackFailed 分支调 retryCurrent()，把
+            // 已判死刑的流重新拉起来反复缓冲）；按钮本身是 clickable 会自己
+            // 消费，不受影响。与 EPG/确认框/面板/抽屉同款。
+            .consumeTaps(),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
