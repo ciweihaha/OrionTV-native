@@ -545,6 +545,13 @@ class LiveViewModel @Inject constructor(
                 )?.let { showToast(it) }
             }
         }
+        // A37-P2-1：回页重武装面板定时器——onPagePaused 经 cancelPendingPlaybackJobs
+        // 取消了 panelTimerJob（第 7 轮 P1-1 防后台误播的有意行为），回页时 ticker/
+        // EPG/补开播都重起了，唯独面板定时器没人重起：面板开着回页后不操作就一直
+        // 不自动关闭。pokePanelTimer 内部门控（panelOpen && !epgDialogOpen）已够：
+        // 面板没开/EPG 开着时直接跳过、不误武装。放 shouldResumePlayback 判断之前——
+        // 失败页不自动重播时面板仍开着，定时器同样要续上；无频道时上面已早退，不受影响。
+        pokePanelTimer()
         if (!shouldResumePlayback(
                 playerManager.isCurrentOwner(playbackToken),
                 playerManager.isPlaying,
