@@ -184,9 +184,11 @@ internal enum class PlayBackAction {
 /**
  * 返回键的决策（可单测，B32-P2-1）：硬件返回（根 Box onKeyUp 的 Key.Back
  * 分支）与手势返回（下面的 BackHandler）共用这一份——预览取消 → 关抽屉 →
- * 取消下一集预告 → 错误页退出 → 隐藏控制条 → 退出；错误页优先于隐藏控制条
+ * 错误页退出 → 取消下一集预告 → 隐藏控制条 → 退出；错误页优先于隐藏控制条
  * （控制条在错误页下本来就不显示，落到隐藏分支会第一次按返回无可见变化，
- * 见 A6-P2-1）。
+ * 见 A6-P2-1）。A33-P2-1：错误页也优先于下一集预告——播错时三处落错误分支
+ * 都只置 error、不清除 showNextEpisode，而错误页下预告卡根本不组合，
+ * 预告分支排在前面会让第一次按返回只取消不可见的卡片、需再按一次才退出。
  */
 internal fun resolvePlayBackAction(
     previewActive: Boolean,
@@ -197,8 +199,8 @@ internal fun resolvePlayBackAction(
 ): PlayBackAction = when {
     previewActive -> PlayBackAction.CancelPreview
     drawerOpen -> PlayBackAction.CloseDrawer
-    showNextEpisode -> PlayBackAction.DismissNextEpisode
     hasError -> PlayBackAction.Exit
+    showNextEpisode -> PlayBackAction.DismissNextEpisode
     controlsVisible -> PlayBackAction.HideControls
     else -> PlayBackAction.Exit
 }
@@ -636,8 +638,8 @@ fun PlayScreen(
 
     // B32-P2-1：返回的唯一决策入口——硬件返回（根 Box onKeyUp 的 Key.Back
     // 分支）与手势返回（下面的 BackHandler）都调它，决策见
-    // resolvePlayBackAction（预览取消 → 关抽屉 → 取消下一集预告 → 错误页
-    // 退出 → 隐藏控制条 → 退出）。
+    // resolvePlayBackAction（预览取消 → 关抽屉 → 错误页退出 → 取消下一集
+    // 预告 → 隐藏控制条 → 退出；A33-P2-1：错误页优先于下一集预告）。
     fun handleBack(): Boolean {
         return when (
             resolvePlayBackAction(

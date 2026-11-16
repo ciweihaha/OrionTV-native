@@ -248,9 +248,11 @@ class PlayScreenLogicTest {
     }
 
     @Test
-    fun `back decision follows preview drawer next episode error controls exit order`() {
+    fun `back decision follows preview drawer error next episode controls exit order`() {
         // B32-P2-1：硬件返回与手势返回共用同一份决策——预览取消 → 关抽屉 →
-        // 取消下一集预告 → 错误页退出 → 隐藏控制条 → 退出。
+        // 错误页退出 → 取消下一集预告 → 隐藏控制条 → 退出。
+        // A33-P2-1：错误页优先于下一集预告（播错时 showNextEpisode 残留、
+        // 预告卡在错误页下不组合，预告分支在前会让第一次按返回无可见变化）。
         assertEquals(
             PlayBackAction.CancelPreview,
             resolvePlayBackAction(
@@ -271,13 +273,25 @@ class PlayScreenLogicTest {
                 controlsVisible = true,
             ),
         )
+        // A33-P2-1：预告卡残留 + 错误页共存时直接退出（预告卡在错误页下
+        // 不组合，取消它无可见变化）；无错误时仍先取消预告。
+        assertEquals(
+            PlayBackAction.Exit,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = false,
+                showNextEpisode = true,
+                hasError = true,
+                controlsVisible = true,
+            ),
+        )
         assertEquals(
             PlayBackAction.DismissNextEpisode,
             resolvePlayBackAction(
                 previewActive = false,
                 drawerOpen = false,
                 showNextEpisode = true,
-                hasError = true,
+                hasError = false,
                 controlsVisible = true,
             ),
         )
