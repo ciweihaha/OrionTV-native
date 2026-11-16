@@ -386,6 +386,43 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `next episode early overlay suppressed while loading`() {
+        // A34-P2-1：重试/自动换源加载期间不提前出预告——位置仍在片尾窗口内、
+        // guard 又已被 retry() 重置为 -1，不加 isLoading 门控下一 tick 即重弹、
+        // 卡盖在加载动画上；加载完成后 isLoading 为假，片尾附近仍可正常出卡
+        //（A7-P2-1 语义保留）。onPlaybackEnded 的播完出卡走 shouldShowNextEpisode，
+        // 不经此谓词、不受门控影响。
+        val duration = 1_800_000L
+        // 加载中：其余条件全真也不出
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+                isLoading = true,
+            ),
+        )
+        // 加载完成：同条件可出
+        assertTrue(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_795_000L, outroStartMs = null,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+                isLoading = false,
+            ),
+        )
+        // 标过片尾处加载中：同样不出
+        assertFalse(
+            PlayViewModel.shouldShowNextEpisodeEarly(
+                nextEpisodeShownForIndex = -1, episodeIndex = 0,
+                durationMs = duration, positionMs = 1_700_000L, outroStartMs = 1_700_000L,
+                overlayEnabled = true, episodeCount = 10, dismissedForIndex = -1,
+                isLoading = true,
+            ),
+        )
+    }
+
+    @Test
     fun `playback errors are ignored after leaving page unless background continuation`() {
         // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落错误态——
         // 重播已被 startEpisode 的门控拦住，但计数与 Toast 在门控之前；门控与开播

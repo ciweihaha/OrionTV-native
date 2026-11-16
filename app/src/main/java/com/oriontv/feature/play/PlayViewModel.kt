@@ -668,6 +668,12 @@ class PlayViewModel @Inject constructor(
                         autoSwitchAttempts = attempts + 1,
                         isLoading = true,
                         error = null,
+                        // A34-P2-1：自动换源同样清掉残留的下一集预告——片尾前 10 秒内
+                        // 断流时预告卡已出、error 置上后它仍为真；换源加载期间旧值
+                        // 一直可见、且控制条被它强制显示。startEpisode 末尾 :590
+                        // 的清理是第二道防线（开播完成才到），这里先清，加载期
+                        // 不留残卡；轮询的 isLoading 门控（见下）拦住后续 tick 重弹。
+                        showNextEpisode = false,
                     )
                 }
                 // A5-P1-5：自动换源也走串行开播入口，不与手动选集并发。
@@ -823,6 +829,14 @@ class PlayViewModel @Inject constructor(
                         cachedNextEpisodeOverlayEnabled,
                         state.current?.episodes?.size ?: 0,
                         nextEpisodeDismissedForIndex,
+                        // A34-P2-1：加载期间不提前出预告——重试/自动换源把
+                        // isLoading 置真后，轮询每 500ms 仍会跑到这里；guard
+                        // 在 retry() 里已重置为 -1（A7-P2-1 语义，保留），光靠
+                        // 它拦不住重弹。门控读本 tick 开头的 state 快照：加载
+                        // 窗口内恒真；就绪那一 tick 快照仍为真（多挡一 tick，
+                        // 无害），下一 tick 恢复。加载完成后 isLoading 为假，
+                        // 片尾附近仍可正常提前出卡（A7-P2-1 语义不变）。
+                        isLoading = state.isLoading,
                     )
                 ) {
                     nextEpisodeShownForIndex = state.episodeIndex
@@ -1210,7 +1224,12 @@ class PlayViewModel @Inject constructor(
         // 播到片尾附近，预告卡因“本集已出过”不再出现。
         nextEpisodeShownForIndex = -1
         _uiState.update {
-            it.copy(error = null, autoSwitchAttempts = 0, failedSources = emptySet(), isLoading = true)
+            // A34-P2-1：重试同时清掉残留的下一集预告——片尾前 10 秒内断流时
+            // 预告卡已出、error 置上后它仍为真；只清 error 的话控制条会被它
+            // 强制显示、卡盖在加载动画上。只清这一个 tick 不够（轮询下一
+            // tick 即重弹，见轮询的 isLoading 门控），三处缺一不可；guard
+            // 的 -1 重置是 A7-P2-1 既有语义（重试后片尾附近仍要提前出卡），保留。
+            it.copy(error = null, autoSwitchAttempts = 0, failedSources = emptySet(), isLoading = true, showNextEpisode = false)
         }
         viewModelScope.launch {
             // A8-P2-3：init() 的挂起读数失败会让协程未捕获崩溃；落错误态、
@@ -1503,6 +1522,11 @@ class PlayViewModel @Inject constructor(
          * OK 重播把标记重置为 -1（与 retry() 一致），重播后片尾前 10 秒才能
          * 再提前出卡；旧重播分支漏了这一重置，重播后只有播完时 onPlaybackEnded
          * 才会再弹卡。谓词本身与轮询原条件逐项等价，只是抽出来可单测。
+         * A34-P2-1：加载期间（isLoading）一律不出——重试/自动换源加载窗口内
+         * 位置仍在片尾窗口内、guard 又已被 retry() 重置为 -1，不加这道门控
+         * 下一 tick 即重弹、卡盖在加载动画上；加载完成后 isLoading 为假，
+         * 片尾附近仍可正常提前出卡。调用方须传轮询 tick 的实时 isLoading，
+         * 默认 false 只为兼容不经轮询的旧调用（不代表“加载时可出”）。
          */
         internal fun shouldShowNextEpisodeEarly(
             nextEpisodeShownForIndex: Int,
@@ -1513,8 +1537,9 @@ class PlayViewModel @Inject constructor(
             overlayEnabled: Boolean,
             episodeCount: Int,
             dismissedForIndex: Int,
+            isLoading: Boolean = false,
         ): Boolean =
-            durationMs > 0 && nextEpisodeShownForIndex != episodeIndex &&
+            !isLoading && durationMs > 0 && nextEpisodeShownForIndex != episodeIndex &&
                 shouldShowNextEpisode(overlayEnabled, episodeIndex, episodeCount, dismissedForIndex) &&
                 (durationMs - positionMs in 1..END_THRESHOLD_MS ||
                     IntroSkip.isAtOutro(positionMs, durationMs, outroStartMs))
