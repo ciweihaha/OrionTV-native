@@ -458,7 +458,7 @@ class LiveViewModel @Inject constructor(
             }
             is LiveErrorAction.NotifyOnly -> {
                 // 面板打开时只提示不跳台：同样取消就绪超时；并在面板内留常驻“信号异常”提示，
-                // 不只靠 3 秒 Toast（播好后由 onIsPlayingChanged 清掉）。
+                // 不只靠 2 秒 Toast（播好后由 onIsPlayingChanged 清掉）。
                 readyTimeoutJob?.cancel()
                 _uiState.update { it.copy(failCount = controller.failCount, signalError = true) }
                 showToast(action.message)
@@ -644,7 +644,7 @@ class LiveViewModel @Inject constructor(
                 _uiState.update { it.copy(digitBuffer = action.text) }
                 // 第 9 轮 P2-6：缓冲分支不再发 Toast——LiveScreen 按 digitBuffer
                 // 常驻显示回显（随缓冲清掉而消失）；再发 Toast 会与回显在同一
-                // 位置叠出两条相同文案，且 Toast 3 秒比缓冲 1500ms 多活一倍。
+                // 位置叠出两条相同文案，且 Toast 2 秒比缓冲 1500ms 多活约 0.5 秒。
                 armDigitCommit()
             }
             is DigitAction.SwitchTo -> {
@@ -1102,7 +1102,7 @@ data class LiveUiState(
     val isBuffering: Boolean = false,
     /** 断流且自动处理耗尽：显示失败页（重试/手动换台）。 */
     val playbackFailed: Boolean = false,
-    /** 面板打开时断流：面板内常驻“信号异常”提示（播好即清，不只靠 3 秒 Toast）。 */
+    /** 面板打开时断流：面板内常驻“信号异常”提示（播好即清，不只靠 2 秒 Toast）。 */
     val signalError: Boolean = false,
     val exitConfirmOpen: Boolean = false,
 )
