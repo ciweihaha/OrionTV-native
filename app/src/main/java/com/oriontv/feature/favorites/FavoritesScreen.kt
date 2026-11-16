@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -170,7 +171,10 @@ fun FavoritesScreen(
     // 状态下都可达（2 秒消费 effect 在上面，不受影响）。
     if (uiState.favoriteError != null) {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            // B36-P2-1：Toast 先组合、内容根 Box 后组合，同父布局内后组合
+            // 的兄弟画在上面（全仓无一处 zIndex），有内容时 Toast 会被末行
+            // 卡片盖住——置顶一层，early return 结构不动。
+            modifier = Modifier.fillMaxSize().zIndex(1f),
             contentAlignment = Alignment.BottomCenter,
         ) {
             OrionToast(

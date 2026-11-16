@@ -114,6 +114,8 @@ class DetailViewModel @Inject constructor(
          */
         internal fun mapDetailError(message: String?): String = when {
             message?.contains("未配置服务器地址") == true -> "还没有配置源地址，先去设置里添加吧"
+            // B36-P2-3：零视频源不是“搜不到”，给去设置的提示（与上一分支同款）。
+            message?.contains("服务器未配置视频源") == true -> "还没有配置视频源，先去设置里添加吧"
             message?.contains("登录已过期") == true -> "登录已过期，请重新登录"
             // B5-P1-3：超时单独提示，用户知道是等太久而不是网络断了，可直接重试。
             message?.contains("超时") == true -> "搜索超时，请重试"

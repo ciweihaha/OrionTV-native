@@ -123,6 +123,16 @@ class DetailRepository @Inject constructor(
         val firstError = AtomicReference<Exception?>(null)
         val failureCount = AtomicInteger(0)
         val sites = resources.take(30)
+        // B36-P2-3：服务端资源列表为空 = 零视频源（MoonTvApi.getResources
+        // 空体直接返空列表），不是“搜不到”——抛可区分的错，searchDetail
+        // 末尾不再误报“没有找到相关内容”；有首选源结果时走 B14-P2-3 同款
+        // 降级返回（首选源已搜到结果时资源列表理论上非空，纯防御）。
+        if (sites.isEmpty()) {
+            if (preferredResults.isNotEmpty()) {
+                return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults)
+            }
+            throw IllegalStateException("服务器未配置视频源")
+        }
         val deferred = sites.map { site ->
             async {
                 semaphore.withPermit {

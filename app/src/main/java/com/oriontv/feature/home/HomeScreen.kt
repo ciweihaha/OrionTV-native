@@ -242,11 +242,21 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(OrionDimens.ContentPadding),
         ) {
+            // B36-P2-2：行不存在的 chip 置灰禁用——未配服务器时 HOT/TOP250 行
+            // 不建、无播放记录时 RECENT 行不建（HomeViewModel.loadDouban 短路
+            // 与 loadCategory），点按只改高亮、不滚动是死控件；禁用态 clickable
+            // 不可聚焦，首进焦点锚点也随之移到首个可用 chip，不落到禁用的 RECENT 上。
+            // 选中态只画在可用 chip 上（缺失行不占选中高亮）；占位行 + 重试不立项（B28）。
+            val firstAvailableCategory = HomeCategory.entries.firstOrNull { category ->
+                uiState.rows.any { it.title == category.title }
+            }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                 items(HomeCategory.entries) { category ->
+                    val rowExists = uiState.rows.any { it.title == category.title }
                     CategoryChip(
                         text = category.title,
-                        selected = selectedCategory == category.title,
+                        selected = rowExists && selectedCategory == category.title,
+                        enabled = rowExists,
                         onClick = {
                             selectedCategory = category.title
                             // 点 chip 滚动到对应行（行从第 0 项开始，无偏移）。
@@ -255,7 +265,7 @@ fun HomeScreen(
                                 scope.launch { listState.scrollToItem(rowIndex) }
                             }
                         },
-                        modifier = if (category == HomeCategory.RECENT) {
+                        modifier = if (category == firstAvailableCategory) {
                             Modifier.preferredFocus(firstChipRequester)
                         } else {
                             Modifier

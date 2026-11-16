@@ -561,18 +561,6 @@ fun SearchScreen(
             }
             } // Jewel 第 8 轮 P1-1：结果区容器结束。
 
-            // B6-P2-11：Toast 底部居中。
-            if (uiState.toast != null) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    OrionToast(
-                        message = uiState.toast?.message ?: "",
-                        modifier = Modifier.padding(bottom = 48.dp),
-                    )
-                }
-            }
         }
 
         // B30-P2-1：扫码弹窗挂根 Box 末尾（与设置页同款），不参与 Column
@@ -589,6 +577,23 @@ fun SearchScreen(
                 // C11-P2-2：全局弹窗开着时扫码弹窗的返回处理让位给全局弹窗。
                 globalModalOpen = globalModalOpen,
             )
+        }
+
+        // B36-P1-1：Toast 挂根 Box 末尾（与 B30-P2-1 的扫码弹窗、设置页
+        // 同款），不参与根 Column 流式量测——之前是 Column 的流式子节点，
+        // fillMaxSize 占满剩余高度，Toast 一出现 weight(1f) 的结果区即被
+        // 量到 0 高、消失 2 秒（B30 的注释只记了扫码弹窗，Toast 漏了）。
+        // B6-P2-11：Toast 底部居中。
+        if (uiState.toast != null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                OrionToast(
+                    message = uiState.toast?.message ?: "",
+                    modifier = Modifier.padding(bottom = 48.dp),
+                )
+            }
         }
     }
 }

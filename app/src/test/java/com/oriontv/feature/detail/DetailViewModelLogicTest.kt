@@ -16,6 +16,8 @@ class DetailViewModelLogicTest {
         )
         // 其余分支不动
         assertEquals("搜索超时，请重试", DetailViewModel.mapDetailError("详情搜索超时，请重试"))
+        // B36-P2-3：零视频源不是“搜不到”，给去设置的提示。
+        assertEquals("还没有配置视频源，先去设置里添加吧", DetailViewModel.mapDetailError("服务器未配置视频源"))
         assertEquals("登录已过期，请重新登录", DetailViewModel.mapDetailError("登录已过期，请重新登录"))
         assertEquals("还没有配置源地址，先去设置里添加吧", DetailViewModel.mapDetailError("未配置服务器地址"))
         assertEquals("加载失败，请检查网络后重试", DetailViewModel.mapDetailError("HTTP 500"))

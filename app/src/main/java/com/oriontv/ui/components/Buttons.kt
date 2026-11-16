@@ -86,13 +86,18 @@ fun CategoryChip(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // B36-P2-2：禁用态（首页行不存在的分类）：不可点按、不可聚焦、降透明度，
+    // 与 Primary/SecondaryButton 的 enabled 同款（P2-6 降透明度）。
+    enabled: Boolean = true,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
-            .clickable { onClick() }
+            .clickable(enabled = enabled) { onClick() }
             .onFocusChanged { focused = it.isFocused }
             .orionFocus(focused, Capsule)
+            // P2-6：禁用态降透明度，与可用态肉眼可区分。
+            .alpha(if (enabled) 1f else 0.4f)
             .background(if (selected) OrionColors.Brand else OrionColors.Surface, Capsule)
             .padding(horizontal = 20.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
