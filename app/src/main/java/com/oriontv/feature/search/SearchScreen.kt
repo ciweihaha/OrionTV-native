@@ -195,7 +195,9 @@ fun SearchScreen(
                 ) ?: false
                 if (!restored && shouldRunSearchTickRestore(modalOpenState.value, remoteModalOpenState.value)) searchRequester.requestFocus()
             } else {
-                searchRequester.requestFocus()
+                // B51-P2-1：与目标找到时的回落分支同款门控——轮询窗口内扫码
+                // 弹窗打开时不把焦点从弹窗偷回搜索框。
+                if (shouldRunSearchTickRestore(modalOpenState.value, remoteModalOpenState.value)) searchRequester.requestFocus()
             }
         }
     }

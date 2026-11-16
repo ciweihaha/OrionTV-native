@@ -316,6 +316,10 @@ class LiveViewModel @Inject constructor(
                     // 第 10 轮 L10-P2-2：合法空源刷新成功即置空源态（EmptyState
                     // 另分支提示），不滞留旧的失败文案；非空即清掉旧空源态。
                     emptySource = fresh.isEmpty(),
+                    // A51-P2-1：合法空源刷新成功即关面板——刷新入口在面板内，
+                    // 空源时面板仍开着会盖住 EmptyState（后组合在上），“重试”
+                    // 入口不可达；与 GiveUp 分支关面板同款，非空时不动。
+                    panelOpen = if (fresh.isEmpty()) false else it.panelOpen,
                     // A11-P2-3：频道表版本号 +1——面板打开时刷新若重排了频道表，
                     // 焦点所在的旧行可能已被卸载/换位；面板落焦 effect 的 key
                     // 只有 (panelOpen, selectedGroup)，表变化时不重跑、焦点丢失
@@ -328,6 +332,8 @@ class LiveViewModel @Inject constructor(
             // 不一致态（失败刷新才保留旧表不断流，成功空源不适用）。
             if (fresh.isEmpty()) {
                 playerManager.stopIfOwner(playbackToken)
+                // A51-P2-1：空源关面板后一并取消面板定时器（与 GiveUp 分支同款）。
+                panelTimerJob?.cancel()
             }
             // 当前台还在新表里且之前没失败过：不断流，只更新表；否则重开播。
             // 空源时上面已停播，playCurrent 取不到 url 会直接返回，不再调。
