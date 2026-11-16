@@ -96,7 +96,7 @@ object AppModule {
             .build()
 
     /**
-     * 已知坑（M1 才会暴露）：AggApi / MoonTvApi / M3uRepository / EpgRepository
+     * 已知坑：AggApi / MoonTvApi / M3uRepository / EpgRepository
      * 的 @Inject 构造函数带默认参数 `ioDispatcher = Dispatchers.IO`，Hilt 不会用
      * 默认值注入——这里显式 @Provides 构造，不留编译不过的注入。
      */

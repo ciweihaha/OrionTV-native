@@ -12,7 +12,8 @@ import androidx.compose.ui.unit.dp
 import com.oriontv.ui.theme.OrionColors
 
 /**
- * 进度条（ui-design.md §6）：轨道分隔线色、已播品牌色、断点/缓冲段由 M1 接。
+ * 进度条（ui-design.md §6）：轨道分隔线色、已播品牌色。本组件不画断点/缓冲段
+ * （EPG 进度条只画已播比例；播放器控制条另有自绘 8dp Slider）。
  * 唯一用法是 EPG 节目进度条（LiveScreen 三处调用），均为 4dp 高；播放器
  * 控制条不用它（PlayerControls 自绘 8dp Slider），卡片内进度条也不用它
  * （VideoCard 内联 4dp Box）。默认高度 4.dp，与唯一用法一致。

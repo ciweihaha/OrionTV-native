@@ -49,7 +49,7 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 登录弹窗（ui-design.md §5.8）：
  * 居中卡片 640dp 宽、16dp 圆角、60% 黑遮罩；弹窗淡入 150ms（§4，C11-P2-3）；
  * 账号 + 密码 + 登录按钮，失败红字提示；焦点默认落在主按钮上
- * （M1 接 FocusRequester 锚点）；会话自动续期，仅过期时重新弹。
+ * （主按钮挂 FocusRequester 锚点）；会话自动续期，仅过期时重新弹。
  */
 @Composable
 fun LoginModal(
