@@ -246,4 +246,72 @@ class PlayScreenLogicTest {
         assertTrue(shouldFocusDrawerOnContentArrival(globalModalOpen = false))
         assertFalse(shouldFocusDrawerOnContentArrival(globalModalOpen = true))
     }
+
+    @Test
+    fun `back decision follows preview drawer next episode error controls exit order`() {
+        // B32-P2-1：硬件返回与手势返回共用同一份决策——预览取消 → 关抽屉 →
+        // 取消下一集预告 → 错误页退出 → 隐藏控制条 → 退出。
+        assertEquals(
+            PlayBackAction.CancelPreview,
+            resolvePlayBackAction(
+                previewActive = true,
+                drawerOpen = true,
+                showNextEpisode = true,
+                hasError = true,
+                controlsVisible = true,
+            ),
+        )
+        assertEquals(
+            PlayBackAction.CloseDrawer,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = true,
+                showNextEpisode = true,
+                hasError = true,
+                controlsVisible = true,
+            ),
+        )
+        assertEquals(
+            PlayBackAction.DismissNextEpisode,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = false,
+                showNextEpisode = true,
+                hasError = true,
+                controlsVisible = true,
+            ),
+        )
+        // A6-P2-1：错误页优先于隐藏控制条（控制条在错误页下本来就不显示，
+        // 落到隐藏分支会第一次按返回无可见变化）。
+        assertEquals(
+            PlayBackAction.Exit,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = false,
+                showNextEpisode = false,
+                hasError = true,
+                controlsVisible = true,
+            ),
+        )
+        assertEquals(
+            PlayBackAction.HideControls,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = false,
+                showNextEpisode = false,
+                hasError = false,
+                controlsVisible = true,
+            ),
+        )
+        assertEquals(
+            PlayBackAction.Exit,
+            resolvePlayBackAction(
+                previewActive = false,
+                drawerOpen = false,
+                showNextEpisode = false,
+                hasError = false,
+                controlsVisible = false,
+            ),
+        )
+    }
 }

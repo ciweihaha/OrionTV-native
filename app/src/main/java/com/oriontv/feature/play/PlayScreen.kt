@@ -1,6 +1,7 @@
 package com.oriontv.feature.play
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -165,6 +166,42 @@ internal fun shouldInterceptSeekKeys(
     drawerOpen: Boolean,
     focusOnControls: Boolean = false,
 ): Boolean = controlsShown && !drawerOpen && !focusOnControls
+
+/** 返回键应执行的动作（可单测，B32-P2-1）。 */
+internal enum class PlayBackAction {
+    /** 取消落点预览（不退出）。 */
+    CancelPreview,
+    /** 关闭抽屉（不退出）。 */
+    CloseDrawer,
+    /** 取消下一集预告（不退出）。 */
+    DismissNextEpisode,
+    /** 退出播放页（错误页上、或控制条已隐藏时）。 */
+    Exit,
+    /** 隐藏控制条（不退出）。 */
+    HideControls,
+}
+
+/**
+ * 返回键的决策（可单测，B32-P2-1）：硬件返回（根 Box onKeyUp 的 Key.Back
+ * 分支）与手势返回（下面的 BackHandler）共用这一份——预览取消 → 关抽屉 →
+ * 取消下一集预告 → 错误页退出 → 隐藏控制条 → 退出；错误页优先于隐藏控制条
+ * （控制条在错误页下本来就不显示，落到隐藏分支会第一次按返回无可见变化，
+ * 见 A6-P2-1）。
+ */
+internal fun resolvePlayBackAction(
+    previewActive: Boolean,
+    drawerOpen: Boolean,
+    showNextEpisode: Boolean,
+    hasError: Boolean,
+    controlsVisible: Boolean,
+): PlayBackAction = when {
+    previewActive -> PlayBackAction.CancelPreview
+    drawerOpen -> PlayBackAction.CloseDrawer
+    showNextEpisode -> PlayBackAction.DismissNextEpisode
+    hasError -> PlayBackAction.Exit
+    controlsVisible -> PlayBackAction.HideControls
+    else -> PlayBackAction.Exit
+}
 
 /**
  * 抽屉焦点 containment 是否应在预览阶段消费该 KeyDown（可单测，C8-P1-2，
@@ -597,6 +634,77 @@ fun PlayScreen(
         }
     }
 
+    // B32-P2-1：返回的唯一决策入口——硬件返回（根 Box onKeyUp 的 Key.Back
+    // 分支）与手势返回（下面的 BackHandler）都调它，决策见
+    // resolvePlayBackAction（预览取消 → 关抽屉 → 取消下一集预告 → 错误页
+    // 退出 → 隐藏控制条 → 退出）。
+    fun handleBack(): Boolean {
+        return when (
+            resolvePlayBackAction(
+                previewActive = previewTargetMs >= 0,
+                drawerOpen = uiState.drawer != null,
+                showNextEpisode = uiState.showNextEpisode,
+                hasError = uiState.error != null,
+                controlsVisible = controlsVisible,
+            )
+        ) {
+            PlayBackAction.CancelPreview -> {
+                previewController.cancel()
+                previewTargetMs = -1L
+                previewDirection = 0
+                previewThumbnail = null
+                // 错误页上不 poke（P2-2）；取消预览本身不受影响。
+                if (uiState.error == null) pokeControls()
+                true
+            }
+            PlayBackAction.CloseDrawer -> {
+                viewModel.openDrawer(null)
+                true
+            }
+            PlayBackAction.DismissNextEpisode -> {
+                // A4-P2-6：下一集预告显示时按返回先取消预告（之前第一次只隐藏
+                // 控制条、无可见变化，第二次直接退出）。
+                viewModel.dismissNextEpisode()
+                // A9-P1-4：焦点在“取消”按钮上时按返回，卡片卸载后焦点回根
+                // （与点“取消”同款；effect 兜底见上）。
+                if (nextEpisodeFocused) {
+                    nextEpisodeFocused = false
+                    rootRequester.requestFocus()
+                }
+                true
+            }
+            PlayBackAction.Exit -> {
+                // A6-P2-1：错误页显示时按返回直接退出播放页——旧实现落到
+                // controlsVisible 分支只隐藏控制条（错误页下控制条本来就不
+                // 显示），第一次按返回无可见变化。
+                onBack(uiState.failedSources)
+                true
+            }
+            PlayBackAction.HideControls -> {
+                controlsVisible = false
+                // A4-P1-1：隐藏控制条后焦点回根，否则焦点留在已隐藏的按钮上、
+                // 方向键/OK 再也唤不出控制条。
+                rootRequester.requestFocus()
+                true
+            }
+        }
+    }
+
+    // B32-P2-1：手势/系统返回。PlayScreen 全页之前没有任何 BackHandler，
+    // 手势导航设备上系统返回手势不产生 KEYCODE_BACK 键事件，直接走
+    // OnBackPressedDispatcher、NavController 内部回调 popBackStack()，
+    // onBack 全程未被调用，SAVED_FAILED_SOURCES 未写入；电视遥控器不受影响。
+    // 双重触发核实：硬件返回的 KeyUp 先分发到焦点视图层（根 Box 的 onKeyUp
+    // 消费、返回 true），消费后不再走到 Activity.onKeyUp → dispatcher，
+    // BackHandler 收不到；手势返回没有键事件、只走 dispatcher。焦点偶尔落在
+    // 本页组合之外时 onKeyUp 收不到，未消费的键事件才走到 dispatcher 由本
+    // handler 接——任一按压最多只执行一条路（与直播页自第 8 轮起
+    // BackHandler + onKeyUp 同款并存一致；onKeyUp 的 Key.Back 各分支恒返回
+    // true，落到本页时 dispatcher 一定收不到）。
+    // enabled = !globalModalOpen 门控：本 handler 注册晚于 OrionNavHost 的
+    // 弹窗 handler（后注册优先），不门控会抢走登录/更新弹窗的返回处理。
+    BackHandler(enabled = !globalModalOpen) { handleBack() }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -644,53 +752,10 @@ fun PlayScreen(
             }
             .onKeyUp { event ->
                 when (event.key) {
-                    Key.Back -> {
-                        when {
-                            previewTargetMs >= 0 -> {
-                                previewController.cancel()
-                                previewTargetMs = -1L
-                                previewDirection = 0
-                                previewThumbnail = null
-                                // 错误页上不 poke（P2-2）；取消预览本身不受影响。
-                                if (uiState.error == null) pokeControls()
-                                true
-                            }
-                            uiState.drawer != null -> {
-                                viewModel.openDrawer(null)
-                                true
-                            }
-                            // A4-P2-6：下一集预告显示时按返回先取消预告（之前第一次
-                            // 只隐藏控制条、无可见变化，第二次直接退出）。
-                            uiState.showNextEpisode -> {
-                                viewModel.dismissNextEpisode()
-                                // A9-P1-4：焦点在“取消”按钮上时按返回，卡片卸载后
-                                // 焦点回根（与点“取消”同款；effect 兜底见上）。
-                                if (nextEpisodeFocused) {
-                                    nextEpisodeFocused = false
-                                    rootRequester.requestFocus()
-                                }
-                                true
-                            }
-                            // A6-P2-1：错误页显示时按返回直接退出播放页——旧实现
-                            // 落到 controlsVisible 分支只隐藏控制条（错误页下
-                            // 控制条本来就不显示），第一次按返回无可见变化。
-                            uiState.error != null -> {
-                                onBack(uiState.failedSources)
-                                true
-                            }
-                            controlsVisible -> {
-                                controlsVisible = false
-                                // A4-P1-1：隐藏控制条后焦点回根，否则焦点留在已
-                                // 隐藏的按钮上、方向键/OK 再也唤不出控制条。
-                                rootRequester.requestFocus()
-                                true
-                            }
-                            else -> {
-                                onBack(uiState.failedSources)
-                                true
-                            }
-                        }
-                    }
+                    // B32-P2-1：与手势返回的 BackHandler 共用 handleBack()，
+                    // 同一份返回决策；onKeyUp 消费在先，硬件返回不会再走到
+                    // dispatcher，双重触发见 handleBack 上面的核实。
+                    Key.Back -> handleBack()
                     Key.DirectionLeft, Key.DirectionRight -> {
                         if (uiState.drawer != null) {
                             false // 抽屉内方向键交给焦点移动
