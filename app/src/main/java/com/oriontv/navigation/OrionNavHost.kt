@@ -75,7 +75,7 @@ fun OrionNavHost(
     // 全站高亮失效。
     // 修法（修来源，不再加变通）：用 NavDestination.hasRoute<具体子类型>()
     // 逐个匹配（这是为此设计的 API）；Detail/Play 的参数用
-    // toRoute<具体子类型>() 解（本文件 106/123 行已证明具体子类型能正常解析）。
+    // toRoute<具体子类型>() 解（本文件 97/102 行已证明具体子类型能正常解析）。
     // 第 4 轮应用壳修复（提交 d583cd6，PR #4）加在恒 null 来源上的 railRoute
     // when 变通是死代码，本轮随来源修复一并去掉，改调纯函数 railRouteFor。
     // 深链 title 含 & 的说明（C5-P2-6）：应用内导航走类型安全路由对象

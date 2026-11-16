@@ -1063,7 +1063,7 @@ private fun ChannelPanel(
             if (filtered.isEmpty()) {
                 // 第 18 轮 C18-P2-1：重试每次复核活门控——弹窗在重试窗口内打开即停。
                 // C44-P2-1：先把分组行滚回首 chip 再落焦——分组行滚动后首 chip
-                // 可能已卸载，裸重试 5 次全失败即丢焦点；与非空分支 :1068
+                // 可能已卸载，裸重试 5 次全失败即丢焦点；与非空分支 :1072
                 // 及 C23-P1-1 频道列表行同款“先滚后焦”。
                 groupRowState.scrollToItem(0)
                 firstChipRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })
@@ -1076,7 +1076,7 @@ private fun ChannelPanel(
     }
     // EPG 弹窗关闭后焦点回落到面板当前台。
     // C23-P1-1：先滚到目标行再落焦——目标行可能在可视区外未组合，裸重试
-    // 5 次全失败即丢焦点；仍失败回退到恒在组合里的首个分组 chip。
+    // 5 次全失败即丢焦点；仍失败先滚回 0 再回退到首个分组 chip。
     LaunchedEffect(uiState.epgDialogChannel) {
         if (uiState.epgDialogChannel == null && uiState.panelOpen) {
             if (filtered.isEmpty()) {
