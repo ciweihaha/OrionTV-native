@@ -260,7 +260,9 @@ fun PlayScreen(
     title: String,
     episodeIndex: Int,
     positionMs: Long,
-    onBack: () -> Unit,
+    /** B31-P2-1：退出时把本页失败源集合回传给调用方（详情页标灰用）——
+     * 详情页从上一级回栈项的 SavedStateHandle 读（见 OrionNavHost）。 */
+    onBack: (failedSources: Set<String>) -> Unit,
     viewModel: PlayViewModel = hiltViewModel(),
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
@@ -673,7 +675,7 @@ fun PlayScreen(
                             // 落到 controlsVisible 分支只隐藏控制条（错误页下
                             // 控制条本来就不显示），第一次按返回无可见变化。
                             uiState.error != null -> {
-                                onBack()
+                                onBack(uiState.failedSources)
                                 true
                             }
                             controlsVisible -> {
@@ -684,7 +686,7 @@ fun PlayScreen(
                                 true
                             }
                             else -> {
-                                onBack()
+                                onBack(uiState.failedSources)
                                 true
                             }
                         }
@@ -895,7 +897,7 @@ fun PlayScreen(
                             onClick = { viewModel.retry() },
                             modifier = Modifier.preferredFocus(errorRetryRequester),
                         )
-                        SecondaryButton(text = "返回", onClick = onBack)
+                        SecondaryButton(text = "返回", onClick = { onBack(uiState.failedSources) })
                     }
                 }
             }

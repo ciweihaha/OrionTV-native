@@ -35,6 +35,7 @@ import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
 import com.oriontv.feature.auth.LoginModal
 import com.oriontv.feature.detail.DetailScreen
+import com.oriontv.feature.detail.DetailViewModel
 import com.oriontv.feature.favorites.FavoritesScreen
 import com.oriontv.feature.home.HomeScreen
 import com.oriontv.feature.live.LiveScreen
@@ -294,7 +295,16 @@ fun OrionNavHost(
                         title = route.title,
                         episodeIndex = route.episodeIndex,
                         positionMs = route.positionMs,
-                        onBack = { navController.popBackStack() },
+                        // B31-P2-1：退出播放页时把本页失败源回传给详情页标灰——
+                        // 写进上一级回栈项的 SavedStateHandle（DetailViewModel
+                        // 的 init 块收集后消费掉）；深链直达播放页时上一级是
+                        // 首页、从不读这个键，写了也无害。写完再 pop。
+                        onBack = { failedSources ->
+                            navController.previousBackStackEntry
+                                ?.savedStateHandle[DetailViewModel.SAVED_FAILED_SOURCES] =
+                                failedSources.toList()
+                            navController.popBackStack()
+                        },
                         focusRestoreTick = focusRestoreTick,
                         // C11-P1-1：全局弹窗开着时自动隐藏与错误 effect 不抢焦点。
                         globalModalOpen = showLoginModal || showUpdateCard,

@@ -71,9 +71,41 @@ class DetailViewModel @Inject constructor(
             savedStateHandle[SAVED_FOCUS_ANCHORED] = value
         }
 
+    init {
+        // B31-P2-1：播放页返回时把失败源写回详情页标灰（写方见 OrionNavHost
+        // Play 侧 onBack：退出前把 PlayViewModel 的 failedSources 写进上一级
+        // 回栈项的 SavedStateHandle）。之前 markSourceAsFailed 全仓零调用方，
+        // DetailScreen 的标灰渲染永不生效；接线后播放失败的源回详情页即标灰。
+        // consume-once：取走后立即清掉 handle，下一次同名源失败再写相同值
+        // 也能重新触发（StateFlow 相同值不重复发射）。只并入本次详情页已知
+        // 源（见 mergePlaybackFailedSources），跨片旧值不串台。
+        // 注意：返回详情页时本 ViewModel 并非全新实例（回栈存活，init 的
+        // “返回后重组不丢状态”早退分支即是明证），缺的一直只是回传接线，
+        // 不是实例存活问题。
+        viewModelScope.launch {
+            savedStateHandle.getStateFlow(SAVED_FAILED_SOURCES, emptyList<String>())
+                .collect { incoming ->
+                    if (incoming.isEmpty()) return@collect
+                    savedStateHandle[SAVED_FAILED_SOURCES] = emptyList<String>()
+                    val merged = mergePlaybackFailedSources(
+                        _uiState.value.failedSources,
+                        incoming,
+                        _uiState.value.sources.map { it.first },
+                    )
+                    _uiState.update { it.copy(failedSources = merged) }
+                }
+        }
+    }
+
     companion object {
         /** SavedStateHandle 键：是否已落过“播放”按钮焦点锚点。 */
         const val SAVED_FOCUS_ANCHORED = "detail_focus_anchored"
+
+        /**
+         * SavedStateHandle 键：播放页退出时回传的失败源（source 列表），
+         * 见 OrionNavHost Play 侧 onBack；详情页 init 块收集后消费掉。
+         */
+        const val SAVED_FAILED_SOURCES = "detail_failed_sources"
 
         /**
          * 详情搜索错误文案映射（可单测，B10-P2-1）：各源都返回、但无精确标题
@@ -130,6 +162,18 @@ class DetailViewModel @Inject constructor(
             toggleGeneration: Int,
             currentGeneration: Int,
         ): Boolean = toggleKey == currentKey && toggleGeneration == currentGeneration
+
+        /**
+         * B31-P2-1：播放页回传的失败源并入详情页标灰集（可单测）——只并入
+         * 本次详情页已知源（state.sources），handle 里万一残留跨片旧值
+         * （Detail→Detail 原位替换时 ViewModel 与 SavedStateHandle 同存活，
+         * 见 C13-P2-2）不串台；已标灰的去重（Set 语义）。
+         */
+        internal fun mergePlaybackFailedSources(
+            existing: Set<String>,
+            incoming: Collection<String>,
+            knownSources: Collection<String>,
+        ): Set<String> = existing + incoming.filter { it in knownSources }
     }
 
     fun init(source: String, id: String, title: String) {
