@@ -59,10 +59,10 @@ import com.oriontv.ui.theme.OrionTextStyles
  * 源切换 chip 行、“播放”主按钮 + “收藏”次按钮；
  * 下方选集网格每行 8 个，长剧折叠成 “1-20 / 21-40 …” 分组 chip；
  * 失效源置灰仍可切换；换源保留集数。
- * 第 3 轮收尾 B-P2-24：三参旧入口已删（全仓零调用，唯一调用走四参），
+ * 第 3 轮收尾 B-P2-24：三参旧入口已删（全仓零调用，唯一调用在 NavHost），
  * title 为空时仍用 id 兜底（见 DetailScreenContent 的 init 调用）。
  * 返回全靠系统 Back/导航（P2-6：第 5 轮删掉从未被调用的 onBack 死参数，
- * main 的 B-P2-24 已先删掉四参入口的 onBack，这里只剩注释对齐）。
+ * main 的 B-P2-24 已先删掉当时入口的 onBack，这里只剩注释对齐）。
  */
 @Composable
 fun DetailScreen(

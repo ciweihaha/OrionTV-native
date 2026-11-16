@@ -292,7 +292,7 @@ class SettingsViewModel @Inject constructor(
                         null
                     }
                     // B27-P2-1：refreshServerConfig() 返回 null 有两种含义——
-                    // “已拉取过”（SettingsRepository.kt:128 的 !isServerConfigUnknown()
+                    // “已拉取过”（SettingsRepository.kt:125 的 !isServerConfigUnknown()
                     // 即 return null）与“拉取失败”无法区分；并发的另一路数据访问
                     // 可能已先抢到锁成功拉取，此时再判失败会误报“服务器配置暂未拉取
                     // 成功”。照 AuthRepository.checkLoginStatus() 同款范式复核一次
