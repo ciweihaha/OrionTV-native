@@ -453,6 +453,10 @@ class LiveViewModel @Inject constructor(
         if (state.channels.isEmpty()) return
         when (val action = controller.onPlaybackError(state.panelOpen)) {
             is LiveErrorAction.TryLine -> {
+                // A55-P2-1：自动切备用线路也要保存上次频道——onPlaybackError 返回后
+                // controller.lineIndex 已是新线路，saveLastChannel() 存的即新线；
+                // 否则重启后按旧记录回已死的旧线路，每次冷启动重复 15 秒 stall。
+                saveLastChannel()
                 _uiState.update { it.copy(failCount = controller.failCount) }
                 showToast(action.message)
                 playCurrent()

@@ -156,12 +156,15 @@ fun SettingsScreen(
         viewModel.remoteInputHandshakes.collect { showQrModal = false }
     }
     // P1-5：二维码弹窗关闭后焦点还给“放大二维码”触发按钮。
+    // B55-P2-1/C55-P2-1：全局弹窗开着时不抢焦——B54 新增的配对成功自动关闭是
+    // 外部事件驱动的异步关闭，不经过 BackHandler 的 !globalModalOpen 门控；
+    // 标记照常复位，只门控请求（搜索页同款，见 SearchScreen.kt）。
     LaunchedEffect(showQrModal) {
         if (showQrModal) {
             qrModalWasOpen = true
         } else if (qrModalWasOpen) {
             qrModalWasOpen = false
-            qrTriggerRequester.requestFocus()
+            if (!globalModalOpen) qrTriggerRequester.requestFocus()
         }
     }
 
