@@ -109,17 +109,55 @@ class SearchLogicTest {
     fun `interrupted search resumes after restore only with query and no results or error`() {
         // B40-P2-2：恢复出“有词、无结果、无错误”时重跑在途被丢掉的搜索；
         // 已有结果、已落失败/空结果、词为空时都不重跑。
-        assertTrue(shouldResumeInterruptedSearch("庆余年", emptyList(), null))
-        assertFalse(shouldResumeInterruptedSearch("", emptyList(), null))
-        assertFalse(shouldResumeInterruptedSearch("   ", emptyList(), null))
+        // B64-P2-1：谓词加参 searchedQuery——结果属本词时才不重跑。
+        assertTrue(shouldResumeInterruptedSearch("庆余年", "庆余年", emptyList(), null))
+        assertFalse(shouldResumeInterruptedSearch("", "", emptyList(), null))
+        assertFalse(shouldResumeInterruptedSearch("   ", "   ", emptyList(), null))
         assertFalse(
             shouldResumeInterruptedSearch(
+                "庆余年",
                 "庆余年",
                 listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年")),
                 null,
             ),
         )
-        assertFalse(shouldResumeInterruptedSearch("庆余年", emptyList(), SearchError.Empty))
-        assertFalse(shouldResumeInterruptedSearch("庆余年", emptyList(), SearchError.Network()))
+        assertFalse(shouldResumeInterruptedSearch("庆余年", "庆余年", emptyList(), SearchError.Empty))
+        assertFalse(shouldResumeInterruptedSearch("庆余年", "庆余年", emptyList(), SearchError.Network()))
+    }
+
+    @Test
+    fun `stale results from previous query resume search after restore`() {
+        // B64-P2-1：防抖路径——搜索框已是新词 B、searchedQuery 仍是旧词 A、
+        // 结果区是 A 的结果时必须重跑（B40 单测只覆盖了“结果属本词”情形）。
+        assertTrue(
+            shouldResumeInterruptedSearch(
+                "繁花",
+                "庆余年",
+                listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年")),
+                null,
+            ),
+        )
+        // 结果属本词时不重跑；query 首尾空白不影响判定（存档 query 是未 trim
+        // 的原串，searchedQuery 是 trim 后的执行词）。
+        assertFalse(
+            shouldResumeInterruptedSearch(
+                "庆余年 ",
+                "庆余年",
+                listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年")),
+                null,
+            ),
+        )
+        // 失败态优先展示错误与重试，不重跑（error 非空时 searchedQuery 即
+        // 本次失败的词，结果纵是旧词也由重试按钮重搜）。
+        assertFalse(
+            shouldResumeInterruptedSearch(
+                "繁花",
+                "庆余年",
+                listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年")),
+                SearchError.Network(),
+            ),
+        )
+        // 词不一致且无结果时同样重跑（空结果分支，不依赖词比对）。
+        assertTrue(shouldResumeInterruptedSearch("繁花", "庆余年", emptyList(), null))
     }
 }

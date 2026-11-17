@@ -205,6 +205,17 @@ class SearchViewModel @Inject constructor(
             suggestions = emptyList(),
             error = null,
             searchedQuery = trimmed,
+            // B64-P2-1：入口同步清掉旧 results 并置 isLoading=true——旧结果
+            // 只属于上一词（executeSearch 落态前必先置 searchedQuery）；
+            // 留着它，切走再回时存档里 query/searchedQuery 已是新词、results
+            // 仍是旧词，恢复谓词会误判“已有结果”而不重跑，而在途的新搜索
+            // 已随 ViewModel 销毁被丢弃。清掉后存档落到“有词、无结果、无
+            // 错误”分支，恢复即重跑。isLoading=true 必不可少：缓存命中分支
+            // 全程不置 isLoading（落态才置 false），不置会在历史
+            // 写读往返耗时内重现 B40/B41 的四分支全不命中空洞；且结果网格
+            // 卸载后焦点无落点，isLoading effect 才能按 P1-1 把焦点收回搜索框。
+            results = emptyList(),
+            isLoading = true,
         )
         saveSearchState()
         searchJob = viewModelScope.launch {
@@ -265,7 +276,7 @@ class SearchViewModel @Inject constructor(
         // 命中、除 24dp Spacer 外什么都不渲染，且没有任何地方再发起搜索。
         // 恢复出“有词、无结果、无错误”时立即对该 query 重跑一次 executeSearch
         //（不走 searchNow 的存档，避免循环写；executeSearch 自己落态时存）。
-        if (shouldResumeInterruptedSearch(query, results, restoredError)) {
+        if (shouldResumeInterruptedSearch(query, searchedQuery, results, restoredError)) {
             val gen = ++generation
             // B41-P2-2：恢复重跑先同步置 isLoading=true——executeSearch 的缓存命中
             // 分支先走 recordSearchHistory（DataStore 读 + 服务端写历史 POST +
@@ -633,12 +644,21 @@ sealed interface SearchError {
  * B40-P2-2：恢复后是否立即重跑一次搜索（纯逻辑，可单测）——只在“有词、无结果、
  * 无错误”时重跑，即恢复出的正是搜索在途被切走丢掉的那种态。已搜到结果、已落
  * 失败/空结果（error 非空，含 Empty）时不重跑；词为空时也不重跑。
+ * B64-P2-1：结果非空只说明“有某次搜索的结果”，不说明就是本词的——结果只
+ * 属于 searchedQuery（executeSearch 落态前必先置 searchedQuery，searchNow
+ * 入口也先置），query 与 searchedQuery 不一致时结果是上一词的，必须重跑；
+ * 两词一致（去首尾空白后）时结果就是本词的，不重跑。
  */
 internal fun shouldResumeInterruptedSearch(
     query: String,
+    searchedQuery: String,
     results: List<SearchResult>,
     error: SearchError?,
-): Boolean = query.isNotBlank() && results.isEmpty() && error == null
+): Boolean {
+    if (query.isBlank() || error != null) return false
+    if (results.isEmpty()) return true
+    return query.trim() != searchedQuery.trim()
+}
 
 /**
  * 远程输入应搜哪条文本（纯逻辑，可单测，B9-P2-5）：以 state 的最新一条为准，
