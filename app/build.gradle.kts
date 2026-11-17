@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // C60-P2-2：AGP 9 内置 Kotlin，kotlin-android 插件与之冲突、已去掉；
+    // compose 与 serialization 是独立编译器插件，仍需显式应用。
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
@@ -20,11 +21,15 @@ configurations.all {
 
 android {
     namespace = "com.oriontv"
-    // compileSdk/targetSdk 35：CONTRACT 写的是 34，但 CONTRACT 指定的依赖本身要求 35
-    //（androidx.tv:tv-foundation:1.0.0 与 androidx.core:core-ktx:1.15.0 的
-    // aar-metadata.properties 都是 minCompileSdk=35；34 下 :app:checkDebugAarMetadata
-    // 必失败）。minSdk 仍是 24，电视安装不受影响。v2.0.1 发版追认：Build/Release 工作流双变体构建+单测+lint 全绿。
-    compileSdk = 35
+    // compileSdk 37.2（2026.09.00 BOM 起的 Compose 1.12.1 / Coil 3.6.3 /
+    // core-ktx 1.19.1 等库的 aar-metadata 要求 minCompileSdk=37；取最新
+    // 小版本 37.2。targetSdk 仍是 35，不引入新版运行时行为变更）。
+    // AGP 9 新 DSL：compileSdk 用 release(37) { minorApiLevel = 2 } 写法。
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         applicationId = "com.oriontv"
@@ -80,12 +85,18 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.findByName("release")
-            // 产物名固定 orionTV.{version}.apk（与 1.7.2 版本接口拼的下载地址一致）
-            applicationVariants.all {
-                outputs.all {
-                    (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                        .outputFileName = "orionTV.${versionName}.apk"
-                }
+        }
+    }
+
+    // C60-P2-2：AGP 9 删掉了旧 Variant API（applicationVariants /
+    // BaseVariantOutputImpl 内部类），产物名改用 androidComponents 新 API；
+    // 产物名固定 orionTV.{version}.apk（与 1.7.2 版本接口拼的下载地址一致）。
+    // 新 API 的 variant 上没有 versionName，从 defaultConfig 取（唯一事实源）。
+    val appVersionName = android.defaultConfig.versionName
+    androidComponents {
+        onVariants(selector().withBuildType("release")) { variant ->
+            variant.outputs.forEach { output ->
+                output.outputFileName.set("orionTV.${appVersionName}.apk")
             }
         }
     }
@@ -94,11 +105,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlin {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-        }
-    }
+    // C60-P2-2：AGP 9 内置 Kotlin 不再注册 kotlin{} 扩展（KotlinAndroidProjectExtension），
+    // jvmTarget 改由 compileOptions.targetCompatibility（17）默认给出，故删掉旧的 kotlin{} 块。
     buildFeatures {
         compose = true
         // 版本号（BuildConfig.VERSION_NAME/VERSION_CODE）供设置页“关于”与更新比对用。

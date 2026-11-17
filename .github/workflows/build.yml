@@ -22,14 +22,14 @@ jobs:
 
       # ubuntu-latest 自带 Android SDK（ANDROID_HOME 已设置），不再用
       # android-actions/setup-android（该 Action 在 2026-11-14 的 run 43571581939
-      # 里 11 秒即失败）；只确保 platform 35 与 build-tools 35.0.0 已装
-      #（compileSdk 35，见 app/build.gradle.kts 注释）。
+      # 里 11 秒即失败）；只确保 platform 37.2 与 build-tools 37.0.0 已装
+      #（compileSdk 37.2、AGP 9.5 默认 build-tools 37.0.0，见 app/build.gradle.kts）。
       - name: Ensure Android SDK components
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ -x "$SDKMANAGER" ]; then
-            yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+            yes | "$SDKMANAGER" "platforms;android-37.2" "build-tools;37.0.0"
           else
             echo "sdkmanager not found at $SDKMANAGER; relying on preinstalled SDK"
             ls "$ANDROID_HOME/platforms" || true
@@ -42,8 +42,11 @@ jobs:
         run: |
           # C4-P1-8：同时编 assembleRelease——R8/混淆问题到打 tag 才暴露太晚，
           # 每次 main 推送都提前编 release（无 Secrets 时出未签名包，只校验构建）。
-          # C6-P2-3：debug 与 release 单测都跑（之前只跑 testDebugUnitTest）。
-          ./gradlew assembleDebug assembleRelease testDebugUnitTest testReleaseUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
+          # C60-P2-2：AGP 9 不再创建 testReleaseUnitTest 任务（只留
+          # testDebugUnitTest）；单测只跑 debug 变体，release 靠 assembleRelease
+          # + lintRelease 校验。旧 C6-P2-3“双变体单测”在 AGP 8 下有效，AGP 9 下
+          # 写上该任务名即整步失败（Task not found）。
+          ./gradlew assembleDebug assembleRelease testDebugUnitTest --stacktrace > gradle-build.log 2>&1 || BUILD_FAILED=1
           if [ "${BUILD_FAILED:-0}" = "1" ]; then
             # 日志文件只能在 Actions 界面下载；把关键错误行打成 check-run 注解，
             # 这样不用进界面也能从 API 读到失败原因（见注解）。

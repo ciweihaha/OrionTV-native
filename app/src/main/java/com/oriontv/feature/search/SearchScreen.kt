@@ -539,6 +539,12 @@ fun SearchScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         itemsIndexed(uiState.results) { index, result ->
+                            // B60-P2-1：FocusRequester() 带 @RememberInComposition，只能在
+                            // remember 里创建；裸放在组合里每次重组都会新建（新版 lint 报
+                            // error 阻断构建）。仍经 resultRequesters 共享表取，恢复逻辑不变。
+                            val resultRequester = remember(index) {
+                                resultRequesters.getOrPut(index) { FocusRequester() }
+                            }
                             VideoCard(
                                 title = result.title,
                                 posterUrl = result.poster,
@@ -556,9 +562,7 @@ fun SearchScreen(
                                     )
                                 },
                                 onFocused = { viewModel.savedResultKey = searchResultKey(result) },
-                                modifier = Modifier.preferredFocus(
-                                    resultRequesters.getOrPut(index) { FocusRequester() },
-                                ),
+                                modifier = Modifier.preferredFocus(resultRequester),
                             )
                         }
                     }

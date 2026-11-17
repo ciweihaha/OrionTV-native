@@ -332,6 +332,14 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
                         ) {
                             itemsIndexed(row.items) { cardIndex, item ->
+                                // B60-P2-1：FocusRequester() 带 @RememberInComposition，只能在
+                                // remember 里创建；裸放在组合里每次重组都会新建（新版 lint 报
+                                // error 阻断构建）。仍经 cardRequesters 共享表取，恢复逻辑不变。
+                                val cardRequester = remember(rowIndex, cardIndex) {
+                                    cardRequesters.getOrPut("$rowIndex:$cardIndex") {
+                                        FocusRequester()
+                                    }
+                                }
                                 VideoCard(
                                     title = item.title,
                                     posterUrl = item.poster,
@@ -388,11 +396,7 @@ fun HomeScreen(
                                     },
                                     modifier = Modifier
                                         .width(cardWidth)
-                                        .preferredFocus(
-                                            cardRequesters.getOrPut("$rowIndex:$cardIndex") {
-                                                FocusRequester()
-                                            },
-                                        ),
+                                        .preferredFocus(cardRequester),
                                 )
                             }
                             // 分类浏览分页：正在取下一页时行尾挂一句提示（新卡片追加进来后焦点不丢）。

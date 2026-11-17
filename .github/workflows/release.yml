@@ -28,14 +28,14 @@ jobs:
 
       # ubuntu-latest 自带 Android SDK（ANDROID_HOME 已设置），不再用
       # android-actions/setup-android（该 Action 在 2026-11-14 的 run 43571581939
-      # 里 11 秒即失败）；只确保 platform 35 与 build-tools 35.0.0 已装
-      #（compileSdk 35，见 app/build.gradle.kts 注释）。
+      # 里 11 秒即失败）；只确保 platform 37.2 与 build-tools 37.0.0 已装
+      #（compileSdk 37.2、AGP 9.5 默认 build-tools 37.0.0，见 app/build.gradle.kts）。
       - name: Ensure Android SDK components
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ -x "$SDKMANAGER" ]; then
-            yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+            yes | "$SDKMANAGER" "platforms;android-37.2" "build-tools;37.0.0"
           else
             echo "sdkmanager not found at $SDKMANAGER; relying on preinstalled SDK"
             ls "$ANDROID_HOME/platforms" || true
@@ -79,10 +79,10 @@ jobs:
           fi
 
       # C4-P1-9：发版前跑单测（之前 release.yml 不跑单测，坏测试也能发版）。
-      # C6-P2-3：debug 与 release 单测都跑——只跑 testDebugUnitTest 时，
-      # release 变体独有的代码（BuildConfig/混淆相关分支）从没被测过。
+      # C60-P2-2：AGP 9 不再创建 testReleaseUnitTest 任务，只跑 testDebugUnitTest
+      #（release 靠 assembleRelease + lintRelease 校验；见 build.yml 同名注释）。
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest testReleaseUnitTest --stacktrace
+        run: ./gradlew testDebugUnitTest --stacktrace
 
       # C4-P2-11：lint 进 CI；release 开了 minify，mapping 随包上传（见文末）。
       - name: Lint release
@@ -117,7 +117,7 @@ jobs:
       - name: Verify APK signature
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs "$APK"
 
       # C4-P2-9：签名证书指纹必须与上一版 Release 的 APK 一致（换证书=换签名，
       # 旧用户无法覆盖安装）；没有上一版时跳过。
@@ -126,7 +126,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
-          CURRENT_FP=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256 digest" | head -n 1 | sed 's/.*: //')
+          CURRENT_FP=$("$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs "$APK" | grep -i "SHA-256 digest" | head -n 1 | sed 's/.*: //')
           echo "current cert SHA-256: $CURRENT_FP"
           # C6-P2-2：按最高版本 tag 取上一版，不按“最新创建的 Release”——
           # 补发旧版 hotfix Release 会比新版晚创建，旧实现会拿错上一版比对指纹。
@@ -158,7 +158,7 @@ jobs:
             echo "::warning::previous release $PREV_TAG has $PREV_COUNT APKs, using latest by version"
           fi
           PREV_APK=$(ls /tmp/prev-release/*.apk | sort -V | tail -n 1)
-          PREV_FP=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$PREV_APK" | grep -i "SHA-256 digest" | head -n 1 | sed 's/.*: //')
+          PREV_FP=$("$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs "$PREV_APK" | grep -i "SHA-256 digest" | head -n 1 | sed 's/.*: //')
           echo "previous cert SHA-256: $PREV_FP"
           if [ "$CURRENT_FP" != "$PREV_FP" ]; then
             echo "::error::signing certificate changed vs $PREV_TAG — same keystore required for upgrades"

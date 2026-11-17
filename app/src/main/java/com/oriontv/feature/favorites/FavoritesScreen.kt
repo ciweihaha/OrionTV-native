@@ -240,6 +240,14 @@ fun FavoritesScreen(
             modifier = Modifier.fillMaxSize(),
         ) {
             itemsIndexed(uiState.items) { index, (key, favorite) ->
+                // B60-P2-1：FocusRequester() 带 @RememberInComposition，只能在 remember
+                // 里创建；裸放在组合里每次重组都会新建（新版 lint 报 error 阻断构建）。
+                // 仍经 cardRequesters 共享表取，返回恢复逻辑（读表）不受影响。
+                val cardRequester = remember(index) {
+                    cardRequesters.getOrPut(index) {
+                        if (index == 0) firstCardRequester else FocusRequester()
+                    }
+                }
                 Column {
                     VideoCard(
                         title = favorite.title,
@@ -261,12 +269,7 @@ fun FavoritesScreen(
                             )
                         },
                         onFocused = { viewModel.savedFocusKey = key },
-                        modifier = Modifier.preferredFocus(
-                            // 首张卡片用 firstCardRequester（首进锚点与返回恢复共用同一锚点）。
-                            cardRequesters.getOrPut(index) {
-                                if (index == 0) firstCardRequester else FocusRequester()
-                            },
-                        ),
+                        modifier = Modifier.preferredFocus(cardRequester),
                     )
                     // P2-3（第 5 轮）：页内操作入口——有断点记录时“续播”直达播放页
                     // （断点集 + 断点位置），否则只留“删除”。不走 VideoCard 的
