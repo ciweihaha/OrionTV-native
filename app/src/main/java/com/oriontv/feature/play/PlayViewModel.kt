@@ -956,15 +956,19 @@ class PlayViewModel @Inject constructor(
      * 统一 seek 入口。用户主动 seek（进度条拖动、±10 秒、落点预览提交）走默认
      * userInitiated=true，片头学习只看这类 seek；程序自己发的 seek（自动跳片头、
      * 胶囊跳过、重播回 0、深链断点）必须传 false，否则断点续播会被误学成片头。
+     *
+     * A61-P2-1/P2-2：返回 seek 是否真正发出——门控不成立时返回 false，调用方
+     * 按返回值决定是否消费“已完成”收尾（胶囊跳过的置已跳过/藏胶囊、落点提交
+     * 的清预览），不再出现“seek 被拦、收尾照常跑”的静默丢弃。
      */
-    fun seekTo(positionMs: Long, userInitiated: Boolean = true) {
+    fun seekTo(positionMs: Long, userInitiated: Boolean = true): Boolean {
         // A60-P2-1：与 togglePlayPause 同款门控——落点预览提交 / 自动提交 /
         // ±10 秒 / 进度条拖动都走统一入口，reclaim 窗口内播放器仍挂别页媒体时
         // seek 会落到别页上；门控不成立整个跳过（不 seek、不学片头、不改
         // uiState）。内部调用（重播回 0、自动跳片头、胶囊跳过）同样只在本集
         // 媒体已挂载时才有意义，门控恒真时行为不变。
         val state = _uiState.value
-        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) return
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) return false
         val fromMs = playerManager.currentPositionMs
         val duration = playerManager.durationMs
         val clamped = clampSeekTarget(positionMs, duration)
@@ -985,14 +989,22 @@ class PlayViewModel @Inject constructor(
                 showNextEpisode = if (clearNextEpisode) false else it.showNextEpisode,
             )
         }
+        // A61-P2-1/P2-2：走到这里 seek 已真正发出（门控已过、playerManager.seekTo 已调）。
+        return true
     }
 
     /** 跳过片头：跳到片头结束点（手动标记优先，否则默认时长）。 */
     fun skipIntro() {
+        // A61-P2-1：只有 seek 真正发出才置已跳过并藏胶囊——reclaim 窗口内门控
+        // 不成立时 seekTo 返回 false，胶囊保持可见、introSkippedThisEpisode
+        // 保持 false，挂片后轮询仍会重现胶囊、自动跳仍可触发，用户可再点；
+        // 旧实现无条件跑收尾，点一次即永久丢掉本集跳片头。target <= 0 时
+        // 本就没有可跳的片头（胶囊也不会可见），不置位、不藏胶囊。
         val target = _uiState.value.introEndMs
-        if (target > 0) seekTo(target, userInitiated = false)
-        introSkippedThisEpisode = true
-        _uiState.update { it.copy(skipIntroVisible = false) }
+        if (target > 0 && seekTo(target, userInitiated = false)) {
+            introSkippedThisEpisode = true
+            _uiState.update { it.copy(skipIntroVisible = false) }
+        }
     }
 
     /**

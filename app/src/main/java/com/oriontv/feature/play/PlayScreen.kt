@@ -577,12 +577,20 @@ fun PlayScreen(
         if (shouldAutoCommitPreview(previewTargetMs, uiState.drawer != null, uiState.error != null)) {
             delay(SeekPreviewController.AUTO_COMMIT_MS)
             if (uiState.error == null) {
-                viewModel.seekTo(previewTargetMs)
-                previewController.cancel()
-                previewTargetMs = -1L
-                previewDirection = 0
-                previewThumbnail = null
-                pokeControls()
+                // A61-P2-2：只有 seek 真正发出才清预览——reclaim 窗口内门控不成立
+                // 时 seekTo 返回 false，预览与控制器原样保留（不 cancel、不清
+                // previewTargetMs），不静默丢弃；挂片后可由下次 OK（commitPreview）
+                // 或再按方向键（nudge 改 previewTargetMs、effect 带新 2 秒计时
+                // 重跑）重试。保留后本 effect 不会立即重提交：key（previewTargetMs /
+                // drawer / error）未变，LaunchedEffect 不重跑，本协程已过 delay、
+                // 到此即结束。失败时不 pokeControls（控制条本就因待定落点不会自动隐藏）。
+                if (viewModel.seekTo(previewTargetMs)) {
+                    previewController.cancel()
+                    previewTargetMs = -1L
+                    previewDirection = 0
+                    previewThumbnail = null
+                    pokeControls()
+                }
             }
         } else if (uiState.error != null) {
             previewController.cancel()
@@ -603,16 +611,20 @@ fun PlayScreen(
     }
 
     fun commitPreview(): Boolean {
-        val target = previewController.commit()
-        if (target != null) {
-            viewModel.seekTo(target)
-            previewTargetMs = -1L
-            previewDirection = 0
-            previewThumbnail = null
-            pokeControls()
-            return true
-        }
-        return false
+        // A61-P2-2：先读待定落点（不消费），seek 成功才消费控制器与预览态；
+        // reclaim 窗口内门控不成立时 seekTo 返回 false，预览与控制器原样保留，
+        // 返回 false 表示本次 OK 未提交——OK 回落链上 shouldTogglePlayPauseOnOk
+        // 因 previewTargetMs 仍 >=0 而为假，最终落到消费型空操作分支，不会误
+        // 暂停/误恢复（togglePlayPause 本身也有同款门控）；返回 false 而非
+        // true，是为让调用方知道“未消费”，而不是把一次失败的提交谎报成已消费。
+        val target = previewController.pendingTargetMs ?: return false
+        if (!viewModel.seekTo(target)) return false
+        previewController.commit()
+        previewTargetMs = -1L
+        previewDirection = 0
+        previewThumbnail = null
+        pokeControls()
+        return true
     }
 
     // 触摸修复：视频区点按回调——错误页不做事，预览进行中提交落点，
