@@ -89,6 +89,60 @@ class AggApi @Inject constructor(
                     year?.let { addQueryParameter("year", it) }
                 }
                 .build()
+            fetchList(url)
+        }
+
+    /**
+     * 按关键词搜（未配服务器时详情/搜索的回落源）：CMS `videolist` 的 `wd` 参数，
+     * 服务端是模糊搜，调用方须再按精确标题过滤（见 DetailSearchLogic.findAggTitleMatch）。
+     */
+    suspend fun searchVideos(query: String): AggListResponse =
+        withContext(ioDispatcher) {
+            val url = BASE_URL.toHttpUrl().newBuilder()
+                .addQueryParameter("ac", "videolist")
+                .addQueryParameter("wd", query)
+                .addQueryParameter("pg", "1")
+                .build()
+            fetchList(url)
+        }
+
+    /**
+     * 详情（含播放地址，未配服务器时详情页的回落源）：`ac=detail&ids=<vod_id>`，
+     * vod_id 是聚合侧的 `站点~编号`（如 `yingshigongchang~111482`）。
+     */
+    suspend fun videoDetail(ids: String): AggDetailResponse =
+        withContext(ioDispatcher) {
+            val url = BASE_URL.toHttpUrl().newBuilder()
+                .addQueryParameter("ac", "detail")
+                .addQueryParameter("ids", ids)
+                .build()
+            val response = executeWithRetry(
+                Request.Builder().url(url).get().build(),
+                circuitBreaker = videoListCircuitBreaker,
+            )
+            val body = response.use {
+                try {
+                    val b = readBodyLimited(it, videoListCircuitBreaker)
+                    videoListCircuitBreaker.recordSuccess()
+                    b
+                } catch (e: Exception) {
+                    videoListCircuitBreaker.releaseProbe()
+                    throw e
+                }
+            }
+            val parsed = try {
+                json.decodeFromString<AggDetailResponse>(body)
+            } catch (e: Exception) {
+                throw AggInvalidResponseException("agg 详情返回 JSON 损坏", e)
+            }
+            if (parsed.code != 1 || parsed.list == null) {
+                throw AggInvalidResponseException("agg 详情返回结构异常：code=${parsed.code}")
+            }
+            parsed
+        }
+
+    /** 列表类接口的共用拉取：videoList / searchVideos 同款执行 + 体上限 + 容错解码。 */
+    private suspend fun fetchList(url: HttpUrl): AggListResponse {
             val response = executeWithRetry(
                 Request.Builder().url(url).get().build(),
                 circuitBreaker = videoListCircuitBreaker,
@@ -115,7 +169,7 @@ class AggApi @Inject constructor(
             if (parsed.code != 1 || parsed.list == null) {
                 throw AggInvalidResponseException("agg 返回结构异常：code=${parsed.code}")
             }
-            parsed
+            return parsed
         }
 
     /**

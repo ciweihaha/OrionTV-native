@@ -304,7 +304,9 @@ fun HomeScreen(
                         }
                     }
                 }
-                itemsIndexed(uiState.rows) { rowIndex, row ->
+                // 行按标题给稳定 key（标题是分类名，全仓唯一）：行刷新替换列表时
+                // index key 会让旧行复用成新行、卡片图短暂错位。
+                itemsIndexed(uiState.rows, key = { _, row -> row.title }) { rowIndex, row ->
                     val isRecent = row.title == HomeCategory.RECENT.title
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Text(text = row.title, style = OrionTextStyles.SectionTitle)

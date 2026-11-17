@@ -1,5 +1,8 @@
 package com.oriontv.data.repo
 
+import com.oriontv.data.api.AggApi
+import com.oriontv.data.api.AggDetailItem
+import com.oriontv.data.api.AggVideoItem
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResult
 import kotlinx.coroutines.CoroutineDispatcher
@@ -30,6 +33,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class DetailRepository @Inject constructor(
     private val moonTvApi: MoonTvApi,
     private val settingsRepository: SettingsRepository,
+    private val aggApi: AggApi,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /**
@@ -44,6 +48,12 @@ class DetailRepository @Inject constructor(
         onUpdate: (results: List<SearchResult>, allLoaded: Boolean) -> Unit,
     ) = withContext(ioDispatcher) {
         val baseUrl = settingsRepository.currentApiBaseUrl()
+        if (baseUrl.isBlank()) {
+            // 未配服务器：点播走硬编码 agg 直连（用户已核对：聚合地址 37 个站），
+            // 不再报“未配置服务器地址”挡详情；登录/收藏仍走 MoonTV（见 AuthRepository），不在此处改。
+            searchDetailViaAgg(q, id, onUpdate)
+            return@withContext
+        }
         require(baseUrl.isNotBlank()) { "未配置服务器地址" }
         var preferredResults: List<SearchResult> = emptyList()
         var preferredError: Exception? = null
@@ -82,6 +92,47 @@ class DetailRepository @Inject constructor(
         if (preferredResults.isNotEmpty() && merged.isEmpty()) {
             onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
         }
+    }
+
+    /**
+     * 未配服务器时的详情回落：agg 直连（`ac=detail`，见 AggApi）。
+     * ① id 直取：agg 卡片的 vod_id 是 `站点~编号`；② id 不是 agg 形式
+     *（豆瓣卡片的 id 就是标题、收藏/记录里的服务端 id）时按标题在 agg 里搜，
+     * 精确标题匹配才认；两路都空即“没有找到相关内容”。网络错原样抛，
+     * 由 DetailViewModel 落“加载失败，请检查网络后重试”。
+     */
+    private suspend fun searchDetailViaAgg(
+        q: String,
+        id: String?,
+        onUpdate: (results: List<SearchResult>, allLoaded: Boolean) -> Unit,
+    ) {
+        var detailItem: AggDetailItem? = null
+        if (!id.isNullOrBlank() && id.contains("~")) {
+            detailItem = try {
+                aggApi.videoDetail(id).list?.firstOrNull()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (detailItem == null) {
+            val candidates = aggApi.searchVideos(q).list.orEmpty()
+            val match = DetailSearchLogic.findAggTitleMatch(candidates, q)
+            val matchId = match?.vod_id
+            detailItem = if (!matchId.isNullOrBlank()) {
+                aggApi.videoDetail(matchId).list?.firstOrNull()
+            } else {
+                null
+            }
+        }
+        val item = detailItem ?: throw IllegalStateException("没有找到相关内容")
+        val results = DetailSearchLogic.mapAggDetailToResults(item)
+        if (results.isEmpty() || results.all { it.episodes.isEmpty() }) {
+            throw IllegalStateException("没有找到相关内容")
+        }
+        // agg 只有这一组源，没有更多源可合并，allLoaded 直接为真。
+        onUpdate(results, true)
     }
 
     private suspend fun fullSearch(
@@ -169,6 +220,13 @@ object DetailSearchLogic {
     const val SEARCH_CONCURRENCY_LIMIT = 5
 
     /**
+     * 第 70 轮：stripHtml 的两个 Regex 只编一次——原来每调一次 stripHtml
+     *（每条 agg 详情简介）都现编两个 Regex；与 MoonTvApi.normalizeTitle 同款问题。
+     */
+    private val HTML_TAG_REGEX = Regex("<[^>]*>")
+    private val WHITESPACE_REGEX = Regex("\\s+")
+
+    /**
      * 首选源结果筛选：id 优先（调用方传 id 就是为了定位具体哪部影片），
      * id 对不上时退到精确标题；两者都对不上时返回原结果（不丢源，服务端排序兜底）。
      */
@@ -238,4 +296,96 @@ object DetailSearchLogic {
      */
     fun groupIndexForEpisode(episodeIndex: Int, groupSize: Int = 20): Int =
         episodeIndex.coerceAtLeast(0) / groupSize.coerceAtLeast(1)
+
+    /** agg 播放组：一个 vod_play_from 对应一组分集 URL。 */
+    data class AggPlaySource(val name: String, val episodes: List<String>)
+
+    /**
+     * CMS 播放串解析（可单测）：`vod_play_from` 以 `$$$` 分组，与 `vod_play_url`
+     * 的组一一对应；组内分集以 `#` 分隔，每集 `名称$地址`（只按第一个 `$` 切，
+     * 地址里可能还有 `$`）；没有 `$` 的分集若是 http(s) 地址本身即当地址，
+     * 否则丢弃；地址为空的分集丢弃；空组丢弃。from 为空时视作单组（名 "agg"）。
+     */
+    fun parseAggPlaySources(vodPlayFrom: String, vodPlayUrl: String): List<AggPlaySource> {
+        if (vodPlayUrl.isBlank()) return emptyList()
+        val fromGroups = if (vodPlayFrom.isBlank()) listOf("agg") else vodPlayFrom.split("$$$")
+        val urlGroups = vodPlayUrl.split("$$$")
+        val count = minOf(fromGroups.size, urlGroups.size)
+        return (0 until count).mapNotNull { i ->
+            val name = fromGroups[i].trim().ifBlank { "agg" }
+            val episodes = urlGroups[i].split("#").mapNotNull { entry ->
+                val trimmed = entry.trim()
+                if (trimmed.isBlank()) return@mapNotNull null
+                val dollar = trimmed.indexOf('$')
+                val url = if (dollar < 0) {
+                    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed else return@mapNotNull null
+                } else {
+                    trimmed.substring(dollar + 1).trim()
+                }
+                url.ifBlank { null }
+            }
+            if (episodes.isEmpty()) null else AggPlaySource(name, episodes)
+        }
+    }
+
+    /**
+     * agg 详情 → 详情页多源结果（可单测）：每组一个源，源键 `agg:<播放组>`、
+     * 源名即播放组名（详情页源 chip 显示它）；集数即该组分集 URL，播放页直接播。
+     */
+    fun mapAggDetailToResults(item: AggDetailItem): List<SearchResult> =
+        parseAggPlaySources(item.vod_play_from, item.vod_play_url).map { group ->
+            SearchResult(
+                id = item.vod_id,
+                title = item.vod_name,
+                poster = item.vod_pic,
+                episodes = group.episodes,
+                source = "agg:${group.name}",
+                source_name = group.name,
+                class_ = item.vod_class?.takeIf { it.isNotBlank() },
+                year = item.vod_year?.takeIf { it.isNotBlank() },
+                desc = stripHtml(item.vod_content),
+                type_name = item.type_name?.takeIf { it.isNotBlank() },
+            )
+        }
+
+    /**
+     * agg 列表里精确标题匹配（可单测）：服务端 `wd` 是模糊搜（搜“阿龙2025”
+     * 也会返回“阿龙”），归一化后相等才认，错片不认；无精确匹配返回 null。
+     */
+    fun findAggTitleMatch(items: List<AggVideoItem>, query: String): AggVideoItem? {
+        val normalized = MoonTvApi.normalizeTitle(query)
+        if (normalized.isBlank()) return null
+        return items.firstOrNull { MoonTvApi.normalizeTitle(it.vod_name) == normalized }
+    }
+
+    /**
+     * agg 列表项 → 搜索页结果（可单测）：源固定 "agg"，id 用聚合侧 vod_id
+     *（进详情时走 agg 直取）；集数是列表接口没有的，详情页再取。
+     */
+    fun mapAggItemToSearchResult(item: AggVideoItem): SearchResult = SearchResult(
+        id = item.vod_id,
+        title = item.vod_name,
+        poster = item.vod_pic,
+        episodes = emptyList(),
+        source = "agg",
+        source_name = item.type_name?.takeIf { it.isNotBlank() } ?: "聚合",
+        class_ = item.vod_class?.takeIf { it.isNotBlank() },
+        year = item.vod_year?.takeIf { it.isNotBlank() },
+        type_name = item.type_name?.takeIf { it.isNotBlank() },
+    )
+
+    /** 去 HTML 标签（可单测）：agg 简介是 `<p>…<br/>…`，详情页只显示纯文本。 */
+    internal fun stripHtml(html: String?): String? {
+        if (html.isNullOrBlank()) return null
+        return html.replace(HTML_TAG_REGEX, " ")
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace(WHITESPACE_REGEX, " ")
+            .trim()
+            .takeIf { it.isNotEmpty() }
+    }
 }

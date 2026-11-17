@@ -31,7 +31,9 @@ import com.oriontv.ui.theme.OrionTextStyles
 
 /**
  * 视频卡片（ui-design.md §6）：
- * 16:9 海报 + 标题与元数据在图下方（不叠加在图上）；圆角 12dp；
+ * 2:3 竖版海报 + 标题与元数据在图下方（不叠加在图上）；圆角 12dp；
+ * 豆瓣/aggs/收藏的海报全是竖版（实测 agg 270×380/400/405，约 2:3），
+ * 之前 16:9 + Crop 只截出海报中间一条横带，人脸片名全被切掉，看着乱七八糟；
  * 焦点：放大 1.08 + 2dp 熔橙描边 + 阴影 8dp。
  * 继续观看行：底部品牌色进度条 + “剩余 xx 分钟”；直播卡带红色 LIVE 角标。
  */
@@ -64,7 +66,7 @@ fun VideoCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .aspectRatio(2f / 3f)
                 .orionFocus(focused),
         ) {
             Box(

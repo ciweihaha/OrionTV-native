@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.ui.theme.OrionColors
@@ -79,6 +80,17 @@ fun SecondaryButton(
     }
 }
 
+/** chip 背景/文字色（可单测）：选中 = 品牌实底 + 白字（“正在播放”态）；
+ * 焦点未选中 = 品牌浅底 + 白字（焦点必须肉眼可见，又与实底选中态区分开，
+ * 只靠 2dp 描边 + 1.08 缩放在小 chip 上看不出来）；其余 = 表面底 + 灰字。 */
+internal data class ChipColors(val background: Color, val text: Color)
+
+internal fun categoryChipColors(selected: Boolean, focused: Boolean): ChipColors = when {
+    selected -> ChipColors(OrionColors.Brand, OrionColors.Text)
+    focused -> ChipColors(OrionColors.Brand.copy(alpha = 0.3f), OrionColors.Text)
+    else -> ChipColors(OrionColors.Surface, OrionColors.TextSecondary)
+}
+
 /** 分类 chip（首页分类栏、详情页源切换、直播分组用）。 */
 @Composable
 fun CategoryChip(
@@ -91,6 +103,7 @@ fun CategoryChip(
     enabled: Boolean = true,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val colors = categoryChipColors(selected, focused)
     Box(
         modifier = modifier
             .clickable(enabled = enabled) { onClick() }
@@ -98,14 +111,14 @@ fun CategoryChip(
             .orionFocus(focused, Capsule)
             // P2-6：禁用态降透明度，与可用态肉眼可区分。
             .alpha(if (enabled) 1f else 0.4f)
-            .background(if (selected) OrionColors.Brand else OrionColors.Surface, Capsule)
+            .background(colors.background, Capsule)
             .padding(horizontal = 20.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
             style = OrionTextStyles.Body,
-            color = if (selected) OrionColors.Text else OrionColors.TextSecondary,
+            color = colors.text,
         )
     }
 }

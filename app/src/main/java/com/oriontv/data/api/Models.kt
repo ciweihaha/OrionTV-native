@@ -74,6 +74,40 @@ data class AggListResponse(
     val list: List<AggVideoItem>? = null,
 )
 
+/**
+ * agg 详情条目（`ac=detail`，未配服务器时详情页的回落源）：
+ * 只取详情页要用的字段，其余由 ignoreUnknownKeys 跳过；服务端同一字段
+ * 在不同接口里可能是字符串也可能是数字（如 vod_year 在详情里是数字 2025），
+ * 用 LenientStringSerializer 兜底，免得整条解码失败。
+ */
+@Serializable
+data class AggDetailItem(
+    @Serializable(with = LenientStringSerializer::class)
+    val vod_id: String? = null,
+    val vod_name: String = "",
+    val vod_pic: String = "",
+    @Serializable(with = LenientStringSerializer::class)
+    val vod_year: String? = null,
+    val vod_area: String? = null,
+    val vod_class: String? = null,
+    @Serializable(with = LenientStringSerializer::class)
+    val vod_douban_score: String? = null,
+    /** 播放组（`$$$` 分隔），与 vod_play_url 的组一一对应，如 `lzm3u8$$$liangzi`。 */
+    val vod_play_from: String = "",
+    /** 每组分集 `名称$地址`，组内 `#` 分隔、组间 `$$$` 分隔。 */
+    val vod_play_url: String = "",
+    /** 简介（带 HTML 标签，映射层去标签）。 */
+    val vod_content: String? = null,
+    val type_name: String? = null,
+)
+
+@Serializable
+data class AggDetailResponse(
+    val code: Int,
+    val msg: String? = null,
+    val list: List<AggDetailItem>? = null,
+)
+
 @Serializable
 data class SearchResult(
     @Serializable(with = LenientStringSerializer::class)

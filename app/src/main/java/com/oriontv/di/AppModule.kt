@@ -131,8 +131,9 @@ object AppModule {
     fun provideDetailRepository(
         moonTvApi: MoonTvApi,
         settingsRepository: com.oriontv.data.repo.SettingsRepository,
+        aggApi: com.oriontv.data.api.AggApi,
     ): com.oriontv.data.repo.DetailRepository =
-        com.oriontv.data.repo.DetailRepository(moonTvApi, settingsRepository, Dispatchers.IO)
+        com.oriontv.data.repo.DetailRepository(moonTvApi, settingsRepository, aggApi, Dispatchers.IO)
 
     /**
      * UpdateDownloader 的 @Inject 构造函数带默认参数 `ioDispatcher = Dispatchers.IO`，

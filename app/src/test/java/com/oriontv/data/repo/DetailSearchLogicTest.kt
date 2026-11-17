@@ -1,5 +1,7 @@
 package com.oriontv.data.repo
 
+import com.oriontv.data.api.AggDetailItem
+import com.oriontv.data.api.AggVideoItem
 import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -104,5 +106,90 @@ class DetailSearchLogicTest {
         assertEquals(1, DetailSearchLogic.groupIndexForEpisode(24))
         assertEquals(2, DetailSearchLogic.groupIndexForEpisode(40))
         assertEquals(0, DetailSearchLogic.groupIndexForEpisode(-3))
+    }
+
+    @Test
+    fun `parseAggPlaySources splits groups and episodes`() {
+        val sources = DetailSearchLogic.parseAggPlaySources(
+            "lzm3u8\$\$\$liangzi",
+            "国语中字\$https://a/1.m3u8#粤语中字\$https://a/2.m3u8\$\$\$国语中字\$https://b/1.m3u8",
+        )
+        assertEquals(2, sources.size)
+        assertEquals("lzm3u8", sources[0].name)
+        assertEquals(listOf("https://a/1.m3u8", "https://a/2.m3u8"), sources[0].episodes)
+        assertEquals("liangzi", sources[1].name)
+        assertEquals(listOf("https://b/1.m3u8"), sources[1].episodes)
+    }
+
+    @Test
+    fun `parseAggPlaySources drops entries without url and empty groups`() {
+        val sources = DetailSearchLogic.parseAggPlaySources(
+            "lzm3u8\$\$\$empty",
+            "正片\$#第2集\$https://a/2.m3u8\$\$\$",
+        )
+        assertEquals(1, sources.size)
+        assertEquals(listOf("https://a/2.m3u8"), sources[0].episodes)
+    }
+
+    @Test
+    fun `parseAggPlaySources accepts bare http url without name`() {
+        val sources = DetailSearchLogic.parseAggPlaySources("", "https://a/1.m3u8")
+        assertEquals(1, sources.size)
+        assertEquals("agg", sources[0].name)
+        assertEquals(listOf("https://a/1.m3u8"), sources[0].episodes)
+    }
+
+    @Test
+    fun `parseAggPlaySources returns empty when no play url`() {
+        assertEquals(
+            emptyList<DetailSearchLogic.AggPlaySource>(),
+            DetailSearchLogic.parseAggPlaySources("lzm3u8", ""),
+        )
+    }
+
+    @Test
+    fun `mapAggDetailToResults makes one source per play group`() {
+        val item = AggDetailItem(
+            vod_id = "yingshigongchang~111482",
+            vod_name = "阿龙2025",
+            vod_pic = "https://p/1.jpg",
+            vod_year = "2025",
+            vod_play_from = "lzm3u8\$\$\$liangzi",
+            vod_play_url = "国语中字\$https://a/1.m3u8\$\$\$国语中字\$https://b/1.m3u8",
+            vod_content = "<p>简介</p>",
+        )
+        val results = DetailSearchLogic.mapAggDetailToResults(item)
+        assertEquals(listOf("agg:lzm3u8", "agg:liangzi"), results.map { it.source })
+        assertEquals(listOf("lzm3u8", "liangzi"), results.map { it.source_name })
+        assertEquals("阿龙2025", results[0].title)
+        assertEquals("简介", results[0].desc)
+        assertEquals("2025", results[0].year)
+    }
+
+    @Test
+    fun `findAggTitleMatch only accepts exact normalized title`() {
+        val items = listOf(
+            AggVideoItem(vod_id = "s~1", vod_name = "阿龙"),
+            AggVideoItem(vod_id = "s~2", vod_name = "阿龙2025"),
+        )
+        assertEquals("s~2", DetailSearchLogic.findAggTitleMatch(items, "阿龙2025")?.vod_id)
+        assertNull(DetailSearchLogic.findAggTitleMatch(items, "阿龙2026"))
+    }
+
+    @Test
+    fun `mapAggItemToSearchResult keeps agg vod id and source`() {
+        val result = DetailSearchLogic.mapAggItemToSearchResult(
+            AggVideoItem(vod_id = "s~1", vod_name = "阿龙2025", vod_pic = "https://p/1.jpg", type_name = "电影"),
+        )
+        assertEquals("s~1", result.id)
+        assertEquals("agg", result.source)
+        assertEquals("电影", result.source_name)
+    }
+
+    @Test
+    fun `stripHtml removes tags and entities`() {
+        assertEquals("简介 文本", DetailSearchLogic.stripHtml("<p>简介</p><br/>文本&nbsp;"))
+        assertNull(DetailSearchLogic.stripHtml(null))
+        assertNull(DetailSearchLogic.stripHtml("  "))
     }
 }

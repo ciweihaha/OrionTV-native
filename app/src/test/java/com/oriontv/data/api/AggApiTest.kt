@@ -424,4 +424,49 @@ class AggApiTest {
         assertFalse("probe lease should be released after cancel", breaker.isOpen())
     }
 
+    @Test
+    fun `searchVideos queries videolist with wd`() {
+        var seenWd: String? = null
+        var seenAc: String? = null
+        val (client, _) = countingClient { request, _ ->
+            seenAc = request.url.queryParameter("ac")
+            seenWd = request.url.queryParameter("wd")
+            responseFor(request, 200, """{"code":1,"list":[{"vod_id":"s~1","vod_name":"阿龙2025","vod_pic":"https://p/1.jpg"}]}""")
+        }
+        val parsed = runBlocking { api(client).searchVideos("阿龙2025") }
+        assertEquals("videolist", seenAc)
+        assertEquals("阿龙2025", seenWd)
+        assertEquals(1, parsed.list?.size)
+        assertEquals("s~1", parsed.list?.first()?.vod_id)
+    }
+
+    @Test
+    fun `videoDetail queries detail with ids and parses play fields`() {
+        var seenAc: String? = null
+        var seenIds: String? = null
+        val (client, _) = countingClient { request, _ ->
+            seenAc = request.url.queryParameter("ac")
+            seenIds = request.url.queryParameter("ids")
+            responseFor(request, 200, """{"code":1,"list":[{"vod_id":"s~1","vod_name":"阿龙2025","vod_play_from":"lzm3u8","vod_play_url":"国语中字${'$'}https://a/1.m3u8","vod_year":2025}]}""")
+        }
+        val parsed = runBlocking { api(client).videoDetail("s~1") }
+        assertEquals("detail", seenAc)
+        assertEquals("s~1", seenIds)
+        val item = parsed.list?.first()
+        assertEquals("lzm3u8", item?.vod_play_from)
+        assertEquals("国语中字${'$'}https://a/1.m3u8", item?.vod_play_url)
+        // 详情里 vod_year 是数字 2025，LenientString 兜底成 "2025"。
+        assertEquals("2025", item?.vod_year)
+    }
+
+    @Test
+    fun `videoDetail throws on non-1 code`() {
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, """{"code":0,"list":[]}""")
+        }
+        assertThrows(IOException::class.java) {
+            runBlocking { api(client).videoDetail("s~1") }
+        }
+    }
+
 }

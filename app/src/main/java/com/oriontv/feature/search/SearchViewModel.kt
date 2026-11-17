@@ -3,10 +3,12 @@ package com.oriontv.feature.search
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.oriontv.data.api.AggApi
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.SearchResponseException
 import com.oriontv.data.api.SearchResult
 import com.oriontv.data.api.UnauthorizedException
+import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.data.repo.SearchHistoryRepository
 import com.oriontv.data.repo.SettingsRepository
 import com.oriontv.feature.remoteinput.RemoteInputManager
@@ -39,6 +41,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val moonTvApi: MoonTvApi,
+    private val aggApi: AggApi,
     private val settingsRepository: SettingsRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
     private val remoteInputManager: RemoteInputManager,
@@ -369,21 +372,15 @@ class SearchViewModel @Inject constructor(
             // try 块之外，未捕获即协程崩溃、搜索页卡在“正在搜索…”；放进 try，
             // 按普通搜索失败落错误态、可重试。
             val baseUrl = settingsRepository.currentApiBaseUrl()
-            if (baseUrl.isBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = SearchError.NotConfigured,
-                    // B65-P2-1：失败落态也置 searchedQuery（入口赋值已移走）——
-                    // “重试”按钮按 searchedQuery 重搜，只在错误态出现、只在
-                    // 落态后可达，缺了它重试即丢词。
-                    searchedQuery = query,
-                )
-                // B33-P2-1：失败落态也要存一次，否则 NotConfigured 只在内存里，
-                // 切走再回恢复时丢了种类（旧实现还会被写成 Empty）。
-                saveSearchState()
-                return
+            // 未配服务器：搜索走硬编码 agg 直连（与详情页同款回落），不报 NotConfigured；
+            // 配了服务器仍走 MoonTV 全源搜索。成功落态在下面共用分支置
+            // searchedQuery = query（B65-P2-1：落态才置，与 results 同步）。
+            val results = if (baseUrl.isBlank()) {
+                aggApi.searchVideos(query).list.orEmpty()
+                    .map(DetailSearchLogic::mapAggItemToSearchResult)
+            } else {
+                moonTvApi.searchVideos(baseUrl, query)
             }
-            val results = moonTvApi.searchVideos(baseUrl, query)
             // B-P2-23①：网络返回后复核 generation；迟到结果不得覆盖更新的搜索。
             //（旧任务被取消时，OkHttp 同步调用不响应取消，返回后本应由 CE 拦截，
             // 但取消恰好发生在无挂起点的窗口时仍需这道防线。）
