@@ -20,6 +20,10 @@ app/build/
 *.keystore
 *.p12
 *.pem
+# v2.0.7 例外：ISRG Root X1 是公开的根证书（不是密钥/凭据），
+# 旧系统播 Let's Encrypt 流地址靠它握手，必须入库，否则 CI 检出的
+# 代码里没有它、应用启动时读不到 res/raw。
+!app/src/main/res/raw/isrg_root_x1.pem
 *.key
 *.keystore
 .env
