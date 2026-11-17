@@ -162,7 +162,11 @@ class PlayViewModel @Inject constructor(
             if (episodeIndex != _uiState.value.episodeIndex) {
                 val current = _uiState.value.current
                 if (current != null) {
-                    _uiState.update { it.copy(isLoading = true, error = null) }
+                    // A66-P2-1：同款清掉残留的下一集预告——旧集播完后卡已出、
+                    // 倒计时在走，新集开播的挂起读数（断点/倍速，服务端模式
+                    // 下还有网络读）期间倒计时到 0 会抢跑、把用户点的集换
+                    // 成下一集；只清卡片即可，isEnded 由 startEpisode 收尾清。
+                    _uiState.update { it.copy(isLoading = true, error = null, showNextEpisode = false) }
                     launchStartEpisode(current, episodeIndex, positionMs.takeIf { it > 0 })
                 } else {
                     _uiState.update { it.copy(episodeIndex = episodeIndex, positionMs = positionMs) }
@@ -1207,7 +1211,11 @@ class PlayViewModel @Inject constructor(
             }
             return
         }
-        _uiState.update { it.copy(drawer = null) }
+        // A66-P2-1：手动换源同款清掉残留的下一集预告——旧集播完后卡已出，
+        // 抽屉打开时倒计时冻结、关闭即恢复走秒，换源的开播读数慢于剩余
+        // 时间会抢跑、把用户刚点的源换成下一集（旧源）；只清卡片即可，
+        // isEnded 由 startEpisode 收尾清。
+        _uiState.update { it.copy(drawer = null, showNextEpisode = false) }
         // A15-P2-1：播完态（STATE_ENDED）下换源，当前进度即片尾位置；
         // 直接传给新源会被起点溢出守卫（isStartPositionOverflow）误判为播错、
         // 自动换到别的源。播完态从 0 播新源。
