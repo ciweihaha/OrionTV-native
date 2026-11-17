@@ -431,7 +431,7 @@ fun PlayScreen(
         previewThumbnail = null
     }
 
-    // 换集/换源后清掉旧落点（P2-3）：集次版本号每开播一次 +1，
+    // 换集/换源后清掉旧落点（P2-3）：集次版本号在换集/换源时 +1（同集同源重挂不 +1，A62-P2-1），
     // 新集时长与旧集相同时控制器不重建，没有这一环，待定落点与 2 秒提交定时器
     // 会带到新集、到点对新集 seek 旧落点。
     LaunchedEffect(uiState.episodeGeneration) {
