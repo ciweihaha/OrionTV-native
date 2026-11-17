@@ -6,6 +6,12 @@ import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 
 /**
+ * 第 70 轮：归一化空白 Regex 只编一次——normalizeTitle 原来每调一次都现编；
+ * 首页去重（dedupeAggItems / appendPageItems）是逐卡调它，翻页追加即数百次编译。
+ */
+private val WHITESPACE_REGEX = Regex("\\s+")
+
+/**
  * 首页一行里的卡片（agg / 豆瓣 / 最近播放统一成这一个形状）。
  * source="agg" | "douban" | 真实源 key；douban 项没有真实 id，id 取标题，
  * 进详情时只按标题全量搜索（不走单源搜索）。
@@ -111,7 +117,7 @@ fun mapPlayRecord(key: String, record: PlayRecord): HomeRowItem {
 
 /** 归一化片名（去空白小写）：agg 翻页去重用，vod_id 不可当全局唯一键。 */
 fun normalizeTitle(title: String): String =
-    title.lowercase().replace(Regex("\\s+"), "")
+    title.lowercase().replace(WHITESPACE_REGEX, "")
 
 /** agg 翻页追加时按归一化片名去重（同一部片可能在不同页以不同 vod_id 前缀重复出现）。 */
 fun dedupeAggItems(items: List<HomeRowItem>): List<HomeRowItem> {

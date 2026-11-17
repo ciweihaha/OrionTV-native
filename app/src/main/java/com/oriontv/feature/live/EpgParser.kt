@@ -164,13 +164,22 @@ object EpgParser {
         return EpgData(programmesByChannel = sorted, channelNames = channelNames)
     }
 
+    /**
+     * 第 70 轮：归一化 Regex 只编一次——原来 normalizeName 每调一次都现编；
+     * resolveProgrammes 是逐条目调它（每台名还与 channelName 反复比对），
+     * 换台查一次 EPG 即数千次编译。
+     */
+    private val NAME_SEPARATOR_REGEX = Regex("[\\s\\-_]+")
+
     /** 归一化名字：去空白/连字符/下划线 + 小写。 */
     fun normalizeName(name: String): String =
-        name.replace(Regex("[\\s\\-_]+"), "").lowercase()
+        name.replace(NAME_SEPARATOR_REGEX, "").lowercase()
 
     /**
      * 取某台的节目列表：tvg-id 精确（大小写不敏感；M3U 写 CCTV1、EPG 写 cctv1 时
      * 之前直接对不上）→ 归一化名字匹配。三处查找共用同一逻辑（P2-14）。
+     * 第 70 轮：channelName 只归一化一次——原来在 firstOrNull 里每比一条
+     * 就归一化一次 channelName。
      */
     private fun resolveProgrammes(data: EpgData, tvgId: String?, channelName: String): List<Programme>? {
         if (tvgId != null) {
@@ -179,23 +188,61 @@ object EpgParser {
                 .firstOrNull { it.key.equals(tvgId, ignoreCase = true) }?.value
                 ?.let { return it }
         }
+        val normalizedChannelName = normalizeName(channelName)
         return data.programmesByChannel.entries
             .firstOrNull { (channelId, _) ->
                 val name = data.channelNames[channelId]
-                name != null && normalizeName(name) == normalizeName(channelName)
+                name != null && normalizeName(name) == normalizedChannelName
             }?.value
     }
 
     /** 正在播的节目（startAt <= now < endAt），先按 tvg-id 精确，对不上按归一化名字匹配。 */
     fun nowPlaying(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
         val list = resolveProgrammes(data, tvgId, channelName) ?: return null
-        return list.firstOrNull { it.startAt <= nowMs && nowMs < it.endAt }
+        return findNowPlaying(list, nowMs)
     }
 
     /** 稍后播的节目（下一档）。 */
     fun nextProgramme(data: EpgData, tvgId: String?, channelName: String, nowMs: Long): Programme? {
         val list = resolveProgrammes(data, tvgId, channelName) ?: return null
-        return list.firstOrNull { it.startAt > nowMs }
+        return findNextProgramme(list, nowMs)
+    }
+
+    /**
+     * 第 70 轮：节目列表按 startAt 排过序（parse 末尾 sortedBy），正在播/下一档
+     * 用二分查找，不再每台每次线性扫全表（单台节目数上千时换台即卡一下）。
+     * nowPlaying 的候选是“最后一个 startAt <= now 的节目”；它已播完时仍可能有
+     * 更早开始、尚未播完的重叠节目，线性回扫兜底，语义与旧 firstOrNull 完全一致。
+     */
+    internal fun findNowPlaying(list: List<Programme>, nowMs: Long): Programme? {
+        if (list.isEmpty()) return null
+        val idx = list.binarySearchBy(nowMs) { it.startAt }
+        val lastStart = if (idx >= 0) {
+            var j = idx
+            while (j + 1 < list.size && list[j + 1].startAt == nowMs) j++
+            j
+        } else {
+            -idx - 2
+        }
+        if (lastStart >= 0) {
+            val candidate = list[lastStart]
+            if (candidate.startAt <= nowMs && nowMs < candidate.endAt) return candidate
+        }
+        return list.firstOrNull { it.startAt <= nowMs && nowMs < it.endAt }
+    }
+
+    /** 第 70 轮：下一档 = 第一个 startAt > now 的节目，二分定位（startAt == now 的多条都跳过）。 */
+    internal fun findNextProgramme(list: List<Programme>, nowMs: Long): Programme? {
+        if (list.isEmpty()) return null
+        val idx = list.binarySearchBy(nowMs) { it.startAt }
+        val firstAfter = if (idx >= 0) {
+            var j = idx
+            while (j < list.size && list[j].startAt <= nowMs) j++
+            j
+        } else {
+            -idx - 1
+        }
+        return list.getOrNull(firstAfter)
     }
 
     /** 某台全天节目单（EPG 弹窗用，按开始时间排序；先 tvg-id 精确，对不上按归一化名字匹配）。 */

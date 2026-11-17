@@ -254,4 +254,54 @@ class EpgParserTest {
         val total = data.programmesByChannel.values.sumOf { it.size }
         assertEquals(EpgParser.MAX_PROGRAMMES, total)
     }
+
+    // 第 70 轮：findNowPlaying / findNextProgramme 二分查找——与旧线性扫描逐项比对。
+
+    private fun programme(title: String, startMs: Long, endMs: Long) =
+        EpgParser.Programme(channelId = "cctv1", title = title, startAt = startMs, endAt = endMs)
+
+    @Test
+    fun `findNowPlaying matches linear scan at every minute`() {
+        val list = listOf(
+            programme("A", 0L, 3_600_000L),
+            programme("B", 3_600_000L, 7_200_000L),
+            programme("C", 7_200_000L, 10_800_000L),
+        )
+        var now = -1L
+        while (now <= 10_800_001L) {
+            val expected = list.firstOrNull { it.startAt <= now && now < it.endAt }
+            assertEquals("now=$now", expected, EpgParser.findNowPlaying(list, now))
+            now += 599_999L
+        }
+        assertNull(EpgParser.findNowPlaying(emptyList(), 1000L))
+        assertNull(EpgParser.findNowPlaying(list, -1L))
+        assertNull(EpgParser.findNowPlaying(list, 10_800_000L))
+    }
+
+    @Test
+    fun `findNowPlaying falls back to earlier overlapping programme`() {
+        // 重叠节目：后开始的短节目已播完，早开始的长节目还在播——二分候选失败时线性回扫。
+        val list = listOf(
+            programme("长节目", 0L, 10_800_000L),
+            programme("短节目", 3_600_000L, 4_200_000L),
+        )
+        assertEquals("短节目", EpgParser.findNowPlaying(list, 3_900_000L)?.title)
+        assertEquals("长节目", EpgParser.findNowPlaying(list, 5_000_000L)?.title)
+    }
+
+    @Test
+    fun `findNextProgramme skips programmes starting exactly now`() {
+        val list = listOf(
+            programme("A", 0L, 3_600_000L),
+            programme("B", 3_600_000L, 7_200_000L),
+            programme("B2", 3_600_000L, 7_200_000L),
+            programme("C", 7_200_000L, 10_800_000L),
+        )
+        // now 正好是 B/B2 的开始：下一档是 C，不是 B
+        assertEquals("C", EpgParser.findNextProgramme(list, 3_600_000L)?.title)
+        assertEquals("B", EpgParser.findNextProgramme(list, 0L)?.title)
+        assertEquals("B", EpgParser.findNextProgramme(list, 1_000L)?.title)
+        assertNull(EpgParser.findNextProgramme(list, 7_200_000L))
+        assertNull(EpgParser.findNextProgramme(emptyList(), 0L))
+    }
 }

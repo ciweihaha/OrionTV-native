@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
 import com.oriontv.core.util.AppLog
 import com.oriontv.data.api.MoonTvApi
@@ -103,6 +104,18 @@ class PlayViewModel @Inject constructor(
     /** 本页认领的播放代际（onCleared 只停自己那一代，不停直播页的播放）。 */
     private var playbackToken: Long = 0L
 
+    /**
+     * 第 70 轮：字幕选择态（只由 refreshSubtitleTracks / cycleSubtitle 写）。
+     * subtitleManualChoice：本集用户手动循环选过字幕（关也是手动选择），
+     * 自动首选不再覆盖；换集（episodeGeneration 变）时复位。
+     * subtitleGeneration：上次刷新字幕时看到的 episodeGeneration。
+     * lastAppliedSubtitle：上次实际下发给播放器的字幕轨（null = 已关）——
+     * onTracksChanged 每集会触发多次，同一轨不重复下发 override。
+     */
+    private var subtitleManualChoice: Boolean = false
+    private var subtitleGeneration: Int = -1
+    private var lastAppliedSubtitle: SubtitleTrackInfo? = null
+
     /** 是否在前台（PlayScreen 的 ON_RESUME/ON_PAUSE 观察者维护；轮询门控见 startPolling，P2-9）。 */
     @Volatile
     var isForeground: Boolean = true
@@ -145,6 +158,12 @@ class PlayViewModel @Inject constructor(
             if (playbackState == Player.STATE_ENDED) {
                 onPlaybackEnded()
             }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            // 第 70 轮：内嵌字幕轨就绪/变化时刷新字幕列表（新片自动首选中文轨，
+            // 手动选过的不覆盖；见 refreshSubtitleTracks）。
+            refreshSubtitleTracks()
         }
     }
 
@@ -1322,6 +1341,56 @@ class PlayViewModel @Inject constructor(
         _uiState.update { it.copy(drawer = drawer) }
     }
 
+    /**
+     * 字幕轨刷新（第 70 轮：onTracksChanged 回调入口）。
+     * 换集（episodeGeneration 变）时复位手动选择与已下发记录——新片重新自动首选，
+     * 上集“关字幕”的禁用态不带到新集；同集内 onTracksChanged 重复触发时，
+     * 决策不变即不重复下发 override、不重复写态。
+     */
+    private fun refreshSubtitleTracks() {
+        val state = _uiState.value
+        val newTracks = playerManager.availableSubtitleTracks()
+        if (state.episodeGeneration != subtitleGeneration) {
+            subtitleManualChoice = false
+            subtitleGeneration = state.episodeGeneration
+            lastAppliedSubtitle = null
+        }
+        val decision = resolveSubtitleRefresh(
+            oldTracks = state.subtitleTracks,
+            oldSelectedIndex = state.selectedSubtitleIndex,
+            newTracks = newTracks,
+            manualChoice = subtitleManualChoice,
+            lastApplied = lastAppliedSubtitle,
+        )
+        if (decision.shouldApply) {
+            playerManager.setSubtitleTrack(decision.trackToApply)
+            lastAppliedSubtitle = decision.trackToApply
+        }
+        if (newTracks != state.subtitleTracks || decision.selectedIndex != state.selectedSubtitleIndex) {
+            _uiState.update { it.copy(subtitleTracks = newTracks, selectedSubtitleIndex = decision.selectedIndex) }
+        }
+    }
+
+    /**
+     * 控制条字幕按钮：循环切换 关 → 第 1 条 → 第 2 条 → … → 关。
+     * 手动选择后本集不再自动首选；切换结果用 Toast 报一下（按钮在控制条里，
+     * 控制条几秒后自动隐藏，只看按钮文案确认不到）。
+     */
+    fun cycleSubtitle() {
+        val state = _uiState.value
+        val next = nextSubtitleSelection(state.subtitleTracks, state.selectedSubtitleIndex)
+        subtitleManualChoice = true
+        val track = next?.let { state.subtitleTracks[it] }
+        playerManager.setSubtitleTrack(track)
+        lastAppliedSubtitle = track
+        _uiState.update {
+            it.copy(
+                selectedSubtitleIndex = next,
+                toast = nextToastEvent(subtitleButtonLabel(state.subtitleTracks, next)),
+            )
+        }
+    }
+
     /** 落点预览缩略图：MediaMetadataRetriever 尽力抓帧，m3u8 抓不到时返回 null（用海报兜底）。 */
     suspend fun grabPreviewFrame(url: String, timeMs: Long): Bitmap? =
         // 同一时刻只保留一次抓帧（P2-7）：Mutex 串行化，快速连按不在 IO 池里堆 retriever；
@@ -1961,4 +2030,8 @@ data class PlayUiState(
      * 重挂（回页 reclaim / 同集重试）不 +1，A61-P2-2 保留的落点预览不被清掉。
      */
     val episodeGeneration: Int = 0,
+    /** 内嵌字幕轨（第 70 轮）：onTracksChanged 刷新；空 = 本集无字幕轨。 */
+    val subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
+    /** 当前选中字幕轨在 subtitleTracks 里的下标；null = 关字幕。 */
+    val selectedSubtitleIndex: Int? = null,
 )

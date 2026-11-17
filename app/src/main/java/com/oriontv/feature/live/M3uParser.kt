@@ -107,6 +107,11 @@ object M3uParser {
         // 大小写不敏感，与 EPG 的大小写不敏感匹配一致——CCTV1 与 cctv1 是同一台）。
         val merged = mutableListOf<Channel>()
         val byName = LinkedHashMap<String, Channel>()
+        // 第 70 轮：同名合并的下标索引——原来每次合并都 merged.indexOf(existing)
+        // 线性扫全表；同名线路多的源（上万台里几千条同名）即 O(n²)。下标随合并
+        // 就地更新，不随 copy 替换失效（旧 indexOf 在对象被 copy 替换后曾因
+        // 找不到旧对象返回 -1 越界崩溃，见下行旧注释）。
+        val indexByName = HashMap<String, Int>()
         for (channel in deduped) {
             if (channel.name == "Unknown") {
                 merged.add(channel)
@@ -116,10 +121,9 @@ object M3uParser {
             val existing = byName[mergeKey]
             if (existing == null) {
                 byName[mergeKey] = channel
+                indexByName[mergeKey] = merged.size
                 merged.add(channel)
             } else {
-                // 合并后必须同步更新 byName：否则第 3 条同名线路到来时
-                // merged.indexOf(existing) 找不到旧对象返回 -1，越界崩溃。
                 // 首条 tvgId/logo/group 为空时用后条补齐（只补空项，不覆盖首条）。
                 val mergedChannel = existing.copy(
                     urls = existing.urls + channel.url,
@@ -127,8 +131,7 @@ object M3uParser {
                     group = existing.group?.takeIf { it.isNotBlank() } ?: channel.group,
                     tvgId = existing.tvgId?.takeIf { it.isNotBlank() } ?: channel.tvgId,
                 )
-                val index = merged.indexOf(existing)
-                merged[index] = mergedChannel
+                merged[indexByName.getValue(mergeKey)] = mergedChannel
                 byName[mergeKey] = mergedChannel
             }
         }
@@ -157,11 +160,16 @@ object M3uParser {
         return "Unknown"
     }
 
+    /**
+     * 第 70 轮：属性 Regex 只编一次——原来 extractAttrs 每调一次（每条 #EXTINF，
+     * 上万台即上万次）都现编。
+     */
+    private val ATTR_REGEX = Regex("""([\w-]+)="([^"]*)"""")
+
     /** 取 key="value" 形式的属性；属性名不区分大小写（key 归一化成小写）。 */
     internal fun extractAttrs(extinf: String): Map<String, String> {
         val result = mutableMapOf<String, String>()
-        val regex = Regex("""([\w-]+)="([^"]*)"""")
-        for (match in regex.findAll(extinf)) {
+        for (match in ATTR_REGEX.findAll(extinf)) {
             result[match.groupValues[1].lowercase()] = match.groupValues[2]
         }
         return result

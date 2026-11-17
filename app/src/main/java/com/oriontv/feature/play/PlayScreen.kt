@@ -1127,6 +1127,10 @@ fun PlayScreen(
                 onOpenEpisodes = { viewModel.openDrawer(PlayDrawer.EPISODES); pokeControls() },
                 onOpenSpeed = { viewModel.openDrawer(PlayDrawer.SPEED); pokeControls() },
                 onOpenSources = { viewModel.openDrawer(PlayDrawer.SOURCES); pokeControls() },
+                // 第 70 轮：字幕循环切换（无内嵌字幕轨时按钮禁用）。
+                subtitleLabel = subtitleButtonLabel(uiState.subtitleTracks, uiState.selectedSubtitleIndex),
+                subtitleEnabled = uiState.subtitleTracks.isNotEmpty(),
+                onCycleSubtitle = { viewModel.cycleSubtitle(); pokeControls() },
                 // 触摸修复：控制条显着时，视频区空白处点按走视频点按回调
                 // （收控制条/关抽屉/提交预览落点，与遥控器同款行为）。
                 onVideoTap = { latestVideoTap.value() },

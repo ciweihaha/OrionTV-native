@@ -1,11 +1,14 @@
 package com.oriontv.feature.play
 
 import android.content.Context
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.exoplayer.ExoPlayer
+import com.oriontv.core.util.AppLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -118,6 +121,56 @@ class PlayerManager @Inject constructor(
     /** 倍速（按影片记忆，由 PlayViewModel 在开播时恢复）。 */
     fun setPlaybackSpeed(rate: Float) {
         player.playbackParameters = PlaybackParameters(rate)
+    }
+
+    /**
+     * 当前媒体的内嵌字幕轨（第 70 轮：字幕功能薄桥，只读 currentTracks、不改选择）。
+     * TEXT 组逐条展开；label 缺失时留空串，展示名由 [subtitleDisplayName] 按语言派生。
+     * 播放器未就绪/无媒体时返回空列表，不抛错（调用方按“无字幕”展示）。
+     */
+    fun availableSubtitleTracks(): List<SubtitleTrackInfo> = try {
+        player.currentTracks.groups.flatMapIndexed { groupIndex, group ->
+            if (group.type != C.TRACK_TYPE_TEXT) {
+                emptyList()
+            } else {
+                (0 until group.length).map { trackIndex ->
+                    val format = group.getTrackFormat(trackIndex)
+                    SubtitleTrackInfo(
+                        label = format.label.orEmpty(),
+                        language = format.language,
+                        groupIndex = groupIndex,
+                        trackIndex = trackIndex,
+                    )
+                }
+            }
+        }
+    } catch (e: Exception) {
+        AppLog.w("PlayerManager", "读字幕轨失败：${e.message}")
+        emptyList()
+    }
+
+    /**
+     * 选字幕轨（第 70 轮：字幕功能薄桥）。null = 关字幕（清 override + 禁用 TEXT 型）；
+     * 非 null = 下发该组/下标的 override（先解禁 TEXT 型，否则 override 不生效）。
+     * group 下标已失效（换片后旧轨）时直接返回，不抛错；其他异常记日志、不崩溃——
+     * 状态层仍以旧选择展示，PlayViewModel 下次 onTracksChanged 刷新时再试。
+     */
+    fun setSubtitleTrack(track: SubtitleTrackInfo?) {
+        try {
+            val params = player.trackSelectionParameters.buildUpon()
+            if (track == null) {
+                params.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            } else {
+                val group = player.currentTracks.groups.getOrNull(track.groupIndex)?.mediaTrackGroup
+                    ?: return
+                params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                params.setOverrideForType(TrackSelectionOverride(group, track.trackIndex))
+            }
+            player.trackSelectionParameters = params.build()
+        } catch (e: Exception) {
+            AppLog.w("PlayerManager", "选字幕轨失败：${e.message}")
+        }
     }
 
     /** 停播（不 release 单例，直播页还共用它）。 */

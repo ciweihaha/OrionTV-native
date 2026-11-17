@@ -96,6 +96,10 @@ fun PlayerControls(
     onOpenEpisodes: () -> Unit,
     onOpenSpeed: () -> Unit,
     onOpenSources: () -> Unit,
+    /** 第 70 轮：字幕按钮文案（“字幕：关/中文/English/无字幕”）与是否可用（无轨时禁用）。 */
+    subtitleLabel: String = "字幕：无字幕",
+    subtitleEnabled: Boolean = false,
+    onCycleSubtitle: () -> Unit = {},
     /** 触摸修复：视频区空白处点按（控制条显着时根 Box 盖住视频，点按改由
      * 这里接；按钮是子元素，点按先到按钮，不会误触发）。 */
     onVideoTap: () -> Unit = {},
@@ -287,6 +291,12 @@ fun PlayerControls(
                 SecondaryButton(
                     text = if (playbackRate == 1f) "倍速" else "倍速 ${playbackRate}×",
                     onClick = onOpenSpeed,
+                )
+                // 第 70 轮：字幕循环切换（关 → 第 1 条 → … → 关）；无内嵌字幕轨时禁用。
+                SecondaryButton(
+                    text = subtitleLabel,
+                    onClick = onCycleSubtitle,
+                    enabled = subtitleEnabled,
                 )
             }
         }

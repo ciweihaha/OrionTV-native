@@ -554,6 +554,13 @@ class MoonTvApi @Inject constructor(
     }
 
     companion object {
+        /**
+         * 第 70 轮：空白 Regex 只编一次——normalizeTitle / normalizeTitleForKey
+         * 原来每次调用都 `Regex("\\s+")` 现编；精确标题匹配（findAggTitleMatch、
+         * filterExactTitle）与首页去重是逐条调它，千条列表即千次编译。
+         */
+        private val WHITESPACE_REGEX = Regex("\\s+")
+
         /** 单条 Favorite 的字段名（整表单条兜底时用来认形状）。 */
         private val FAVORITE_KEYS =
             setOf("cover", "title", "source_name", "total_episodes", "search_title")
@@ -564,7 +571,7 @@ class MoonTvApi @Inject constructor(
 
         /** 标题归一化：去空白、小写（搜索子串过滤与精确标题匹配共用）。 */
         fun normalizeTitle(title: String): String =
-            title.lowercase().replace(Regex("\\s+"), "")
+            title.lowercase().replace(WHITESPACE_REGEX, "")
 
         /**
          * 服务端键（数据层 P1-1 约定，与 RN 一致）：分段转义内部 %/+ 后用 + 连接；
@@ -600,7 +607,7 @@ class MoonTvApi @Inject constructor(
 
         /** 键用归一化标题：去空白小写，再去掉 +/%（防拆分歧义）；标题为空兜底 unknown。 */
         fun normalizeTitleForKey(title: String): String =
-            title.lowercase().replace(Regex("\\s+"), "").replace("+", "").replace("%", "")
+            title.lowercase().replace(WHITESPACE_REGEX, "").replace("+", "").replace("%", "")
                 .ifBlank { "unknown" }
 
         /** 键段转义：%→%25、+→%2B（与 [unescapeKeySegment] 配对，按段做）。 */

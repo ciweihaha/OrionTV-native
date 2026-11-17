@@ -8,6 +8,12 @@ import java.util.concurrent.TimeUnit
 
 /** 时间工具。 */
 object TimeUtils {
+    /**
+     * 第 70 轮：parseXmltvTime 的两个 Regex 只编一次——原来每调一次
+     *（每条 EPG 节目两条时间，整份 EPG 即数万次调用）都现编两个 Regex。
+     */
+    private val COLON_TZ_REGEX = Regex("([+-]\\d{2}):(\\d{2})$")
+    private val ATTACHED_TZ_REGEX = Regex("^(\\d{14})([+-]\\d{4})$")
     /** 秒 → "mm:ss" / "hh:mm:ss"。 */
     fun formatDuration(seconds: Long): String {
         val s = seconds.coerceAtLeast(0)
@@ -34,8 +40,8 @@ object TimeUtils {
         if (trimmed.isEmpty()) return null
         // 冒号时区 "+08:00" → "+0800"；无空格贴时区 "…120000+0800" → 补空格。
         val normalized = trimmed
-            .replace(Regex("([+-]\\d{2}):(\\d{2})$"), "$1$2")
-            .replace(Regex("^(\\d{14})([+-]\\d{4})$"), "$1 $2")
+            .replace(COLON_TZ_REGEX, "$1$2")
+            .replace(ATTACHED_TZ_REGEX, "$1 $2")
         // 带时区分支：以字符串里的时区为准；无时区分支：按本地时间解析
         //（RN 同款；之前统一按 UTC，CST 下会偏 8 小时，P1-4）。
         for (pattern in listOf("yyyyMMddHHmmss Z", "yyyyMMddHHmmss ZZZ")) {
