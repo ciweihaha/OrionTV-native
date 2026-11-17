@@ -997,8 +997,18 @@ class PlayViewModel @Inject constructor(
      * 卡片与 isEnded 先同步清掉——倒计时 effect 立即停，不在开播读数
      * 窗口内抢跑（A66 同款）；再从 0 重开本集（startEpisode 同集分支不
      * 重置片头/shown，这里已先重置，重播是新的一次观看）。
+     * A69-P2-1：在途开播守卫——播完+被抢后换集/换源的开播读数窗口内按 OK
+     * （或抽屉选当前集）时，旧实现直接进这里、launchStartEpisode 先取消
+     * 在途的下一集/新源开播再从 0 重播本集，用户明确点的选择被静默丢弃。
+     * 有在途开播时直接返回：守卫放在字段重置之前，被跳过的重播不碰
+     * isEnded/showNextEpisode，在途开播收尾自会清掉它们；合法重播（A67
+     * 场景，无在途开播，job 已完成/null）不受影响；重复按 OK 时第一次
+     * 重播已在途，第二次跳过是正确行为。两处调用方（OK 的 togglePlayPause、
+     * 抽屉选当前集）与 onPageResumed 的 pendingStart 重播窗口共用这一个
+     * choke 点，一次覆盖。
      */
     private fun replayEndedEpisode() {
+        if (shouldSkipReplayWhileStarting(startEpisodeJob?.isActive == true)) return
         val state = _uiState.value
         val current = state.current ?: return
         nextEpisodeShownForIndex = -1
@@ -1201,7 +1211,9 @@ class PlayViewModel @Inject constructor(
         val next = state.episodeIndex + 1
         if (next >= current.episodes.size) return
         nextEpisodeDismissedForIndex = -1
-        _uiState.update { it.copy(showNextEpisode = false) }
+        // A69-P2-1：同步置 isLoading=true（与 init()/自动换源/retry() 同款）——
+        // 开播读数窗口内给出加载提示，且 A68 谓词在窗口内判为“保留预览”。
+        _uiState.update { it.copy(showNextEpisode = false, isLoading = true) }
         launchStartEpisode(current, next)
     }
 
@@ -1229,7 +1241,9 @@ class PlayViewModel @Inject constructor(
             return
         }
         nextEpisodeDismissedForIndex = -1
-        _uiState.update { it.copy(showNextEpisode = false, drawer = null) }
+        // A69-P2-1：同步置 isLoading=true（与 init()/自动换源/retry() 同款），
+        // 见 playNextEpisode。
+        _uiState.update { it.copy(showNextEpisode = false, drawer = null, isLoading = true) }
         launchStartEpisode(current, index)
     }
 
@@ -1263,7 +1277,9 @@ class PlayViewModel @Inject constructor(
         // 抽屉打开时倒计时冻结、关闭即恢复走秒，换源的开播读数慢于剩余
         // 时间会抢跑、把用户刚点的源换成下一集（旧源）；只清卡片即可，
         // isEnded 由 startEpisode 收尾清。
-        _uiState.update { it.copy(drawer = null, showNextEpisode = false) }
+        // A69-P2-1：同步置 isLoading=true（与 init()/自动换源/retry() 同款），
+        // 见 playNextEpisode。
+        _uiState.update { it.copy(drawer = null, showNextEpisode = false, isLoading = true) }
         // A15-P2-1：播完态（STATE_ENDED）下换源，当前进度即片尾位置；
         // 直接传给新源会被起点溢出守卫（isStartPositionOverflow）误判为播错、
         // 自动换到别的源。播完态从 0 播新源。
@@ -1843,6 +1859,18 @@ class PlayViewModel @Inject constructor(
          */
         internal fun shouldReplayEndedEpisode(isEnded: Boolean, hasCurrent: Boolean): Boolean =
             isEnded && hasCurrent
+
+        /**
+         * A69-P2-1：播完态重播是否应因在途开播而跳过（可单测）——播完+被抢后
+         * 换集/换源的开播读数窗口内，OK 与抽屉选当前集都会走到 replayEndedEpisode；
+         * 此时 launchStartEpisode 会先取消在途的下一集/新源开播，用户明确点的
+         * 选择被静默丢弃。job 仍 active 说明有开播在途（launchStartEpisode 起
+         * 协程时同步置 job，读数窗口内恒为 active；完成/cancel 后为 false），
+         * 直接跳过重播；在途开播收尾自会清 isEnded/showNextEpisode。无在途开播
+         * 时不跳过，A67 的合法重播照常。
+         */
+        internal fun shouldSkipReplayWhileStarting(startJobActive: Boolean): Boolean =
+            startJobActive
 
         /**
          * A62-P2-1：开播收尾是否应推进集次版本号（可单测）——只在集或源真的变了时 +1，

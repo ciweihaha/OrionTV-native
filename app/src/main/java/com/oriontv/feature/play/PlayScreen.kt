@@ -284,10 +284,9 @@ internal fun shouldTogglePlayPauseOnOk(
  * 不构成）、不在加载中（init/重试/自动换源同步置 isLoading=true，开播读数
  * 窗口内保留、可由挂片后的下次 OK 重试）、无错误页（错误页上的预览由自动
  * 提交 effect 的错误分支取消，不在这里重播）。
- * 残留窗口（已核实）：playNextEpisode/selectEpisode/selectSource 的开播读数
- * 窗口内 isLoading 仍为 false、且无 PlayScreen 可见信号；须被抢走 + 服务端
- * 慢网读数窗口 + 用户恰在窗口内按 OK，且后果只是本次 OK 重播本集、而非等
- * 在途的下一集/新源开播，可恢复——见轮次记录。
+ * A69-P2-1：三处开播入口（playNextEpisode/selectEpisode/selectSource）现已
+ * 同步置 isLoading=true，读数窗口内不再判为 stale；窗口内裸 OK 直达的重播路
+ * 另由 replayEndedEpisode 的在途开播守卫拦住，在途的下一集/新源不再被静默取消。
  */
 internal fun shouldDiscardStaleEndedPreview(
     isEnded: Boolean,

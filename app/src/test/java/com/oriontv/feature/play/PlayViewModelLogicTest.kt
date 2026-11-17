@@ -615,6 +615,16 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `ended episode replay is skipped while another start is in flight`() {
+        // A69-P2-1：播完+被抢后换集/换源的开播读数窗口内按 OK（或抽屉选当前集），
+        // 在途的下一集/新源开播必须不被重播取消——replayEndedEpisode 入口守卫：
+        // job 仍 active 时跳过重播（字段重置之前，不碰 isEnded/showNextEpisode）；
+        // 无在途开播时（job 已完成/null）合法重播照常。
+        assertTrue(PlayViewModel.shouldSkipReplayWhileStarting(startJobActive = true))
+        assertFalse(PlayViewModel.shouldSkipReplayWhileStarting(startJobActive = false))
+    }
+
+    @Test
     fun `episode generation bumps only when episode or source really changes`() {
         // A62-P2-1：同集同源重挂（回页 reclaim / 同集重试）不 +1——否则挂片完成
         // 瞬间清掉 A61-P2-2 保留的落点预览；换集/换源/自动换源仍 +1，P2-3
