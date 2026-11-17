@@ -220,6 +220,20 @@ class PlayScreenLogicTest {
     }
 
     @Test
+    fun `stale ended preview is discarded only in settled ended state`() {
+        // A68-P2-1：settled 播完态（已播完、卡已关、不在加载、无错误）才丢弃——
+        // reclaim 跳过播完态、永不再挂片，保留即 OK 永久失灵；其余四种情形
+        // 各缺一项，均保留（A61-P2-2 的 reclaim/加载窗口、倒计时仍在走的卡、
+        // 错误页、未播完态）。
+        assertTrue(shouldDiscardStaleEndedPreview(true, false, false, false))
+        assertFalse(shouldDiscardStaleEndedPreview(false, false, false, false))
+        assertFalse(shouldDiscardStaleEndedPreview(true, true, false, false))
+        assertFalse(shouldDiscardStaleEndedPreview(true, false, true, false))
+        assertFalse(shouldDiscardStaleEndedPreview(true, false, false, true))
+        assertFalse(shouldDiscardStaleEndedPreview(true, true, true, true))
+    }
+
+    @Test
     fun `group scroll target is selected group only with multiple groups`() {
         // 第 7 轮 P2-7：只有多分组时才滚，目标是选中分组；单分组/空表不滚（-1）；
         // 选中分组越界时钳制到末组。

@@ -271,6 +271,32 @@ internal fun shouldTogglePlayPauseOnOk(
 ): Boolean = !drawerOpen && !hasPendingPreview && controlsVisible && !hasError
 
 /**
+ * 已播完 settled 态下的落点预览是否应视为 stale 直接丢弃（可单测，A68-P2-1）：
+ * 播完的集被别页抢走播放器后回页，A67 跳过 reclaim，页面停在无媒体已播完态；
+ * 此时按左/右仍能造出落点预览（预览拦截只看控制条/抽屉/焦点，不看播放器
+ * 是否挂着本集媒体），但 commitPreview / 2 秒自动提交走 seekTo 的 A60 URL
+ * 门控恒失败、预览原样保留，OK 回落链又被 hasPendingPreview 堵死，主操作键
+ * 永久静默失灵。A61-P2-2 的保留只应适用于“挂片在途、稍后可提交”的
+ * reclaim/加载窗口；settled 播完态永远不会再挂片（reclaim 有 isEnded 门控、
+ * pendingStart 在 A67 后已无“已播完集待补开播”的写者），保留即永久卡死，
+ * 故提交失败时直接清掉、再落到 togglePlayPause 的 A67 重播路。只在四项全
+ * 成立时丢弃：已播完、预告卡已不在（倒计时仍在走时到 0 即自动切集并清预览，
+ * 不构成）、不在加载中（init/重试/自动换源同步置 isLoading=true，开播读数
+ * 窗口内保留、可由挂片后的下次 OK 重试）、无错误页（错误页上的预览由自动
+ * 提交 effect 的错误分支取消，不在这里重播）。
+ * 残留窗口（已核实）：playNextEpisode/selectEpisode/selectSource 的开播读数
+ * 窗口内 isLoading 仍为 false、且无 PlayScreen 可见信号；须被抢走 + 服务端
+ * 慢网读数窗口 + 用户恰在窗口内按 OK，且后果只是本次 OK 重播本集、而非等
+ * 在途的下一集/新源开播，可恢复——见轮次记录。
+ */
+internal fun shouldDiscardStaleEndedPreview(
+    isEnded: Boolean,
+    showNextEpisode: Boolean,
+    isLoading: Boolean,
+    hasError: Boolean,
+): Boolean = isEnded && !showNextEpisode && !isLoading && !hasError
+
+/**
  * 选集分组行应滚到的下标（可单测，第 7 轮 P2-7）：只有多分组时才滚，
  * 目标是选中分组；单分组/空表不滚（-1）。旧实现滚动 effect 的 key 是 Unit，
  * 抽屉打开期间换源致总集数变化、selectedGroup 重算时滚动不重跑，选中分组
@@ -584,12 +610,27 @@ fun PlayScreen(
                 // 重跑）重试。保留后本 effect 不会立即重提交：key（previewTargetMs /
                 // drawer / error）未变，LaunchedEffect 不重跑，本协程已过 delay、
                 // 到此即结束。失败时不 pokeControls（控制条本就因待定落点不会自动隐藏）。
+                // A68-P2-1：settled 播完态例外——reclaim 跳过播完态、永不再挂片，
+                // 保留即气泡永久残留，且重播后用户再按 OK 还会对重播中的本集 seek
+                // 到旧落点（用户没点过的旧意图）；该态下失败即清掉（只清预览，
+                // 不触发重播；重播由用户的下一次 OK 走 togglePlayPause）。
                 if (viewModel.seekTo(previewTargetMs)) {
                     previewController.cancel()
                     previewTargetMs = -1L
                     previewDirection = 0
                     previewThumbnail = null
                     pokeControls()
+                } else if (shouldDiscardStaleEndedPreview(
+                        isEnded = uiState.isEnded,
+                        showNextEpisode = uiState.showNextEpisode,
+                        isLoading = uiState.isLoading,
+                        hasError = uiState.error != null,
+                    )
+                ) {
+                    previewController.cancel()
+                    previewTargetMs = -1L
+                    previewDirection = 0
+                    previewThumbnail = null
                 }
             }
         } else if (uiState.error != null) {
@@ -617,6 +658,9 @@ fun PlayScreen(
         // 因 previewTargetMs 仍 >=0 而为假，最终落到消费型空操作分支，不会误
         // 暂停/误恢复（togglePlayPause 本身也有同款门控）；返回 false 而非
         // true，是为让调用方知道“未消费”，而不是把一次失败的提交谎报成已消费。
+        // A68-P2-1：settled 播完态例外——调用方（OK 链 / 2 秒自动提交 effect）
+        // 在返回 false 后按 shouldDiscardStaleEndedPreview 判定，settled 态
+        // 直接清掉预览（该态永不再挂片，保留即永久卡死）；非 settled 态仍保留。
         val target = previewController.pendingTargetMs ?: return false
         if (!viewModel.seekTo(target)) return false
         previewController.commit()
@@ -897,27 +941,52 @@ fun PlayScreen(
                     Key.DirectionCenter, Key.Enter -> {
                         if (uiState.drawer != null) {
                             false // 抽屉内 OK 交给聚焦的按钮
-                        } else if (commitPreview()) {
-                            true
-                        } else if (!controlsVisible) {
-                            // 控制条隐藏时 OK 只唤出，不暂停；错误页上不 poke（P2-2）。
-                            if (uiState.error == null) pokeControls()
-                            true
-                        } else if (shouldTogglePlayPauseOnOk(
-                                drawerOpen = uiState.drawer != null,
-                                hasPendingPreview = previewTargetMs >= 0,
-                                controlsVisible = controlsVisible,
-                                hasError = uiState.error != null,
-                            )
-                        ) {
-                            pokeControls()
-                            viewModel.togglePlayPause()
-                            true
                         } else {
-                            // 第 7 轮 P2-6：错误页上 OK 只消费、不播放/暂停——
-                            // 焦点因“重试”落焦失败回退到根部时，旧分支会在
-                            // 错误页后 pokeControls + togglePlayPause。
-                            true
+                            // A68-P2-1：落点提交只试一次——commitPreview 成功即消费；
+                            // 失败时若是 settled 播完态的 stale 预览（见
+                            // shouldDiscardStaleEndedPreview），直接清掉，再走下面的
+                            // 回落链：此时 hasPendingPreview 已为 false，控制条可见即
+                            // 落到 togglePlayPause 的 A67 重播路（replayEndedEpisode），
+                            // 不再落到消费型空操作分支。非 settled 态（reclaim/加载
+                            // 窗口）保留预览（A61-P2-2），回落链原样。
+                            val previewCommitted = if (previewTargetMs >= 0) commitPreview() else false
+                            if (!previewCommitted && previewTargetMs >= 0 &&
+                                shouldDiscardStaleEndedPreview(
+                                    isEnded = uiState.isEnded,
+                                    showNextEpisode = uiState.showNextEpisode,
+                                    isLoading = uiState.isLoading,
+                                    hasError = uiState.error != null,
+                                )
+                            ) {
+                                previewController.cancel()
+                                previewTargetMs = -1L
+                                previewDirection = 0
+                                previewThumbnail = null
+                            }
+                            when {
+                                previewCommitted -> true
+                                !controlsVisible -> {
+                                    // 控制条隐藏时 OK 只唤出，不暂停；错误页上不 poke（P2-2）。
+                                    if (uiState.error == null) pokeControls()
+                                    true
+                                }
+                                shouldTogglePlayPauseOnOk(
+                                    drawerOpen = uiState.drawer != null,
+                                    hasPendingPreview = previewTargetMs >= 0,
+                                    controlsVisible = controlsVisible,
+                                    hasError = uiState.error != null,
+                                ) -> {
+                                    pokeControls()
+                                    viewModel.togglePlayPause()
+                                    true
+                                }
+                                else -> {
+                                    // 第 7 轮 P2-6：错误页上 OK 只消费、不播放/暂停——
+                                    // 焦点因“重试”落焦失败回退到根部时，旧分支会在
+                                    // 错误页后 pokeControls + togglePlayPause。
+                                    true
+                                }
+                            }
                         }
                     }
                     else -> {
