@@ -1487,6 +1487,28 @@ private fun EpgDialog(
         }
     }
 
+    // A56-P2-1：30 秒时钟 tick 跨节目边界时 currentIndex 单独变化（epg 不变），
+    // 主 effect（key 含 channel.url/epg/focusRestoreTick）不重跑，列表不滚动、
+    // 焦点仍停在刚播完的旧行上。记上次 currentIndex，仅当焦点当前仍在旧
+    // 正在播行上（focusedIndex == 旧 idx）时才跟进：先 scrollToItem(新 idx)
+    // 再重落焦点、同步 focusedIndex；用户正在浏览其他行时不抢焦点。
+    // 不把 currentIndex 加进主 effect key——每 30 秒 tick 都可能重跑主 effect
+    // 抢焦点，比现状更糟。滚动不受全局弹窗门控影响（C14-P2-1 同款：只动
+    // 列表位置，不抢焦点）；落焦走同一门控，弹窗开着时不偷焦。
+    var prevCurrentIndex by remember { mutableIntStateOf(currentIndex) }
+    LaunchedEffect(currentIndex) {
+        val oldIndex = prevCurrentIndex
+        prevCurrentIndex = currentIndex
+        if (oldIndex >= 0 && currentIndex >= 0 && oldIndex != currentIndex && focusedIndex == oldIndex) {
+            listState.scrollToItem(currentIndex)
+            if (shouldFocusEpgDialog(globalModalOpen)) {
+                if (currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
+                    focusedIndex = currentIndex
+                }
+            }
+        }
+    }
+
     // C11-P2-3：入场淡入 150ms（设计稿 §4）——与其他弹窗同款 ModalFadeIn，
     // 只做入场、不改布局与焦点行为。
     ModalFadeIn {

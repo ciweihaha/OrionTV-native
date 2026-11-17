@@ -184,11 +184,11 @@ class LiveViewModel @Inject constructor(
             val channels = m3uRepository.loadChannels(m3uUrl)
             // 第 47 轮 A47-P2-1/C47-P2-1：loadFailed 是 M3uRepository 单例上的
             // 共享标志（Repositories.kt:46-47），loadChannels() 返回时已同步
-            // 置位（:72），但 :246 读它之前隔着 playCurrent()/loadEpg()
+            // 置位（:72），但 :245 读它之前隔着 playCurrent()/loadEpg()
             // （EPG 拉网可挂起数秒）；面板在频道表写入 state 后即可打开，
             // refreshChannels() 只守 refreshJob、不守 initJob，EPG
             // 窗口内并发刷新会改写该标志——刷新失败误弹 init 的 Toast（文案
-            // 与事实不符且与 :292 的 Toast 重复），刷新成功则吞掉 init 自身
+            // 与事实不符且与 :291 的 Toast 重复），刷新成功则吞掉 init 自身
             // 的失败信号。立即快照本次 init 加载的结果，后面两处都判快照。
             val m3uLoadFailed = m3uRepository.loadFailed.value
             if (channels.isEmpty()) {
