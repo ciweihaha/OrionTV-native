@@ -34,6 +34,7 @@ import coil3.compose.AsyncImage
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
+import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.components.posterImageRequest
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
@@ -217,7 +218,14 @@ fun PlayerControls(
                     .padding(end = 48.dp, bottom = 300.dp)
                     .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius))
                     .background(OrionColors.Overlay)
-                    .padding(20.dp),
+                    .padding(20.dp)
+                    // A60-P2-2：卡片空白区（标题 / 倒计时文字）的点按在此消费掉，
+                    // 不漏到根点按层——否则 controlsVisible=false + 焦点回根，
+                    // 但 showNextEpisode 强制控制条仍可见，焦点却已离开“取消”，
+                    // OK 只会重新唤出控制条而非取消预告；“取消”按钮自己先消费，
+                    // 不受影响（与抽屉内层 A28-P2-2 同款；不用空 clickable{}，
+                    // 后者会建焦点节点、改动遥控焦点路径）。
+                    .consumeTaps(),
             ) {
                 Text(text = "即将播放下一集", style = OrionTextStyles.SectionTitle)
                 Spacer(modifier = Modifier.height(8.dp))

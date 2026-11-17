@@ -896,6 +896,14 @@ class PlayViewModel @Inject constructor(
     // ---- 控制操作（供 PlayScreen 调用） ----
 
     fun togglePlayPause() {
+        // A60-P2-1：只在播放器当前挂着本集媒体时才响应——新开播搜源加载中 /
+        // 回页 reclaim 挂起窗口内，播放器仍挂别页媒体（或空媒体），此时 OK
+        // 直达这里会误暂停 / 误恢复别页的播放；门控不成立整个跳过（不读写
+        // playerManager、不改 uiState、不存断点），与 handlePlaybackError /
+        // saveRecordNow 同款。重播分支不受影响：正常重播时本集媒体必已挂载，
+        // 门控恒真。
+        val state = _uiState.value
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) return
         if (playerManager.isPlaying) {
             playerManager.pause()
             userPaused = true
@@ -950,6 +958,13 @@ class PlayViewModel @Inject constructor(
      * 胶囊跳过、重播回 0、深链断点）必须传 false，否则断点续播会被误学成片头。
      */
     fun seekTo(positionMs: Long, userInitiated: Boolean = true) {
+        // A60-P2-1：与 togglePlayPause 同款门控——落点预览提交 / 自动提交 /
+        // ±10 秒 / 进度条拖动都走统一入口，reclaim 窗口内播放器仍挂别页媒体时
+        // seek 会落到别页上；门控不成立整个跳过（不 seek、不学片头、不改
+        // uiState）。内部调用（重播回 0、自动跳片头、胶囊跳过）同样只在本集
+        // 媒体已挂载时才有意义，门控恒真时行为不变。
+        val state = _uiState.value
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) return
         val fromMs = playerManager.currentPositionMs
         val duration = playerManager.durationMs
         val clamped = clampSeekTarget(positionMs, duration)
