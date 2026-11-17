@@ -360,13 +360,18 @@ class PlayViewModel @Inject constructor(
         // 重开当前集；不用 !isPlaying 作门控——用户暂停后去详情页再回时自己
         // 仍是所有者，不会误把暂停的片自动续播；错误页仍走“重试”；起点走
         // resolveSwitchStartMs（A15-P2-1/A16-P2-1 同款），播完态从 0 播。
+        // A67-P2-1：播完态不重开——本集已播完、预告卡与 3 秒倒计时正在走，
+        // reclaim 从 0 重播会清掉卡片、取消自动切下一集；跳过 reclaim，
+        // 卡片与倒计时按承诺走完、到 0 经 playNextEpisode() 正常切集。
+        // 用户 3 秒内按“取消”关卡后，页面停在无媒体的已播完态，重播走
+        // replayEndedEpisode()（OK / 选集抽屉选当前集），见 togglePlayPause。
         // A18-P2-1：isEnded 还要并上 state.isEnded——本集播完后 state.isEnded
         // 冻结为真、positionMs 冻结在片长，但播放器可能已被新页停掉/播别片，
         // playerManager.isEnded 恒 false；只读它会以片长为起点重开，ExoPlayer
         // 钳到片尾立即 STATE_ENDED，误判起点溢出换源/落错误页。
         val state = _uiState.value
         val current = state.current
-        if (current != null && shouldReclaimPlayback(state.error == null, playerManager.isCurrentOwner(playbackToken))) {
+        if (current != null && shouldReclaimPlayback(state.error == null, playerManager.isCurrentOwner(playbackToken), state.isEnded)) {
             // A19-P2-2：快照用户暂停态——已暂停的集被别页抢走播放器后回页，
             // 只重挂媒体项、保持暂停（startEpisode 内 autoPlay=false），
             // 不自动续播；跳过 reclaim 会把页面晾在黑屏上（A18-P2-1 同款教训）。
@@ -923,7 +928,18 @@ class PlayViewModel @Inject constructor(
         // saveRecordNow 同款。重播分支不受影响：正常重播时本集媒体必已挂载，
         // 门控恒真。
         val state = _uiState.value
-        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) return
+        if (!isCurrentEpisodeMedia(playerManager.currentUrl, state.current?.episodes?.getOrNull(state.episodeIndex))) {
+            // A67-P2-1：播完态下播放器无本集媒体时例外——reclaim 在播完态跳过，
+            // 用户按“取消”关掉预告卡后页面停在无媒体的已播完态；此时 OK 仍是
+            // “重播本集”（与正常播完态的 OK 语义一致），经 replayEndedEpisode()
+            // 从 0 重开。只在 state.isEnded 时放行：非播完态仍直接返回，门控
+            // 保护的“别页媒体被误操作”不受影响；重播是新的一次开播（显式认领
+            // 播放器），不是暂停/恢复别页播放。
+            if (shouldReplayEndedEpisode(state.isEnded, state.current != null)) {
+                replayEndedEpisode()
+            }
+            return
+        }
         if (playerManager.isPlaying) {
             playerManager.pause()
             userPaused = true
@@ -970,6 +986,28 @@ class PlayViewModel @Inject constructor(
         }
         _uiState.update { it.copy(isPlaying = playerManager.isPlaying) }
         saveRecordNow()
+    }
+
+    /**
+     * A67-P2-1：播完态下无媒体时的本集重播——reclaim 在播完态跳过后，播放器
+     * 里仍挂着别页媒体或空媒体，OK 重播走不到 togglePlayPause 的
+     * seekTo(0)+play()（A60 URL 门控拦住），选集抽屉选当前集也提前返回；
+     * 两处都到这里。重置与正常 OK 重播分支同款（A13-P2-3 片头状态、
+     * A40-P2-1 dismissed、A41-P2-1 换源预算与失败源、断点节流基线），
+     * 卡片与 isEnded 先同步清掉——倒计时 effect 立即停，不在开播读数
+     * 窗口内抢跑（A66 同款）；再从 0 重开本集（startEpisode 同集分支不
+     * 重置片头/shown，这里已先重置，重播是新的一次观看）。
+     */
+    private fun replayEndedEpisode() {
+        val state = _uiState.value
+        val current = state.current ?: return
+        nextEpisodeShownForIndex = -1
+        nextEpisodeDismissedForIndex = -1
+        introSkippedThisEpisode = false
+        skipIntroCapsule.resetForEpisode()
+        lastSavedPositionMs = -1L
+        _uiState.update { it.copy(showNextEpisode = false, isEnded = false, autoSwitchAttempts = 0, failedSources = emptySet()) }
+        launchStartEpisode(current, state.episodeIndex, 0L)
     }
 
     /**
@@ -1176,8 +1214,18 @@ class PlayViewModel @Inject constructor(
     fun selectEpisode(index: Int) {
         val state = _uiState.value
         val current = state.current ?: return
-        if (index !in current.episodes.indices || index == state.episodeIndex) {
+        if (index !in current.episodes.indices) {
             _uiState.update { it.copy(drawer = null) }
+            return
+        }
+        if (index == state.episodeIndex) {
+            // A67-P2-1：播完态下选当前集即重播本集——reclaim 在播完态跳过后，
+            // 播放器无本集媒体，抽屉选当前集是仅剩的重播路之一（另一条是 OK）；
+            // 只在已播完时放行，非播完态仍只关抽屉（本集正在播，选它无动作）。
+            _uiState.update { it.copy(drawer = null) }
+            if (shouldReplayEndedEpisode(state.isEnded, state.current != null)) {
+                replayEndedEpisode()
+            }
             return
         }
         nextEpisodeDismissedForIndex = -1
@@ -1779,9 +1827,22 @@ class PlayViewModel @Inject constructor(
          * 无错误态、且自己已不是播放器所有者。有无当前集由调用方凭 current
          * != null 另行判断。不用 !isPlaying 作门控：用户暂停后去详情页再回时
          * 自己仍是所有者，不会误把暂停的片自动续播；错误页仍走“重试”。
+         * A67-P2-1：播完态不重开——本集已播完、预告卡与 3 秒倒计时正在走，
+         * 从 0 重播会清掉卡片、取消自动切下一集；跳过 reclaim，卡片与倒计时
+         * 按承诺走完（到 0 经 playNextEpisode() 切集）；用户按“取消”关卡后
+         * 的无媒体已播完态，重播走 replayEndedEpisode()，不在这里补。
          */
-        internal fun shouldReclaimPlayback(noError: Boolean, isCurrentOwner: Boolean): Boolean =
-            noError && !isCurrentOwner
+        internal fun shouldReclaimPlayback(noError: Boolean, isCurrentOwner: Boolean, isEnded: Boolean): Boolean =
+            noError && !isCurrentOwner && !isEnded
+
+        /**
+         * A67-P2-1：播完态下无媒体时是否可重播本集（可单测）——reclaim 在播完态
+         * 跳过后，播放器里仍挂着别页媒体或空媒体，OK 重播与选集抽屉选当前集
+         * 是仅剩的两条重播路；只在已播完且有当前集时放行。非播完态不放行：
+         * A60 URL 门控保护的“别页媒体被误操作”原样保留。
+         */
+        internal fun shouldReplayEndedEpisode(isEnded: Boolean, hasCurrent: Boolean): Boolean =
+            isEnded && hasCurrent
 
         /**
          * A62-P2-1：开播收尾是否应推进集次版本号（可单测）——只在集或源真的变了时 +1，

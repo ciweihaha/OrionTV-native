@@ -582,7 +582,7 @@ class PlayViewModelLogicTest {
         // onPageResumed 把 userPaused 快照进 resumePaused，startEpisode 内
         // playUrl(autoPlay=false) 且 userPaused 保持真；暂停态下 20 秒就绪
         // 超时也不触发（P2-6 门控），轮询只读 isPlaying、不自动 play()。
-        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false))
+        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false, isEnded = false))
         assertFalse(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = true))
         // 未暂停时 reclaim 照常自动播出。
         assertTrue(PlayViewModel.shouldFireReadyTimeout(pageActive = true, isLoading = true, hasCurrent = true, userPaused = false))
@@ -593,10 +593,25 @@ class PlayViewModelLogicTest {
         // A17-P2-1：只补“被抢走”一种情形——无错误态、且自己已不是播放器
         // 所有者时重开当前集；仍是所有者（用户暂停后去详情页再回）不续播，
         // 错误页不重开、仍走“重试”。
-        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false))
-        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = true))
-        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = false))
-        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = true))
+        assertTrue(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false, isEnded = false))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = true, isEnded = false))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = false, isEnded = false))
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = false, isCurrentOwner = true, isEnded = false))
+        // A67-P2-1：播完态不重开——预告卡与 3 秒倒计时正在走，从 0 重播会清掉
+        // 卡片、取消自动切下一集；跳过 reclaim，卡片与倒计时按承诺走完。
+        assertFalse(PlayViewModel.shouldReclaimPlayback(noError = true, isCurrentOwner = false, isEnded = true))
+    }
+
+    @Test
+    fun `ended episode without media can still be replayed`() {
+        // A67-P2-1：reclaim 在播完态跳过、用户按“取消”关卡后，页面停在无媒体
+        // 的已播完态；OK 重播与选集抽屉选当前集是仅剩的重播路，只在已播完且
+        // 有当前集时放行。非播完态不放行：A60 URL 门控保护的“别页媒体被误操作”
+        // 原样保留；无当前集时无集可播。
+        assertTrue(PlayViewModel.shouldReplayEndedEpisode(isEnded = true, hasCurrent = true))
+        assertFalse(PlayViewModel.shouldReplayEndedEpisode(isEnded = false, hasCurrent = true))
+        assertFalse(PlayViewModel.shouldReplayEndedEpisode(isEnded = true, hasCurrent = false))
+        assertFalse(PlayViewModel.shouldReplayEndedEpisode(isEnded = false, hasCurrent = false))
     }
 
     @Test
