@@ -214,7 +214,6 @@ class LiveViewModel @Inject constructor(
                     channels = channels,
                     currentIndex = controller.currentIndex,
                     lineIndex = controller.lineIndex,
-                    focusedChannelIndex = controller.currentIndex,
                     // 第 10 轮 L10-P2-2：成功加载即清掉旧的空源/失败态——
                     // 之前某次空源后源里又有了频道，不清会一直挂空态文案。
                     emptySource = false,
@@ -311,7 +310,6 @@ class LiveViewModel @Inject constructor(
                     channels = fresh,
                     currentIndex = controller.currentIndex,
                     lineIndex = controller.lineIndex,
-                    focusedChannelIndex = controller.currentIndex,
                     epgDialogChannel = resolvedDialogChannel,
                     // 第 10 轮 L10-P2-2：合法空源刷新成功即置空源态（EmptyState
                     // 另分支提示），不滞留旧的失败文案；非空即清掉旧空源态。
@@ -646,7 +644,6 @@ class LiveViewModel @Inject constructor(
             it.copy(
                 currentIndex = controller.currentIndex,
                 lineIndex = controller.lineIndex,
-                focusedChannelIndex = controller.currentIndex,
                 failCount = controller.failCount,
                 // 手动换台即清失败遮罩（P1-5，与 signalError 同款处理；playCurrent 里也有，
                 // 这里再清一次是为覆盖 playCurrent 因无 URL 提前返回的路径）。
@@ -816,7 +813,6 @@ class LiveViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 panelOpen = true,
-                focusedChannelIndex = controller.currentIndex,
             )
         }
         hideInfoBar()
@@ -850,11 +846,6 @@ class LiveViewModel @Inject constructor(
         ) {
             playCurrent()
         }
-    }
-
-    fun setFocusedChannel(index: Int) {
-        _uiState.update { it.copy(focusedChannelIndex = index) }
-        pokePanelTimer()
     }
 
     /** 面板 15 秒无操作自动关闭；任何面板内操作都要续命。 */
@@ -1154,8 +1145,6 @@ data class LiveUiState(
     /** 当前时间戳（30 秒一跳，驱动时钟与节目进度刷新）。 */
     val nowMs: Long = System.currentTimeMillis(),
     val panelOpen: Boolean = false,
-    /** 面板里最后聚焦的频道下标（菜单键打开它的节目单）。 */
-    val focusedChannelIndex: Int = 0,
     /** EPG 全天节目单弹窗的频道（null = 关闭）。 */
     val epgDialogChannel: M3uParser.Channel? = null,
     /** 换台信息条显示的频道下标（null = 隐藏）。 */

@@ -63,6 +63,10 @@ class SettingsViewModel @Inject constructor(
     /** 远程输入服务状态（设置页远程输入 section 直接读）。 */
     val remoteInputState: StateFlow<RemoteInputState> = remoteInputManager.state
 
+    /** 配对成功事件（设置页二维码弹窗订阅：配对成功后自动关闭，搜索页同款）。 */
+    val remoteInputHandshakes: kotlinx.coroutines.flow.SharedFlow<Unit> =
+        remoteInputManager.handshakes
+
     /** 登录态（设置页“登录/退出登录”入口用，B11-P1-1）。 */
     val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
 

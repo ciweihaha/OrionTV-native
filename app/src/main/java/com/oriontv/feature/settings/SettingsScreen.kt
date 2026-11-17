@@ -151,6 +151,10 @@ fun SettingsScreen(
             updateViewModel.consumeToast()
         }
     }
+    // B54-P2-1：配对成功后自动关二维码弹窗（搜索页同款：订阅 handshakes）。
+    LaunchedEffect(Unit) {
+        viewModel.remoteInputHandshakes.collect { showQrModal = false }
+    }
     // P1-5：二维码弹窗关闭后焦点还给“放大二维码”触发按钮。
     LaunchedEffect(showQrModal) {
         if (showQrModal) {

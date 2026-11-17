@@ -513,8 +513,7 @@ fun LiveScreen(
                             else -> {
                                 if (isMenuKey(event)) {
                                     // A4-P2-7：焦点在分组 chip 上时行没消费按键，走到这里；
-                                    // focusedChannelIndex 是旧值（上次聚焦的行），用它开 EPG
-                                    // 会开到错台，改开当前播放台的节目单。
+                                    // 直接开当前播放台的节目单（不按面板聚焦行，免得开到错台）。
                                     val current = uiState.channels.getOrNull(uiState.currentIndex)
                                     if (current != null) viewModel.openEpgDialog(current)
                                     true
@@ -739,7 +738,7 @@ fun LiveScreen(
                 filtered = viewModel.channelsForGroup(uiState.selectedGroup),
                 onSelectGroup = { viewModel.selectGroup(it) },
                 onSelectChannel = { viewModel.selectChannel(it) },
-                onFocusChannel = { viewModel.setFocusedChannel(it) },
+                onFocusChannel = { viewModel.pokePanelTimer() },
                 onToggleFavorite = { viewModel.toggleFavorite(it) },
                 onOpenEpg = { viewModel.openEpgDialog(it) },
                 onRefreshChannels = { viewModel.refreshChannels() },
@@ -1015,7 +1014,7 @@ private fun ChannelPanel(
     globalModalOpen: Boolean = false,
     /**
      * A31-P2-1：面板列表/分组行触摸滚动时的回调（调 viewModel.pokePanelTimer()）——
-     * 遥控器方向键必经 setFocusedChannel 续命，触摸滚动只改 LazyListState、
+     * 遥控器方向键必经 onFocusChannel 调 pokePanelTimer() 续命，触摸滚动只改 LazyListState、
      * 不走任何 pokePanelTimer 调用点，连续滚 15 秒会被定时器在手底下关面板。
      */
     onPanelScroll: () -> Unit = {},
