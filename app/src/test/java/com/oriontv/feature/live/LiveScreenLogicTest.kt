@@ -275,4 +275,25 @@ class LiveScreenLogicTest {
         assertEquals(112, liveToastBottomPaddingDp(showInfoBar = false, digitEchoVisible = true))
         assertEquals(224, liveToastBottomPaddingDp(showInfoBar = true, digitEchoVisible = true))
     }
+
+    @Test
+    fun `epg now row follows only when focus is still on the old now row`() {
+        // A56/A57 路径：焦点在旧正在播行上时跟进，浏览别行时不抢焦点。
+        assertTrue(shouldFollowEpgNowRow(oldNowRow = 5, currentIndex = 6, focusedIndex = 5, hadValidNowRow = true))
+        assertFalse(shouldFollowEpgNowRow(oldNowRow = 5, currentIndex = 6, focusedIndex = 3, hadValidNowRow = true))
+        // 同行变化不跟进；空档内（currentIndex=-1）不跟进。
+        assertFalse(shouldFollowEpgNowRow(oldNowRow = 6, currentIndex = 6, focusedIndex = 6, hadValidNowRow = true))
+        assertFalse(shouldFollowEpgNowRow(oldNowRow = 5, currentIndex = -1, focusedIndex = 5, hadValidNowRow = true))
+    }
+
+    @Test
+    fun `epg now row follows once when dialog opened inside a gap`() {
+        // C58 路径：弹窗开在空档内（旧行 -1、从未见过有效行），空档结束首次
+        // 出现有效行、焦点仍在空档回落锚点（首行）时跟进一次。
+        assertTrue(shouldFollowEpgNowRow(oldNowRow = -1, currentIndex = 6, focusedIndex = 0, hadValidNowRow = false))
+        // 焦点已移到别行浏览时不抢；见过有效行后（A57 的 5→-1→6 序列）
+        // 旧行是有效行，焦点不在旧行上同样不跟进。
+        assertFalse(shouldFollowEpgNowRow(oldNowRow = -1, currentIndex = 6, focusedIndex = 3, hadValidNowRow = false))
+        assertFalse(shouldFollowEpgNowRow(oldNowRow = -1, currentIndex = 6, focusedIndex = 0, hadValidNowRow = true))
+    }
 }

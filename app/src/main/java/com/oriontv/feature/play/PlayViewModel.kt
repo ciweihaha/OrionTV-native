@@ -991,10 +991,20 @@ class PlayViewModel @Inject constructor(
      */
     private fun maybeLearnIntroEnd(fromMs: Long, toMs: Long, durationMs: Long) {
         if (currentKey.isBlank()) return
-        if (!IntroSkip.shouldLearnIntroEnd(
+        // A58-P1-1：只在播放器当前挂着本集媒体时才学——回页 reclaim 挂起窗口内
+        // 播放器是空媒体（currentUrl=null、live 位置 0），此时 fromMs/duration
+        // 全是空闲读数，落点预览提交的 seek 会把“0→落点”误学成片头并持久化；
+        // 门控不成立直接跳过学习，seekTo 本身的 seek 行为不动（空闲播放器上
+        // seekTo 本身是无操作）。注意不用 currentEpisodePositionMs() 的冻结
+        // 位置当 fromMs 代替：冻结位置仍在片头内时（如 10 秒）仍会学到错误落点，
+        // 必须在入口处整个跳过。
+        val state = _uiState.value
+        if (!shouldLearnIntroEndOnSeek(
+                playerUrl = playerManager.currentUrl,
+                episodeUrl = state.current?.episodes?.getOrNull(state.episodeIndex),
                 fromMs = fromMs,
                 toMs = toMs,
-                introEndMs = _uiState.value.introEndMs,
+                introEndMs = state.introEndMs,
                 hasMark = markedIntroEndMs != null,
                 durationMs = durationMs,
             )
@@ -1635,6 +1645,27 @@ class PlayViewModel @Inject constructor(
          */
         internal fun isCurrentEpisodeMedia(playerUrl: String?, episodeUrl: String?): Boolean =
             playerUrl != null && episodeUrl != null && playerUrl == episodeUrl
+
+        /**
+         * A58-P1-1：片头学习是否可学（可单测）——IntroSkip.shouldLearnIntroEnd
+         * 的数值判定之前先过 URL 门控：播放器当前挂的媒体是本集时才用 live
+         * 读数（fromMs/durationMs）学习；空媒体或别页媒体时直接不学。
+         * 回页 reclaim 挂起窗口内播放器是空媒体，live 位置恒 0、片长恒 0，
+         * 数值判定全项通过（0 < introEnd、落点 > introEnd、跳跃 ≥30 秒、
+         * 落点 ≤600 秒、片长未知跳过片尾守卫），会把空闲 seek 的落点误学成
+         * 片头并持久化；冻结位置不能代 fromMs——冻结位置仍在片头内时
+         * 同样会误学，必须整个跳过。
+         */
+        internal fun shouldLearnIntroEndOnSeek(
+            playerUrl: String?,
+            episodeUrl: String?,
+            fromMs: Long,
+            toMs: Long,
+            introEndMs: Long,
+            hasMark: Boolean,
+            durationMs: Long,
+        ): Boolean = isCurrentEpisodeMedia(playerUrl, episodeUrl) &&
+            IntroSkip.shouldLearnIntroEnd(fromMs, toMs, introEndMs, hasMark, durationMs)
 
         /**
          * A26-P2-1：轮询本 tick 是否可读 live 信号（可单测）——播放器当前挂的

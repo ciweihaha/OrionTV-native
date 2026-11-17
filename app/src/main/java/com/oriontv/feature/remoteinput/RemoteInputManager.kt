@@ -267,13 +267,19 @@ class RemoteInputManager @Inject constructor() {
 
     /** P1-10/P2-8：配对码每 5 分钟轮换一次，state 里的显示同步更新；停服即停。
      * 每 5 秒刷新一次剩余秒数（供界面倒计时）；轮换后上一轮的码仍有 60 秒
-     * 宽限期（见 RemoteInputRouter.matchesPairingCode）。 */
+     * 宽限期（见 RemoteInputRouter.matchesPairingCode）。
+     * B58-P2-3：每 5 秒 tick 顺带比对本机 IP——电视 DHCP 重分配/切网后
+     * 服务本身（NanoHTTPD 绑 0.0.0.0）在新 IP 上仍可达，但 state.serverUrl
+     * 只在启动时写过一次，设置页地址与二维码会一直显示旧 IP、扫码连不上；
+     * IP 变了只更新显示的 serverUrl（二维码随 serverUrl 变化自动重生成），
+     * 不重启服务；取不到 IP（断网）时保留旧地址。 */
     private fun startRotationJob() {
         rotationJob?.cancel()
         rotationJob = scope.launch {
             while (desiredRunning) {
                 delay(RemoteInputLogic.PAIRING_CODE_COUNTDOWN_TICK_MS)
                 if (!desiredRunning || !_state.value.isRunning) break
+                refreshServerUrlForCurrentIp()
                 val issuedAt = router.pairingCodeIssuedAtMs
                 if (issuedAt <= 0) continue
                 val now = System.currentTimeMillis()
@@ -296,6 +302,17 @@ class RemoteInputManager @Inject constructor() {
         }
     }
 
+    /** B58-P2-3：重取本机 IP，变了就刷新显示地址。scope 已是 Dispatchers.IO，
+     * localIpAddress() 的网卡枚举可直接调；取不到 IP 时保留旧地址。 */
+    private fun refreshServerUrlForCurrentIp() {
+        val newUrl = resolveServerUrlAfterIpChange(
+            _state.value.serverUrl,
+            RemoteInputServer.localIpAddress(),
+            RemoteInputService.PORT,
+        ) ?: return
+        _state.update { it.copy(serverUrl = newUrl) }
+    }
+
     /** 供 Application 退出时释放（正常流程不需要调）。 */
     fun release() {
         // B4-P2-24：先停 HTTP 服务（轮换任务、server.stop()、清配对码）
@@ -314,5 +331,23 @@ class RemoteInputManager @Inject constructor() {
         desiredRunning = false
         stopLocked()
         scope.cancel()
+    }
+
+    companion object {
+        /**
+         * B58-P2-3：IP 变化后的显示地址（可单测）——新 IP 与当前 serverUrl
+         * 一致时返回 null（不用更新）；IP 取不到（null/空串，断网）时同样
+         * 返回 null，保留旧地址；否则返回新地址，调用方写回 state.serverUrl
+         * 后设置页地址与二维码自动刷新。
+         */
+        internal fun resolveServerUrlAfterIpChange(
+            currentServerUrl: String?,
+            newIp: String?,
+            port: Int,
+        ): String? {
+            if (newIp.isNullOrBlank()) return null
+            val newUrl = "http://$newIp:$port"
+            return if (newUrl == currentServerUrl) null else newUrl
+        }
     }
 }

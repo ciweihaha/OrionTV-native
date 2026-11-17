@@ -203,11 +203,15 @@ class AggApi @Inject constructor(
         val items = LenientDecode.decodeList(json, rawList, AggVideoItem.serializer())
         return AggListResponse(
             code = code,
-            msg = root["msg"]?.jsonPrimitive?.contentOrNull,
-            page = root["page"]?.jsonPrimitive?.intOrNull,
-            pagecount = root["pagecount"]?.jsonPrimitive?.intOrNull,
-            limit = root["limit"]?.jsonPrimitive?.intOrNull,
-            total = root["total"]?.jsonPrimitive?.intOrNull,
+            // B58-P2-2：msg/page 等 5 个字段与 code 同款安全转换——旧实现
+            // `.jsonPrimitive` 在值为 JsonNull 或对象/数组时抛
+            // IllegalArgumentException（`?.` 链只防键缺失，不防“有值但非标量”），
+            // 本可逐条容错救回的整页直接失败；D9-P2-9 只修了 code，漏了这 5 处。
+            msg = (root["msg"] as? JsonPrimitive)?.contentOrNull,
+            page = (root["page"] as? JsonPrimitive)?.intOrNull,
+            pagecount = (root["pagecount"] as? JsonPrimitive)?.intOrNull,
+            limit = (root["limit"] as? JsonPrimitive)?.intOrNull,
+            total = (root["total"] as? JsonPrimitive)?.intOrNull,
             list = items,
         )
     }

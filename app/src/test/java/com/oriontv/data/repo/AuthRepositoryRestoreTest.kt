@@ -14,8 +14,10 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * AuthRepository 恢复/退出竞态测试（第 6 轮 D6-P1-1/D6-P2-4/D6-P2-5）：
@@ -85,11 +87,18 @@ class AuthRepositoryRestoreTest {
     }
 
     private class FakeCredentialStore(var saved: Pair<String, String>? = "user" to "pass") : CredentialStore {
+        /** B58-P2-1：置非 null 时 load() 抛该异常（模拟取消）。 */
+        var loadError: Throwable? = null
+
         override suspend fun save(username: String, password: String) {
             saved = username to password
         }
 
-        override suspend fun load(): Pair<String, String>? = saved
+        override suspend fun load(): Pair<String, String>? {
+            loadError?.let { throw it }
+            return saved
+        }
+
         override suspend fun clear() {
             saved = null
         }
@@ -496,5 +505,21 @@ class AuthRepositoryRestoreTest {
             assertEquals(null, store.saved)
             assertEquals("", settings.marker)
         }
+    }
+
+    @Test
+    fun `cancelled credential load aborts restore without login attempt`() {
+        // B58-P2-1：load() 抛 CancellationException 时 performRestore 不得
+        // 把它吞掉、再用空凭据发一次登录 POST；取消原样抛出，与同文件其余
+        // 6 处同类 catch 对齐。
+        val api = FakeAuthApi()
+        val store = FakeCredentialStore()
+        store.loadError = CancellationException("cancelled")
+        val repo = repository(api = api, store = store)
+        assertThrows(CancellationException::class.java) {
+            runBlocking { repo.restoreSession() }
+        }
+        assertEquals(0, api.loginCalls)
+        assertFalse(repo.isLoggedIn.value)
     }
 }

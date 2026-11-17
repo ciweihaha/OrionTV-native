@@ -222,6 +222,29 @@ internal fun shouldTrapEpgFocusKey(key: Key, focusedIndex: Int, programmeCount: 
 internal fun resolveEpgInitialFocusedIndex(programmesEmpty: Boolean, currentIndex: Int): Int =
     if (programmesEmpty) -1 else currentIndex.coerceAtLeast(0)
 
+/**
+ * A58-P2-1/C58-P2-1：EPG 正在播行是否跟进（可单测）——currentIndex 变化时
+ * 仅当焦点当前仍在旧正在播行上才跟进，不抢用户正在浏览的别行：
+ * - A56/A57 路径：旧行有效（>=0）且与新行不同、焦点仍在旧行上时跟进；
+ * - C58 路径：弹窗开在节目单空档内（旧行 -1、从未见过有效行），空档结束
+ *   首次出现有效行、焦点仍在空档回落锚点（首行）时跟进一次。此后
+ *   hadValidNowRow 已置 true，后续行变走 A56/A57 路径。
+ * 残留取舍：用户在空档内主动移到首行浏览时与“未动过焦点”无法从
+ * focusedIndex 区分，会被一次性带到正在播行——与本 effect“焦点在锚点行
+ * 上即跟进”的既定语义一致。
+ */
+internal fun shouldFollowEpgNowRow(
+    oldNowRow: Int,
+    currentIndex: Int,
+    focusedIndex: Int,
+    hadValidNowRow: Boolean,
+): Boolean {
+    if (currentIndex < 0) return false
+    if (oldNowRow >= 0 && oldNowRow != currentIndex && focusedIndex == oldNowRow) return true
+    if (oldNowRow < 0 && !hadValidNowRow && focusedIndex == 0) return true
+    return false
+}
+
 /** 直播长按换台节流（P2-7）：按住上/下时每 400ms 最多换一台，免得重复事件
  * 以遥控器原生速率（通常每秒十余次）连续触发 playCurrent、反复重启播放器；
  * 具体速率需真机确认后调。 */
@@ -1501,13 +1524,24 @@ private fun EpgDialog(
     // 已播完的旧行上。改记“上次有效正在播行”prevNowRow，只在 currentIndex
     // >= 0 时更新，-1 空档时不覆盖；守卫以它比对。用户浏览别行时仍不抢焦点
     // （守卫仍要求 focusedIndex == prevNowRow），A56 原有意图不变。
-    var prevNowRow by remember { mutableIntStateOf(currentIndex) }
+    // A58-P2-1：prevNowRow 与 hadValidNowRow 都按 channel.url 设 key——
+    // 切台即按新台 currentIndex 重置；旧实现 remember 无 key，切到处在空档
+    // 的台时旧台行号残留，空档结束会把浏览中的行误跟进（见 shouldFollowEpgNowRow）。
+    // C58-P2-1：补记本弹窗会话是否见过有效正在播行——弹窗开在空档内时初值
+    // 即 -1（无有效行可记），空档结束（-1→新行）时 A57 守卫因 oldNowRow < 0
+    // 不成立；hadValidNowRow 为 false 且焦点仍在空档回落锚点（首行）时跟进
+    // 一次。hadValidNowRow 与 prevNowRow 同 key，切台时一起重置，否则旧台
+    // 的“见过有效行”会污染新台的空档内打开序列。
+    var prevNowRow by remember(channel.url) { mutableIntStateOf(currentIndex) }
+    var hadValidNowRow by remember(channel.url) { mutableStateOf(currentIndex >= 0) }
     LaunchedEffect(currentIndex) {
         val oldNowRow = prevNowRow
+        val hadValid = hadValidNowRow
         if (currentIndex >= 0) {
             prevNowRow = currentIndex
+            hadValidNowRow = true
         }
-        if (oldNowRow >= 0 && currentIndex >= 0 && oldNowRow != currentIndex && focusedIndex == oldNowRow) {
+        if (shouldFollowEpgNowRow(oldNowRow, currentIndex, focusedIndex, hadValid)) {
             listState.scrollToItem(currentIndex)
             if (shouldFocusEpgDialog(globalModalOpen)) {
                 if (currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {

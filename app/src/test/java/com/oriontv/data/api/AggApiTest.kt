@@ -185,6 +185,44 @@ class AggApiTest {
     }
 
     @Test
+    fun `videoList accepts string code 1 with null msg and null paging fields`() {
+        // B58-P2-2：严格解码失败（如 code 是字符串 "1"）且 msg/分页字段为 null
+        // 时，lenientAggList 不得在 jsonPrimitive 上抛 IllegalArgumentException，
+        // 整页应正常救回、可空字段读成 null。
+        val body = """{"code":"1","msg":null,"page":null,"pagecount":null,"limit":null,"total":null,"list":[
+            {"vod_id":"1","vod_name":"好片","vod_pic":""}
+        ]}"""
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, body)
+        }
+        val parsed = runBlocking { api(client).videoList(1, 1) }
+        assertEquals(1, parsed.code)
+        assertEquals(null, parsed.msg)
+        assertEquals(null, parsed.page)
+        assertEquals(null, parsed.pagecount)
+        assertEquals(null, parsed.limit)
+        assertEquals(null, parsed.total)
+        assertEquals(1, parsed.list?.size)
+    }
+
+    @Test
+    fun `videoList tolerates object valued msg and paging fields in lenient path`() {
+        // B58-P2-2 的另一半：msg/分页字段为对象/数组等非标量时同样不得抛，
+        // 读成 null、整页正常返回。
+        val body = """{"code":"1","msg":{},"page":[],"pagecount":{},"limit":[],"total":{},"list":[
+            {"vod_id":"1","vod_name":"好片","vod_pic":""}
+        ]}"""
+        val (client, _) = countingClient { request, _ ->
+            responseFor(request, 200, body)
+        }
+        val parsed = runBlocking { api(client).videoList(1, 1) }
+        assertEquals(1, parsed.code)
+        assertEquals(null, parsed.msg)
+        assertEquals(null, parsed.page)
+        assertEquals(1, parsed.list?.size)
+    }
+
+    @Test
     fun `videoList with string code 0 reports structure error not corrupt json`() {
         // D9-P2-9：code "0" 是结构异常（code != 1），不是 JSON 损坏——报错文案要准。
         val body = """{"code":"0","list":[]}"""

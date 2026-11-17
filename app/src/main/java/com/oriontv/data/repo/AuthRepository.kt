@@ -443,7 +443,13 @@ class AuthRepository @Inject constructor(
         // B5-P2-3：同 checkLoginStatus，DataStore 读失败按未恢复处理。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) return false
-        val saved = try { credentialsStore.load() } catch (_: Exception) { null }
+        // B58-P2-1：凭据读取的取消原样抛出——load() 是真挂起点的 suspend
+        // 函数，取消时抛 CancellationException；旧实现 catch (_: Exception)
+        // 会把它吞掉、随后用空凭据发一次登录 POST。同文件其余 6 处同类
+        // catch 均先 rethrow CE，这里是漏网处（B13-P2-3 同款约定）。
+        val saved = try { credentialsStore.load() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
         val ok = try {
             // B4-P1-2：静默恢复只认 Success；Transient/WrongCredentials 都算未恢复。
             moonTvApi.login(baseUrl, saved?.first, saved?.second) is MoonTvApi.LoginResult.Success

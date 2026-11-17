@@ -662,4 +662,41 @@ class PlayViewModelLogicTest {
             ),
         )
     }
+
+    @Test
+    fun `intro learning is skipped when player holds no current episode media`() {
+        // A58-P1-1：回页 reclaim 挂起窗口内播放器是空媒体（playerUrl=null、
+        // live 位置 0、片长 0），数值判定全项通过——不加 URL 门控会把落点
+        // 310 秒误学成片头；门控不成立时整个跳过学习。
+        val episodeUrl = "https://example.com/a.m3u8"
+        assertFalse(
+            PlayViewModel.shouldLearnIntroEndOnSeek(
+                playerUrl = null, episodeUrl = episodeUrl,
+                fromMs = 0L, toMs = 310_000L, introEndMs = 90_000L,
+                hasMark = false, durationMs = 0L,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldLearnIntroEndOnSeek(
+                playerUrl = "https://example.com/b.m3u8", episodeUrl = episodeUrl,
+                fromMs = 0L, toMs = 310_000L, introEndMs = 90_000L,
+                hasMark = false, durationMs = 0L,
+            ),
+        )
+        // 播放器挂着本集时正常学；冻结位置在片头内也不能代 fromMs 绕过门控。
+        assertTrue(
+            PlayViewModel.shouldLearnIntroEndOnSeek(
+                playerUrl = episodeUrl, episodeUrl = episodeUrl,
+                fromMs = 0L, toMs = 310_000L, introEndMs = 90_000L,
+                hasMark = false, durationMs = 0L,
+            ),
+        )
+        assertFalse(
+            PlayViewModel.shouldLearnIntroEndOnSeek(
+                playerUrl = episodeUrl, episodeUrl = episodeUrl,
+                fromMs = 300_000L, toMs = 310_000L, introEndMs = 90_000L,
+                hasMark = false, durationMs = 0L,
+            ),
+        )
+    }
 }
