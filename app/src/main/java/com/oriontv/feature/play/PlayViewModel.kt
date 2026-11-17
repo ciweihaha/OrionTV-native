@@ -515,6 +515,21 @@ class PlayViewModel @Inject constructor(
         // 换源后立即重弹另有 nextEpisodeShownForIndex 拦着，见 A7-P2-1）。
         val episodeChanged = _uiState.value.current == null ||
             episodeIndex != _uiState.value.episodeIndex
+        // A62-P2-1：集次版本号只在集或源真的变了时才 +1——同集同源重挂
+        // （回页 reclaim / 同集重试）不 +1，否则 PlayScreen 的
+        // LaunchedEffect(episodeGeneration) 会在挂片完成瞬间清掉 A61-P2-2
+        // 保留的落点预览，用户本次快进意图被静默丢弃。比较须在收尾 update
+        // 之前算好——update 之后 current 就是 result；:516 与收尾之间只有
+        // autoSwitchAttempts/failedSources 一处 update，不碰 current，旧值
+        // 到收尾仍有效。换集/换源/自动换源仍 +1，P2-3
+        // 清预览的本意保留；同集重试不 +1 是安全的——错误页出现时自动
+        // 提交 effect 的错误分支（PlayScreen.kt:595-600）已先取消待定落点，
+        // 无 stale 预览可带进重试。
+        val bumpEpisodeGeneration = shouldBumpEpisodeGeneration(
+            episodeChanged,
+            _uiState.value.current?.source,
+            result.source,
+        )
         nextEpisodeDismissedForIndex = -1
         // 第 7 轮 P2-3：同集换源/自动换源/重试时，新起点仍在片头窗口内也重 arm
         // 胶囊——否则开播早期（仍在片头窗口内）换源后，新源上胶囊不重现，
@@ -591,10 +606,11 @@ class PlayViewModel @Inject constructor(
                 drawer = null,
                 // A8-P1-1：新集开播清播完态，倒计时冻结，直到本集播完才走。
                 isEnded = false,
-                // P2-3：集次版本号，每次开播（换集/换源/重试/自动换源）都 +1，
-                // 播放页据此清掉旧落点预览——只看 durationMs 不够，新集时长与旧集
-                // 相同时控制器不重建，待定落点会带到新集、2 秒后对新集 seek 旧落点。
-                episodeGeneration = it.episodeGeneration + 1,
+                // P2-3：集次版本号，换集/换源/自动换源时 +1，播放页据此清掉旧落点预览——
+                // 只看 durationMs 不够，新集时长与旧集相同时控制器不重建，待定落点会带到新集、
+                // 2 秒后对新集 seek 旧落点。A62-P2-1：同集同源重挂（回页 reclaim / 同集重试）
+                // 不 +1——否则挂片完成瞬间清掉 A61-P2-2 保留的落点预览。
+                episodeGeneration = if (bumpEpisodeGeneration) it.episodeGeneration + 1 else it.episodeGeneration,
             )
         }
         armReadyTimeout()
@@ -1760,6 +1776,19 @@ class PlayViewModel @Inject constructor(
             noError && !isCurrentOwner
 
         /**
+         * A62-P2-1：开播收尾是否应推进集次版本号（可单测）——只在集或源真的变了时 +1，
+         * 播放页据此清掉旧落点预览。同集同源重挂（回页 reclaim / 同集重试）不 +1，
+         * 否则 A61-P2-2 保留的落点预览会在挂片完成瞬间被清掉；换集/换源/自动换源
+         * 仍 +1，清预览的 P2-3 本意保留。oldSource 为 null 即旧 current 为空，
+         * 此时 episodeChanged 恒真，谓词恒真。
+         */
+        internal fun shouldBumpEpisodeGeneration(
+            episodeChanged: Boolean,
+            oldSource: String?,
+            newSource: String,
+        ): Boolean = episodeChanged || newSource != oldSource
+
+        /**
          * A22-P2-1：回页时仍是所有者、未在播时是否应自动续播（可单测）——只补
          * “按 Home 被系统暂停”一种情形：有当前集、无错误态、自己仍是所有者、
          * 播放器未在播、不是用户自己按的暂停（userPaused=false 才是 Home 暂停
@@ -1830,8 +1859,9 @@ data class PlayUiState(
     val breakpointMs: Long = 0L,
     val drawer: PlayDrawer? = null,
     /**
-     * 集次版本号（P2-3）：每次开播（换集/换源/重试/自动换源）都 +1，
-     * 播放页据此清掉旧落点预览；只看 durationMs 不够（新集时长可能与旧集相同）。
+     * 集次版本号（P2-3）：换集/换源/自动换源时 +1，播放页据此清掉旧落点预览；
+     * 只看 durationMs 不够（新集时长可能与旧集相同）。A62-P2-1：同集同源
+     * 重挂（回页 reclaim / 同集重试）不 +1，A61-P2-2 保留的落点预览不被清掉。
      */
     val episodeGeneration: Int = 0,
 )

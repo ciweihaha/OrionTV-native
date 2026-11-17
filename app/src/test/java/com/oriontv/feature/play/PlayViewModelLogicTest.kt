@@ -600,6 +600,23 @@ class PlayViewModelLogicTest {
     }
 
     @Test
+    fun `episode generation bumps only when episode or source really changes`() {
+        // A62-P2-1：同集同源重挂（回页 reclaim / 同集重试）不 +1——否则挂片完成
+        // 瞬间清掉 A61-P2-2 保留的落点预览；换集/换源/自动换源仍 +1，P2-3
+        // 清预览的本意保留。
+        // 同集同源：不 +1（修复目标：回页 reclaim 保留落点预览）。
+        assertFalse(PlayViewModel.shouldBumpEpisodeGeneration(episodeChanged = false, oldSource = "a", newSource = "a"))
+        // 同集换源：+1。
+        assertTrue(PlayViewModel.shouldBumpEpisodeGeneration(episodeChanged = false, oldSource = "a", newSource = "b"))
+        // 换集同源（下一集/选集）：+1。
+        assertTrue(PlayViewModel.shouldBumpEpisodeGeneration(episodeChanged = true, oldSource = "a", newSource = "a"))
+        // 换集换源：+1。
+        assertTrue(PlayViewModel.shouldBumpEpisodeGeneration(episodeChanged = true, oldSource = "a", newSource = "b"))
+        // 首集开播（旧 current 为空，episodeChanged 恒真）：+1。
+        assertTrue(PlayViewModel.shouldBumpEpisodeGeneration(episodeChanged = true, oldSource = null, newSource = "a"))
+    }
+
+    @Test
     fun `resumed page auto resumes only Home paused playback`() {
         // A22-P2-1：仍是所有者、未在播时只续播“按 Home 被系统暂停”的片——
         // MainActivity.onUserLeaveHint 只调 pause()、不碰 userPaused，
