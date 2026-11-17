@@ -134,6 +134,14 @@ class FavoritesViewModel @Inject constructor(
                     // return@launch、静默无事发生、无刷新。给一次提示并刷新
                     // 列表，与服务端实态对齐（finally 仍会释放守卫）。
                     _uiState.update { it.copy(favoriteError = nextToastEvent("该收藏已不存在，已刷新列表")) }
+                    // B53-P2-1：与成功路径同款——删前算好落点键并 +1 恢复请求，
+                    // 再 refresh()；否则 refresh 后恢复 effect 因 tick 不变而不跑，
+                    // 焦点随已卸载的“删除”按钮丢失。refresh 成功后
+                    // focusRestoreRequest 原样保留（见 refreshedFavoritesState）；
+                    // 删到最后一项时 nextSavedFocusKey 返回 null，恢复 effect
+                    // 回落空态“去首页”按钮。
+                    savedFocusKey = nextSavedFocusKey(_uiState.value.items, key)
+                    _uiState.update { it.copy(focusRestoreRequest = it.focusRestoreRequest + 1) }
                     refresh()
                     return@launch
                 }

@@ -243,7 +243,8 @@ fun HomeScreen(
                 .padding(OrionDimens.ContentPadding),
         ) {
             // B36-P2-2：行不存在的 chip 置灰禁用——未配服务器时 HOT/TOP250 行
-            // 不建、无播放记录时 RECENT 行不建（HomeViewModel.loadDouban 短路
+            // 不建、无播放记录且服务端拉取未失败时 RECENT 行不建（拉取失败时
+            // 留错误占位行，见 B52-P2-1）（HomeViewModel.loadDouban 短路
             // 与 loadCategory），点按只改高亮、不滚动是死控件；禁用态 clickable
             // 不可聚焦，首进焦点锚点也随之移到首个可用 chip，不落到禁用的 RECENT 上。
             // 选中态只画在可用 chip 上（缺失行不占选中高亮）；占位行 + 重试不立项（B28）。

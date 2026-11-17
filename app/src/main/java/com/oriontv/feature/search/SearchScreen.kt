@@ -324,6 +324,13 @@ fun SearchScreen(
                                 // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
                                 // 后续加载不再重复收回。
                                 if (it.isFocused) resultsAreaHadFocus = false
+                                // B53-P2-2：失焦即清左右键快照（与设置输入框同款）——
+                                // 焦点切走后残留的旧快照不能再用来判定下一次 KeyUp
+                                // （无配对 KeyDown 的 KeyUp，见 shouldConsumeSearchLeftKeyUp）。
+                                if (!it.isFocused) {
+                                    cursorBeforeLeftMove = -1
+                                    cursorBeforeRightMove = -1
+                                }
                             }
                             .onPreviewKeyEvent { event ->
                                 // C10-P2-1：隧道阶段先于输入框自己的光标移动，读到的是
@@ -345,9 +352,13 @@ fun SearchScreen(
                                         // 按移动前光标位置判断——不在边界时消费松键，
                                         // 只移光标、不跳焦点；已在边界时放行（左出导航轨、
                                         // 右进同行按钮，是有意逃逸）。
-                                        Key.DirectionLeft -> shouldConsumeSearchLeftKeyUp(cursorBeforeLeftMove)
+                                        Key.DirectionLeft -> shouldConsumeSearchLeftKeyUp(
+                                            cursorBeforeLeftMove,
+                                            searchTextFieldValue.selection.start,
+                                        )
                                         Key.DirectionRight -> shouldConsumeSearchRightKeyUp(
                                             cursorBeforeRightMove,
+                                            searchTextFieldValue.selection.end,
                                             searchTextFieldValue.text.length,
                                         )
                                         else -> false
@@ -603,14 +614,26 @@ fun SearchScreen(
 /** 搜索框左键松键是否消费（可单测，C10-P2-1）：与设置输入框同款快照法——
  * 光标不在行首时只移光标（消费松键，不跳到导航轨）；已在行首时放行，
  * 冒泡回左侧导航轨（与设置页“回左菜单”同款有意逃逸，不是陷阱破口）。
- * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。 */
-internal fun shouldConsumeSearchLeftKeyUp(cursorBeforeMove: Int): Boolean =
-    cursorBeforeMove > 0
+ * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。
+ * B53-P2-2（与设置侧 Jewel P2-5/P2-8 同款）：-1（未知/无配对 KeyDown）时
+ * 默认消费、不放行——留在框内是可恢复的安全方向；取 min(快照, 当前光标)——
+ * 长按到行首时最后一次快照是到 0 之前的位置（1），只按快照判定会误消费。 */
+internal fun shouldConsumeSearchLeftKeyUp(cursorBeforeMove: Int, cursorNow: Int): Boolean {
+    if (cursorBeforeMove == -1) return true
+    return minOf(cursorBeforeMove, cursorNow) != 0
+}
 
 /** 搜索框右键松键是否消费（可单测，C10-P2-1）：光标不在行尾时只移光标；
- * 已在行尾时放行，焦点移到右侧“屏上键盘/手机扫码输入”按钮。 */
-internal fun shouldConsumeSearchRightKeyUp(cursorBeforeMove: Int, textLength: Int): Boolean =
-    cursorBeforeMove < textLength
+ * 已在行尾时放行，焦点移到右侧“屏上键盘/手机扫码输入”按钮。
+ * B53-P2-2：-1 默认消费（与左键同款安全方向）；取 max(快照, 当前光标)——
+ * 右向移动的边界在行尾，取两者中更靠行尾的一个：长按到行尾时最后一次快照
+ * 是到行尾之前的位置（len-1），当前光标已是 len，只按快照（或取 min）判定
+ * 会误消费、松手后仍留在框内。短按从 len-1 到 len 同款：松手即放行（与左键
+ * 从 1 到 0 松手即回导航轨一致，见设置侧 Jewel P2-8）。 */
+internal fun shouldConsumeSearchRightKeyUp(cursorBeforeMove: Int, cursorNow: Int, textLength: Int): Boolean {
+    if (cursorBeforeMove == -1) return true
+    return maxOf(cursorBeforeMove, cursorNow) < textLength
+}
 
 /**
  * NavHost 级弹窗关闭的 tick 是否应跑搜索页焦点恢复（可单测，C12-P1-5）：
