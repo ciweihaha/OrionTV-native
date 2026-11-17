@@ -114,7 +114,11 @@ class HomeViewModel @Inject constructor(
             // 时行是空的，错误文案由下面 error 分支给出）。
             try {
                 // P2-8：刷新保留旧行，只置 loading，不闪回“正在加载…”空屏。
-                _uiState.value = _uiState.value.copy(isLoading = true)
+                // B57-P2-1：入口同时清掉顶层 error——旧 error 留着会与转圈
+                // 同时显示（HomeScreen 两个独立 if item），看起来像重试已失败；
+                // 旧行保留不受影响（只清 error，不动 rows），行级 error 另有
+                // row.error，不在此处；失败分支会重写 error。
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
                 // 新装不配服务器也能直接加载首页点播：agg 接口是硬编码直连、
                 // 不需要服务器地址；豆瓣走用户 MoonTV 服务，未配时
                 // loadDouban 直接返回空列表、相关行不展示（不算失败）。

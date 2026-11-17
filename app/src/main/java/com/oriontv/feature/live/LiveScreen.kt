@@ -1495,11 +1495,19 @@ private fun EpgDialog(
     // 不把 currentIndex 加进主 effect key——每 30 秒 tick 都可能重跑主 effect
     // 抢焦点，比现状更糟。滚动不受全局弹窗门控影响（C14-P2-1 同款：只动
     // 列表位置，不抢焦点）；落焦走同一门控，弹窗开着时不偷焦。
-    var prevCurrentIndex by remember { mutableIntStateOf(currentIndex) }
+    // A57-P2-1（A56 的残留缺口）：节目单存在空档（同一份 epg.xml 内节目
+    // 不连续）时 currentIndex 会经过 -1：旧实现把 -1 写进上次记录，空档结束
+    // （-1→新行）时守卫因 oldIndex >= 0 不成立而不跟进，此后焦点永久停在
+    // 已播完的旧行上。改记“上次有效正在播行”prevNowRow，只在 currentIndex
+    // >= 0 时更新，-1 空档时不覆盖；守卫以它比对。用户浏览别行时仍不抢焦点
+    // （守卫仍要求 focusedIndex == prevNowRow），A56 原有意图不变。
+    var prevNowRow by remember { mutableIntStateOf(currentIndex) }
     LaunchedEffect(currentIndex) {
-        val oldIndex = prevCurrentIndex
-        prevCurrentIndex = currentIndex
-        if (oldIndex >= 0 && currentIndex >= 0 && oldIndex != currentIndex && focusedIndex == oldIndex) {
+        val oldNowRow = prevNowRow
+        if (currentIndex >= 0) {
+            prevNowRow = currentIndex
+        }
+        if (oldNowRow >= 0 && currentIndex >= 0 && oldNowRow != currentIndex && focusedIndex == oldNowRow) {
             listState.scrollToItem(currentIndex)
             if (shouldFocusEpgDialog(globalModalOpen)) {
                 if (currentRequester.requestFocusWithRetry(isStillValid = { !modalOpenState.value })) {
