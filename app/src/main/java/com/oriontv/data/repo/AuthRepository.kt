@@ -467,7 +467,7 @@ class AuthRepository @Inject constructor(
             // 守卫是 _isLoggedIn，而 login() 在互斥块内先写凭据/标记、最后才
             // 置 _isLoggedIn=true；锁外检查时手动登录可能刚写完凭据/标记、尚
             // 未置位，scrub 会清掉新会话的 cookie 与标记。放进锁内、复核后
-            // 再 scrub（与 :494 第二处调用点同款），窗口关闭。
+            // 再 scrub（与 :500 第二处调用点同款），窗口关闭。
             loginStateMutex.withLock {
                 if (logoutEpoch.get() != epochAtStart || loggedOut) {
                     scrubStaleRestoreSession()
