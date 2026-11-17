@@ -2,6 +2,8 @@ package com.oriontv.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -111,16 +113,20 @@ private fun NavRailEntry(
     onClick: () -> Unit,
     focusRequester: FocusRequester,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Box(
         modifier = Modifier
             .width(72.dp)
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
-            .clickable { onClick() }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+            ) { onClick() }
             .focusRequester(focusRequester)
-            .onFocusChanged { focused = it.isFocused }
             .orionFocus(focused)
             .background(
                 if (selected) OrionColors.Surface else OrionColors.Background,

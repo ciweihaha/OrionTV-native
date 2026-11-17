@@ -35,8 +35,8 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10708
-        versionName = "2.0.5"
+        versionCode = 10709
+        versionName = "2.0.6"
 
         // 只打包 arm64-v8a（用户电视是 arm64），目标 APK < 25MB
         ndk {
@@ -139,6 +139,11 @@ dependencies {
 
     // 播放器
     implementation(libs.media3.exoplayer)
+    // v2.0.6 热修复：聚合源基本全是 m3u8，ExoPlayer 的 DefaultMediaSourceFactory
+    // 遇到 .m3u8 会反射加载 HlsMediaSource$Factory；从建仓起就没声明过这个
+    // 依赖，dex 里没有该类，点播/直播开播即 ClassNotFoundException 全挂。
+    // 与 media3 同版本 1.11.1。
+    implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.common)
     implementation(libs.media3.ui)
 

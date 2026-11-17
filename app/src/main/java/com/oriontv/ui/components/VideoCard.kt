@@ -2,6 +2,8 @@ package com.oriontv.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -10,13 +12,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -51,17 +51,24 @@ fun VideoCard(
     onFocused: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 clickable 的
+    // InteractionSource 驱动（collectIsFocusedAsState）；获焦回调也改由该
+    // 状态驱动，不再用 clickable 之后的 onFocusChanged（v2.0.5 真机上它
+    // 没把 focused 状态带进组合）。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    LaunchedEffect(focused) {
+        if (focused) onFocused?.invoke()
+    }
     Column(
         modifier = modifier
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
-            .clickable { onClick() }
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused?.invoke()
-            },
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+            ) { onClick() },
     ) {
         Box(
             modifier = Modifier

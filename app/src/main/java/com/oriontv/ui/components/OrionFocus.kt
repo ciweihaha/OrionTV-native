@@ -40,10 +40,14 @@ fun Modifier.orionFocus(
             scaleX = scale
             scaleY = scale
         }
-        .clip(shape)
+        // v2.0.6：border 必须在 clip 外层（先 border 后 clip）——border 的
+        // 描边以轮廓线为中心，一半在形外；clip 在外层时会把外侧一半裁掉，
+        // 2dp 只剩 1dp，电视上基本看不见。border 在外层时描边画在裁剪后的
+        // 内容之上，完整 2dp 可见；clip 仍裁剪内层的背景与内容。
         .border(
             width = if (focused) OrionDimens.FocusBorderWidth else 0.dp,
             color = if (focused) OrionColors.Brand else Color.Transparent,
             shape = shape,
         )
+        .clip(shape)
 }

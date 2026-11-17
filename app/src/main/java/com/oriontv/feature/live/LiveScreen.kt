@@ -8,6 +8,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1287,7 +1289,14 @@ private fun ChannelRow(
     onLongPress: () -> Unit,
     onMenu: () -> Unit,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 focusable 的
+    // InteractionSource 驱动；获焦回调改由该状态驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    val latestOnFocus = rememberUpdatedState(onFocus)
+    LaunchedEffect(focused) {
+        if (focused) latestOnFocus.value()
+    }
     var longPressed by remember { mutableStateOf(false) }
     val now = epg?.let { EpgParser.nowPlaying(it, channel.tvgId, channel.name, nowMs) }
     // 触摸修复：点按选台、长按收藏——detectTapGestures 只走触摸，不碰遥控器
@@ -1303,11 +1312,7 @@ private fun ChannelRow(
     val latestEpgDialogOpen = rememberUpdatedState(epgDialogOpen)
     var rowModifier = Modifier
         .fillMaxWidth()
-        .focusable()
-        .onFocusChanged {
-            focused = it.isFocused
-            if (it.isFocused) onFocus()
-        }
+        .focusable(interactionSource = interactionSource)
         .pointerInput(Unit) {
             detectTapGestures(
                 onTap = {
@@ -1658,14 +1663,17 @@ private fun EpgProgrammeRow(
     /** 获焦回调（P2-6 焦点陷阱用）：弹窗据此知道焦点在第几行。 */
     onFocus: () -> Unit = {},
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 focusable 的
+    // InteractionSource 驱动；获焦回调改由该状态驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    val latestOnFocus = rememberUpdatedState(onFocus)
+    LaunchedEffect(focused) {
+        if (focused) latestOnFocus.value()
+    }
     var rowModifier = Modifier
         .fillMaxWidth()
-        .focusable()
-        .onFocusChanged {
-            focused = it.isFocused
-            if (it.isFocused) onFocus()
-        }
+        .focusable(interactionSource = interactionSource)
         .orionFocus(focused)
         .background(
             if (isNow) OrionColors.Surface else Color.Transparent,

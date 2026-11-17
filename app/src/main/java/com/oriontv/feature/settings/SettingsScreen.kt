@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -394,14 +396,18 @@ private fun SettingsMenuItem(
     onClick: () -> Unit,
     onRight: () -> Unit,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Box(
         modifier = modifier
             .fillMaxWidth()
             // 触摸修复：clickable 本身可聚焦，点按触发 onClick；右键仍走
             // onKeyUp（clickable 不处理方向键右键）。
-            .clickable { onClick() }
-            .onFocusChanged { focused = it.isFocused }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+            ) { onClick() }
             .onKeyUp {
                 if (it.key == Key.DirectionRight) {
                     onRight()
@@ -633,14 +639,19 @@ private fun PlaybackSettings(
         // 片头时长：点按循环切换档位（0=不跳，只用手动标记的片头时间）。
         // P2-20：“跳过片头”关了就置灰且不可切换（值存着但不生效，别让人误操作）。
         val introEnabled = state.autoSkipIntro
-        var focused by remember { mutableStateOf(false) }
+        // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+        val interactionSource = remember { MutableInteractionSource() }
+        val focused by interactionSource.collectIsFocusedAsState()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 // 触摸修复：clickable 本身可聚焦；禁用时 enabled=false（与旧
                 // focusable(introEnabled) 同款置灰不可操作），点按循环切换档位。
-                .clickable(enabled = introEnabled) { onCycleIntroSeconds() }
-                .onFocusChanged { focused = it.isFocused }
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+                    enabled = introEnabled,
+                ) { onCycleIntroSeconds() }
                 .orionFocus(focused)
                 .alpha(if (introEnabled) 1f else 0.4f)
                 .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
@@ -673,15 +684,19 @@ private fun ToggleRow(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Row(
         modifier = modifier
             .fillMaxWidth()
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onToggle）。
-            .clickable { onToggle() }
-            .onFocusChanged { focused = it.isFocused }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+            ) { onToggle() }
             .orionFocus(focused)
             .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -850,13 +865,14 @@ private fun LoginSettings(
 @Composable
 private fun AboutSettings(firstRequester: FocusRequester) {
     // 关于页无可交互控件：整块内容可聚焦，给右键进右栏一个落点（焦点永不丢失）。
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 focusable 的 InteractionSource 驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Column(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier
-            .focusable()
+            .focusable(interactionSource = interactionSource)
             .focusRequester(firstRequester)
-            .onFocusChanged { focused = it.isFocused }
             .orionFocus(focused)
             .padding(8.dp),
     ) {

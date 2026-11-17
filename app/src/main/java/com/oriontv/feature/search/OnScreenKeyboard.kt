@@ -2,6 +2,8 @@ package com.oriontv.feature.search
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +22,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
@@ -338,14 +339,18 @@ private fun KeyboardKey(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var focused by remember { mutableStateOf(false) }
+    // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Box(
         modifier = modifier
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
-            .clickable { onClick() }
-            .onFocusChanged { focused = it.isFocused }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
+            ) { onClick() }
             .orionFocus(focused, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .background(OrionColors.Background, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .padding(vertical = 10.dp),
