@@ -35,8 +35,8 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10706
-        versionName = "2.0.3"
+        versionCode = 10707
+        versionName = "2.0.4"
 
         // 只打包 arm64-v8a（用户电视是 arm64），目标 APK < 25MB
         ndk {
