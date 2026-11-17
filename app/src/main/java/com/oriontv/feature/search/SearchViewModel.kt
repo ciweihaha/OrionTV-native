@@ -206,16 +206,25 @@ class SearchViewModel @Inject constructor(
             error = null,
             searchedQuery = trimmed,
             // B64-P2-1：入口同步清掉旧 results 并置 isLoading=true——旧结果
-            // 只属于上一词（executeSearch 落态前必先置 searchedQuery）；
+            // 只属于上一词（executeSearch 只在落态时才置 searchedQuery）；
             // 留着它，切走再回时存档里 query/searchedQuery 已是新词、results
             // 仍是旧词，恢复谓词会误判“已有结果”而不重跑，而在途的新搜索
             // 已随 ViewModel 销毁被丢弃。清掉后存档落到“有词、无结果、无
             // 错误”分支，恢复即重跑。isLoading=true 必不可少：缓存命中分支
             // 全程不置 isLoading（落态才置 false），不置会在历史
             // 写读往返耗时内重现 B40/B41 的四分支全不命中空洞；且结果网格
-            // 卸载后焦点无落点，isLoading effect 才能按 P1-1 把焦点收回搜索框。
+            // 卸载后焦点无落点，isLoading effect 才能按 P1-1 把焦点收回搜索框
+            //（只对页内 searchNow 成立：恢复路径的焦点回搜索框靠 tick effect，
+            // 见 SearchScreen，C65-P2-1 措辞核实）。C65-P2-1：isLoading 已为
+            // true 时再搜不翻转，回收 effect 靠 searchStartTick 重跑。
             results = emptyList(),
             isLoading = true,
+            // C65-P2-1：每次 searchNow 都 +1 的启动计数——SearchScreen 的
+            // 加载期焦点回收 effect 以它为 key；在途再搜时 isLoading 已是
+            // true 不翻转，key 不变 effect 不重跑，焦点随卸载的 chip/结果卡
+            // 一起丢失。只在 searchNow 递增（不用 generation：它在防抖排程、
+            // 清空、恢复重跑时也 +1，会让 effect 在无关时刻重跑）。
+            searchStartTick = _uiState.value.searchStartTick + 1,
         )
         saveSearchState()
         searchJob = viewModelScope.launch {
@@ -323,8 +332,11 @@ class SearchViewModel @Inject constructor(
     }
 
     private suspend fun executeSearch(query: String, gen: Int = generation) {
-        // B-P1-6：进入搜索即记下本次词；失败分支也已赋值，重试按钮不再是死按钮。
-        _uiState.value = _uiState.value.copy(searchedQuery = query)
+        // B65-P2-1：searchedQuery 只在各落态分支置（缓存命中与网络成功
+        // 落态已有赋值，三个失败落态各补一个）——入口先置会让在途窗口内
+        // 的一次 onQueryChange 存档把“在途词 + 旧词结果”写成“本词结果”，
+        // 谓词从此误判不再重跑。落态前 results 仍属上一词，searchedQuery
+        // 必须与 results 同步落态；代次已过期时直接 return，不置。
         cache.get(query)?.let { cached ->
             // B9-P2-3：缓存命中也写历史/读最新历史——之前直接 return，搜过的词
             // 不进历史、历史列表也不刷新；与网络分支走同一段逻辑。
@@ -361,6 +373,10 @@ class SearchViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     error = SearchError.NotConfigured,
+                    // B65-P2-1：失败落态也置 searchedQuery（入口赋值已移走）——
+                    // “重试”按钮按 searchedQuery 重搜，只在错误态出现、只在
+                    // 落态后可达，缺了它重试即丢词。
+                    searchedQuery = query,
                 )
                 // B33-P2-1：失败落态也要存一次，否则 NotConfigured 只在内存里，
                 // 切走再回恢复时丢了种类（旧实现还会被写成 Empty）。
@@ -401,6 +417,8 @@ class SearchViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 error = SearchError.Timeout,
+                // B65-P2-1：失败落态也置 searchedQuery（同 NotConfigured 分支）。
+                searchedQuery = query,
             )
             // B33-P2-1：失败落态也要存一次，种类才进 SavedStateHandle。
             saveSearchState()
@@ -412,6 +430,8 @@ class SearchViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 error = SearchError.classify(e),
+                // B65-P2-1：失败落态也置 searchedQuery（同 NotConfigured 分支）。
+                searchedQuery = query,
             )
             // B33-P2-1：失败落态也要存一次，种类才进 SavedStateHandle。
             saveSearchState()
@@ -645,9 +665,10 @@ sealed interface SearchError {
  * 无错误”时重跑，即恢复出的正是搜索在途被切走丢掉的那种态。已搜到结果、已落
  * 失败/空结果（error 非空，含 Empty）时不重跑；词为空时也不重跑。
  * B64-P2-1：结果非空只说明“有某次搜索的结果”，不说明就是本词的——结果只
- * 属于 searchedQuery（executeSearch 落态前必先置 searchedQuery，searchNow
- * 入口也先置），query 与 searchedQuery 不一致时结果是上一词的，必须重跑；
- * 两词一致（去首尾空白后）时结果就是本词的，不重跑。
+ * 属于 searchedQuery（executeSearch 只在落态时才置 searchedQuery，searchNow
+ * 入口也先置——但 searchNow 同步清掉了 results，在途存档里结果为空，谓词
+ * 仍走“无结果重跑”分支），query 与 searchedQuery 不一致时结果是上一词的，
+ * 必须重跑；两词一致（去首尾空白后）时结果就是本词的，不重跑。
  */
 internal fun shouldResumeInterruptedSearch(
     query: String,
@@ -697,6 +718,10 @@ data class SearchUiState(
     val suggestions: List<String> = emptyList(),
     /** 最近一次真正执行搜索的词（用于无结果提示）。 */
     val searchedQuery: String = "",
+    /** C65-P2-1：searchNow 启动计数，每次立即搜索 +1（不持久化、不进存档）。
+     * SearchScreen 的加载期焦点回收 effect 以它为 key——在途再搜时
+     * isLoading 已是 true 不翻转，只有它能让 effect 重跑。 */
+    val searchStartTick: Int = 0,
     /** 一次性提示（B6-P2-11：搜索历史服务端写失败，Toast，2 秒消失）。 */
     val toast: ToastEvent? = null,
 )

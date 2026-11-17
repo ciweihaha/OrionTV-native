@@ -126,6 +126,18 @@ class SearchLogicTest {
     }
 
     @Test
+    fun `in-flight archive still names previous query so restore resumes`() {
+        // B65-P2-1：executeSearch 只在落态时才置 searchedQuery——在途窗口
+        // 内的一次 onQueryChange 存下的是 query=B、searchedQuery=A（上一词）、
+        // results=A 的结果；谓词必须判重跑，不能把旧词结果当成本词结果。
+        // 已落态的对照：searchedQuery 已是 B、结果也是 B 的，才不重跑。
+        val staleA = listOf(SearchResult(source = "agg", source_name = "源A", id = "1", title = "庆余年"))
+        assertTrue(shouldResumeInterruptedSearch("繁花", "庆余年", staleA, null))
+        val settledB = listOf(SearchResult(source = "agg", source_name = "源A", id = "2", title = "繁花"))
+        assertFalse(shouldResumeInterruptedSearch("繁花", "繁花", settledB, null))
+    }
+
+    @Test
     fun `stale results from previous query resume search after restore`() {
         // B64-P2-1：防抖路径——搜索框已是新词 B、searchedQuery 仍是旧词 A、
         // 结果区是 A 的结果时必须重跑（B40 单测只覆盖了“结果属本词”情形）。

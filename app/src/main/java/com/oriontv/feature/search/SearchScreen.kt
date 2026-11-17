@@ -218,7 +218,13 @@ fun SearchScreen(
     // 结果区 latch 的道理见上面 resultsAreaHadFocus 的注释。
     // 两道门控取合取：C13-P2-1 的全局/扫码弹窗门控与 P1-1 的结果区 latch
     // 门控都要过才收回，任一不满足都不抢焦。
-    LaunchedEffect(uiState.isLoading, globalModalOpen) {
+    // C65-P2-1：key 加 searchStartTick——在途再搜（isLoading 已是 true）
+    // 时 searchNow 只清结果、不翻转 isLoading，(true, globalModalOpen)
+    // 不变 effect 根本不重跑，焦点随卸载的联想 chip/结果卡一起丢失、
+    // 全页无其他兜底。searchStartTick 每次 searchNow 都 +1，key 变化即
+    // 重跑回收；无关重组不触发（tick 只在 searchNow 变）；isLoading
+    // 为 false 时守卫直接拦住，不抢焦。
+    LaunchedEffect(uiState.isLoading, globalModalOpen, uiState.searchStartTick) {
         if (uiState.isLoading && shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal) &&
             shouldReclaimSearchFocusOnLoading(
                 resultsAreaHadFocus = resultsAreaHadFocus,
