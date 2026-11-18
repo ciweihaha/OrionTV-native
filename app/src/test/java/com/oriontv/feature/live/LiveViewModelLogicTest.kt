@@ -145,16 +145,12 @@ class LiveViewModelLogicTest {
     }
 
     @Test
-    fun `playback errors are ignored after leaving page unless background continuation`() {
+    fun `playback errors are ignored after leaving page`() {
         // 第 8 轮 P2-3：离页后播放器错误回调不推进失败计数、不弹 Toast——重播
         // 已被 playCurrent 的门控拦住，但计数与 Toast 在门控之前；门控与开播
-        // 同谓词（前台一律处理，后台只处理已开播过的延续）。
-        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
-        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
-        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
-        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
-        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
-        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+        // 同谓词（前台一律处理，离页一律不处理；第 74 轮后台播放已移除）。
+        assertTrue(LiveViewModel.shouldHandlePlaybackError(pageActive = true))
+        assertFalse(LiveViewModel.shouldHandlePlaybackError(pageActive = false))
     }
 
     @Test
@@ -185,16 +181,11 @@ class LiveViewModelLogicTest {
     }
 
     @Test
-    fun `background playback starts only for a continuation`() {
-        // A9-P1-1：前台一律开播；后台只允许已开播过的延续（PiP 内断流恢复、
-        // 开关开着的继续播）；从未开播过时后台开播即无窗口后台音频（开关开）
-        // 或违背开关语义（开关关），一律暂缓、回前台再补开播。
-        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = false, playbackStarted = false))
-        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = true, backgroundPlaybackEnabled = true, playbackStarted = true))
-        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = true))
-        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = true, playbackStarted = false))
-        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = true))
-        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false, backgroundPlaybackEnabled = false, playbackStarted = false))
+    fun `playback starts only in foreground`() {
+        // A9-P1-1：前台一律开播；后台的新开播一律暂缓、回前台再补开播
+        //（第 74 轮后台播放已移除，不再有“已开播过的延续”例外）。
+        assertTrue(LiveViewModel.shouldStartPlayback(pageActive = true))
+        assertFalse(LiveViewModel.shouldStartPlayback(pageActive = false))
     }
 
     @Test

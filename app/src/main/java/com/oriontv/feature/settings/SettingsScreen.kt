@@ -74,7 +74,7 @@ private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "
  *（手工焦点机：只响应松键 KeyUp，菜单上下顺序移动由空间导航处理，
  * 左右切换由 FocusRequester 显式交接，焦点永不丢失）；
  * 源地址：API + M3U 两行输入，保存立即生效并清除登录态（保存按钮未改时不可点）；
- * 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画开关 + 片头时长；
+ * 播放设置：下集预告、跳过片头、倍速记忆、无痕模式开关 + 片头时长；
  * 远程输入：开关 + 服务状态 + 二维码 + 配对码；检查更新：当前版本 + 检查按钮 + 更新卡片。
  * 登录：B11-P1-1 手动登录/退出登录入口（之前全仓唯一的 showLogin()/logout()
  * 调用方是换源地址保存成功，登录弹窗点“取消”后进程内无手动再弹入口，
@@ -269,7 +269,6 @@ fun SettingsScreen(
                         onSkipIntroChange = { viewModel.setAutoSkipIntro(it) },
                         onSpeedMemoryChange = { viewModel.setSpeedMemory(it) },
                         onIncognitoChange = { viewModel.setIncognitoMode(it) },
-                        onBackgroundChange = { viewModel.setBackgroundPlayback(it) },
                         onCycleIntroSeconds = { viewModel.cycleIntroSkipSeconds() },
                         firstRequester = rightRequester,
                     )
@@ -591,7 +590,7 @@ internal fun shouldRestoreSettingsFocusOnTick(
     showQrModal: Boolean,
 ): Boolean = focusRestoreTick > 0 && !globalModalOpen && !showQrModal
 
-/** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式、后台播放与画中画 + 片头时长。 */
+/** 播放设置：下集预告、跳过片头、倍速记忆、无痕模式 + 片头时长。 */
 @Composable
 private fun PlaybackSettings(
     state: SettingsUiState,
@@ -599,7 +598,6 @@ private fun PlaybackSettings(
     onSkipIntroChange: (Boolean) -> Unit,
     onSpeedMemoryChange: (Boolean) -> Unit,
     onIncognitoChange: (Boolean) -> Unit,
-    onBackgroundChange: (Boolean) -> Unit,
     onCycleIntroSeconds: () -> Unit,
     firstRequester: FocusRequester,
 ) {
@@ -629,12 +627,6 @@ private fun PlaybackSettings(
             description = "开启后不保存播放记录与断点，不写搜索历史；收藏不受影响",
             checked = state.incognitoMode,
             onToggle = { onIncognitoChange(!state.incognitoMode) },
-        )
-        ToggleRow(
-            label = "后台播放与画中画",
-            description = "切到后台时继续播放并进入画中画；关掉后退出播放页即停播",
-            checked = state.backgroundPlayback,
-            onToggle = { onBackgroundChange(!state.backgroundPlayback) },
         )
         // 片头时长：点按循环切换档位（0=不跳，只用手动标记的片头时间）。
         // P2-20：“跳过片头”关了就置灰且不可切换（值存着但不生效，别让人误操作）。

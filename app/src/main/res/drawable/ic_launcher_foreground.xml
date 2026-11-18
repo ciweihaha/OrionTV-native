@@ -3,10 +3,21 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- 第 74 轮：新启动图标——白色平板电视 + 翡翠绿播放键 + 白色支架（与 mipmap PNG 同一套几何） -->
+    <!-- 电视机身 -->
     <path
-        android:fillColor="#0C0E12"
-        android:pathData="M0,0h108v108H0z" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,30 H73 A7,7 0 0 1 80,37 V59 A7,7 0 0 1 73,66 H35 A7,7 0 0 1 28,59 V37 A7,7 0 0 1 35,30 Z" />
+    <!-- 播放键（PlayingGreen） -->
     <path
-        android:fillColor="#FF6A3D"
-        android:pathData="M38,30 L78,54 L38,78 Z" />
+        android:fillColor="#34D399"
+        android:pathData="M47,40 L63,48 L47,56 Z" />
+    <!-- 支架颈 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,66 H58 V72 H50 Z" />
+    <!-- 支架底座 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,72 H64 A2,2 0 0 1 66,74 A2,2 0 0 1 64,76 H44 A2,2 0 0 1 42,74 A2,2 0 0 1 44,72 Z" />
 </vector>

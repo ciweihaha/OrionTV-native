@@ -73,11 +73,11 @@ class SearchViewModel @Inject constructor(
     private var generation = 0
 
     /**
-     * B17-P2-2：deleteHistory 代次——与 FavoritesViewModel.refresh() 的
-     * B12-P2-2 同款；快速连删两条历史时，先删的慢结果不再覆盖后删的新列表
-     *（delete 后 getLatest20() 不持锁，迟到旧结果最后写态会让已删词幽灵复现）。
+     * B17-P2-2：历史变更代次——与 FavoritesViewModel.refresh() 的
+     * B12-P2-2 同款；快速连点“清除”时，先点的慢结果不再覆盖后点的新列表
+     *（clear 后 getLatest20() 不持锁，迟到旧结果最后写态会让已清历史幽灵复现）。
      */
-    private var deleteHistoryGeneration = 0
+    private var historyMutationGeneration = 0
 
     /**
      * P1-4：首进才落搜索框锚点；返回时恢复 savedResultKey。
@@ -455,23 +455,23 @@ class SearchViewModel @Inject constructor(
         searchNow(keyword)
     }
 
-    /** 单条删除历史。 */
-    fun deleteHistory(keyword: String) {
-        // B17-P2-2：起删时快照代次，落态前复核仍是最新一次删除，迟到的旧
-        // 结果丢弃（快速连删时先删的 getLatest20() 可能后返回）。
-        val gen = ++deleteHistoryGeneration
+    /** 一键清空全部历史（第 74 轮：每词旁的“删除”去掉，标题旁“清除”）。 */
+    fun clearHistory() {
+        // B17-P2-2：起清时快照代次，落态前复核仍是最新一次清空，迟到的旧
+        // 结果丢弃（快速连点时先点的 getLatest20() 可能后返回）。
+        val gen = ++historyMutationGeneration
         viewModelScope.launch {
-            val deleted = try {
-                searchHistoryRepository.delete(keyword)
+            val cleared = try {
+                searchHistoryRepository.clear()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 false
             }
-            // B4-P2-18：删除失败时不刷成“已删”假象——重读服务端真实状态
-            // （失败时该词仍在，读回来照常显示）；删成功但刷新读失败回落
-            // 到旧缓存时，把已删词从展示里去掉，不让它“幽灵复现”
-            // （服务端已删，展示也该消失）。
+            // B4-P2-18：清空失败时不刷成“已清”假象——重读服务端真实状态
+            // （失败时历史仍在，读回来照常显示）；清成功但刷新读失败回落
+            // 到旧缓存时，展示直接置空，不让已清历史“幽灵复现”
+            // （服务端已清，展示也该消失）。
             val fresh = try {
                 searchHistoryRepository.getLatest20()
             } catch (e: CancellationException) {
@@ -479,10 +479,10 @@ class SearchViewModel @Inject constructor(
             } catch (_: Exception) {
                 _uiState.value.history
             }
-            val newHistory = if (deleted) fresh.filter { it != keyword } else fresh
-            if (gen != deleteHistoryGeneration) return@launch
-            // B-P2-7：先取新 history 再算联想；用删除前的旧 history 算，
-            // 删后联想 chips 仍含已删词，直到下次输入才刷新。
+            val newHistory = if (cleared) emptyList() else fresh
+            if (gen != historyMutationGeneration) return@launch
+            // B-P2-7：先取新 history 再算联想；用清空前的旧 history 算，
+            // 清后联想 chips 仍含已清词，直到下次输入才刷新。
             _uiState.value = _uiState.value.copy(
                 history = newHistory,
                 suggestions = suggest(_uiState.value.query, newHistory),

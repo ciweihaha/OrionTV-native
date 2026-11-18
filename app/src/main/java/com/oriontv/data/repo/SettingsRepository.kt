@@ -43,7 +43,6 @@ class SettingsRepository @Inject constructor(
     val introSkipSeconds: Flow<Int> = settingsDataStore.introSkipSeconds
     val nextEpisodeOverlayEnabled: Flow<Boolean> = settingsDataStore.nextEpisodeOverlayEnabled
     val incognitoMode: Flow<Boolean> = settingsDataStore.incognitoMode
-    val backgroundPlayback: Flow<Boolean> = settingsDataStore.backgroundPlayback
     val speedMemory: Flow<Boolean> = settingsDataStore.speedMemory
     val authCookies: Flow<String> = settingsDataStore.authCookies
     /** server-config 的 StorageType 缓存："" 未拉取、"localstorage" | "redis"。 */
@@ -203,11 +202,9 @@ class SettingsRepository @Inject constructor(
     suspend fun setIntroSkipSeconds(value: Int) = settingsDataStore.setIntroSkipSeconds(value)
     suspend fun setNextEpisodeOverlayEnabled(value: Boolean) = settingsDataStore.setNextEpisodeOverlayEnabled(value)
     suspend fun setIncognitoMode(value: Boolean) = settingsDataStore.setIncognitoMode(value)
-    suspend fun setBackgroundPlayback(value: Boolean) = settingsDataStore.setBackgroundPlayback(value)
     suspend fun setSpeedMemory(value: Boolean) = settingsDataStore.setSpeedMemory(value)
     suspend fun currentSpeedMemory(): Boolean = speedMemory.first()
     suspend fun currentIncognitoMode(): Boolean = incognitoMode.first()
-    suspend fun currentBackgroundPlayback(): Boolean = backgroundPlayback.first()
     suspend fun currentUpdateLastCheckTime(): Long = settingsDataStore.updateLastCheckTime.first()
     suspend fun currentUpdateSkipVersion(): String = settingsDataStore.updateSkipVersion.first()
     suspend fun setUpdateLastCheckTime(value: Long) = settingsDataStore.setUpdateLastCheckTime(value)

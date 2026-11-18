@@ -47,14 +47,6 @@ class PlayerManager @Inject constructor(
         ExoPlayer.Builder(context).build()
     }
 
-    /**
-     * 后台播放开关（设置页“后台播放与画中画”）：PlayViewModel 开播时从设置读入，
-     * MainActivity.onUserLeaveHint 据此决定是否进画中画，PlayViewModel.onCleared
-     * 据此决定退出播放页后是停播还是继续播。
-     */
-    @Volatile
-    var backgroundPlaybackEnabled: Boolean = false
-
     /** 播放所有权代际：各页 onCleared 只停自己那一代（见 PlaybackGeneration）。 */
     private val ownership = PlaybackGeneration()
 

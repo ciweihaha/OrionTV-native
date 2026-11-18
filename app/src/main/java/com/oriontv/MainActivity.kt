@@ -1,10 +1,7 @@
 package com.oriontv
 
-import android.app.PictureInPictureParams
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,18 +22,6 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 
-/** 切到后台时的动作（纯决策，可单测；见 MainActivityLeaveHintTest）。 */
-enum class LeaveHintAction {
-    /** 开关开着且已加载媒体项：进画中画。 */
-    EnterPip,
-
-    /** 开关关着：暂停，VM 不销毁也不会继续播后台音频。 */
-    Pause,
-
-    /** 开关开着但未加载媒体项：什么都不做。 */
-    None,
-}
-
 /** 单 Activity 入口，只做 TV 横屏。 */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -52,32 +37,8 @@ class MainActivity : ComponentActivity() {
     /** C4-P1-6：热启动深链用——singleTask 下新 Intent 走 onNewIntent，交给它处理。 */
     private var navController: NavController? = null
 
-    /**
-     * A4-P2-5：后台播放开关的最新值（持续跟随 DataStore 流）；onUserLeaveHint
-     * 处同步读它，不再只靠进播放页时异步读一次的旧值（进页后立刻按 Home
-     * 时异步读入还没跑完，会误暂停）。
-     */
-    @Volatile
-    private var backgroundPlaybackCached: Boolean = false
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        lifecycleScope.launch {
-            // B9-P2-1：DataStore 流读失败不让协程未捕获崩溃；失败即停止订阅、
-            // 沿用默认值 false（后台播放开关默认关）。
-            // B14-P2-8：取消原样抛出——旧 catch (e: Exception) 连取消一起吞，
-            // 每次正常退出还打一条误导性的“后台播放开关订阅失败”警告日志。
-            try {
-                settingsRepository.backgroundPlayback.collect { enabled ->
-                    backgroundPlaybackCached = enabled
-                    playerManager.backgroundPlaybackEnabled = enabled
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                android.util.Log.w("MainActivity", "后台播放开关订阅失败，用默认值：${e.message}")
-            }
-        }
         setContent {
             OrionTheme {
                 val navController = rememberNavController()
@@ -149,7 +110,7 @@ class MainActivity : ComponentActivity() {
         // 同样走 onStop，服务停掉、回来时 onStart 重启并换新配对码，
         // 手机端须重新配对。60 秒宽限覆盖安装流程（调起安装器→安装→返回）；
         // 真按 Home 离开的，服务仍在 60 秒内停掉，不随进程常驻占着
-        // 12346 端口。进画中画时不走 onStop，不受影响。
+        // 12346 端口。
         remoteInputStopJob = lifecycleScope.launch {
             delay(REMOTE_INPUT_STOP_DELAY_MS)
             remoteInputManager.stop()
@@ -167,46 +128,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 切到后台时进画中画（阶段 4，后台播放与画中画）：
-     * 设置里开了“后台播放与画中画”且播放器已加载媒体项时进 PiP；
-     * 开关关着时直接暂停——按 Home 不销毁 ViewModel，旧实现无任何暂停逻辑，
-     * 音频会继续播；进 PiP 后 Activity 不销毁，播放继续；
-     * 用户点 PiP 窗口回前台后恢复全屏。
-     * A8-P1-3：不按 isPlaying 判定——正在缓冲时 isPlaying=false，旧实现
-     * 既不进 PiP 也不暂停，缓冲完成出声即变无窗口后台音频；已加载媒体项
-     * （含缓冲中、已暂停）就进 PiP，PiP 窗口里可继续看/暂停。
+     * 切到后台时暂停（第 74 轮：后台播放与画中画已整个删掉）：
+     * 按 Home 不销毁 ViewModel，旧实现无任何暂停逻辑时音频会继续播；
+     * 现在切后台即暂停，不进画中画、不留后台音频。
+     * A8-P1-3：不按 isPlaying 判定——正在缓冲时 isPlaying=false 也要暂停，
+     * 否则缓冲完成出声即变无窗口后台音频。
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        // A4-P2-5：读持续跟新的缓存值，不是进页时异步读入的旧值。
-        when (leaveHintAction(backgroundPlaybackCached, playerManager.hasMediaItem)) {
-            LeaveHintAction.EnterPip -> {
-                try {
-                    enterPictureInPictureMode(
-                        PictureInPictureParams.Builder()
-                            .setAspectRatio(Rational(16, 9))
-                            .build(),
-                    )
-                } catch (_: Exception) {
-                    // 设备不支持 PiP 时静默降级：只保留后台音频（播放器本身不因进不了 PiP 而停）。
-                }
-            }
-            LeaveHintAction.Pause -> playerManager.pause()
-            LeaveHintAction.None -> Unit
-        }
+        playerManager.pause()
     }
 
     companion object {
         /** 切后台后延迟停服的宽限（P2-13：覆盖调起安装器的流程）。 */
         internal const val REMOTE_INPUT_STOP_DELAY_MS = 60_000L
-
-        /** 切后台决策：开关开 + 已加载媒体项 → PiP；开关关 → 暂停；开关开 + 未加载 → 不动。 */
-        internal fun leaveHintAction(backgroundPlaybackEnabled: Boolean, hasMediaItem: Boolean): LeaveHintAction =
-            when {
-                backgroundPlaybackEnabled && hasMediaItem -> LeaveHintAction.EnterPip
-                !backgroundPlaybackEnabled -> LeaveHintAction.Pause
-                else -> LeaveHintAction.None
-            }
     }
 }

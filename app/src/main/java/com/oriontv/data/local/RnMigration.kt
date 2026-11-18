@@ -90,7 +90,6 @@ object RnMigrationParser {
         val introSkipSeconds: Int? = null,
         val nextEpisodeOverlayEnabled: Boolean? = null,
         val incognitoMode: Boolean? = null,
-        val backgroundPlayback: Boolean? = null,
     )
 
     /** 收藏：key → Favorite；坏条目只丢该条（LenientDecode）。 */
@@ -417,7 +416,6 @@ class RnMigration @Inject constructor(
         parsed.introSkipSeconds?.let { settingsDataStore.setIntroSkipSeconds(it) }
         parsed.nextEpisodeOverlayEnabled?.let { settingsDataStore.setNextEpisodeOverlayEnabled(it) }
         parsed.incognitoMode?.let { settingsDataStore.setIncognitoMode(it) }
-        parsed.backgroundPlayback?.let { settingsDataStore.setBackgroundPlayback(it) }
         AppLog.i("RnMigration", "导入设置（apiBaseUrl/m3uUrl/播放开关）")
     }
 

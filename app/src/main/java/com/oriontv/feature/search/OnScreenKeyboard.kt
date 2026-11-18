@@ -19,16 +19,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.oriontv.core.focus.preferredFocus
+import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.orionFocus
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
+
+/** 拼音候选行一次最多展示的字数（第 74 轮，RN PinyinKeyboard 同款 12 个，电视横屏取 10）。 */
+private const val MAX_CANDIDATES_SHOWN = 10
 
 /**
  * 9 键多击输入纯逻辑（TV 应用同款思路，自写实现）：
@@ -44,11 +50,17 @@ class NineKeyInput(
     private var lastIndex: Int = 0
     private var expectedLastChar: Char? = null
 
-    fun press(group: String, currentText: String, nowMs: Long): String {
-        val letters = KEY_GROUPS[group] ?: return currentText
-        val continuing = group == lastGroup &&
+    /** 这次按键是否算同一键的多击延续（只读判定，不推进状态；第 74 轮 9 键拼音用）。 */
+    fun isContinuing(group: String, currentText: String, nowMs: Long): Boolean {
+        if (!KEY_GROUPS.containsKey(group)) return false
+        return group == lastGroup &&
             lastTapAtMs >= 0 && nowMs - lastTapAtMs < multiTapWindowMs &&
             currentText.isNotEmpty() && currentText.last() == expectedLastChar
+    }
+
+    fun press(group: String, currentText: String, nowMs: Long): String {
+        val letters = KEY_GROUPS[group] ?: return currentText
+        val continuing = isContinuing(group, currentText, nowMs)
         return if (continuing) {
             lastIndex = (lastIndex + 1) % letters.length
             val next = letters[lastIndex]
@@ -101,14 +113,20 @@ class NineKeyInput(
  * 绕手机扫码）与拼音候选——敲出的拼音字母由 SearchViewModel 发给 iQIYI 联想
  * 接口出中文候选（见 IqiyiSuggest），候选 chips 在键盘下方联想行展示、点选
  * 填入搜索框；拼音切分走 PinyinTable（423 条音节表，含少量非常见/方言音节）。
- * 仍缺：没有本地中文输入法——中文候选只来自历史联想 + iQIYI 联想，无网时
- * 只剩历史联想。
+ * 第 74 轮：内置中文拼音输入（移植 RN v1.7.3–v1.7.4）——中/英切换（默认中文，
+ * 全键/9 键两档顶栏都有），本地词典出候选（PinyinCandidates + PinyinInput，
+ * 不用联网），9 键中文用 PinyinNineKeyComposer；iQIYI 联想仍在联想行做补充。
  */
 @Composable
 fun OnScreenKeyboard(
     query: String,
     onQueryChange: (String) -> Unit,
-    onSearch: () -> Unit,
+    /**
+     * 第 74 轮：搜索键带完整关键词回调——中文缓冲有合法音节时先把首选字上屏，
+     * 再用含该字的完整关键词搜（只调 onQueryChange 再读 uiState.query 会丢字，
+     * 状态更新还没重组回来）。
+     */
+    onSearch: (String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -117,6 +135,125 @@ fun OnScreenKeyboard(
     var symbolMode by remember { mutableStateOf(false) }
     val nineKey = remember { NineKeyInput() }
     val firstKeyRequester = remember { FocusRequester() }
+    // 第 74 轮：内置中文拼音输入（移植 RN v1.7.3–v1.7.4 的拼音键盘）——
+    // 中/英切换（默认中文，与 RN 同款）；中文模式字母进拼音缓冲、不直接上屏，
+    // 候选行点选上屏，空格选首选字；9 键中文用 PinyinNineKeyComposer
+    //（多击待定字母落定后才进缓冲，见 PinyinInput.kt）。
+    var zhMode by remember { mutableStateOf(true) }
+    var pinyinBuffer by remember { mutableStateOf("") }
+    val nineKeyComposer = remember { PinyinNineKeyComposer() }
+    // 本键盘自己发出的 query（经 emit），外部改 query（历史填回、清空、屏上
+    // 键盘外的输入）时清掉未落定的拼音缓冲与多击状态，不留脏缓冲。
+    var lastEmittedQuery by remember { mutableStateOf(query) }
+    LaunchedEffect(query) {
+        if (query != lastEmittedQuery) {
+            pinyinBuffer = ""
+            nineKeyComposer.reset()
+            nineKey.reset()
+            lastEmittedQuery = query
+        }
+    }
+    fun emit(newQuery: String) {
+        lastEmittedQuery = newQuery
+        onQueryChange(newQuery)
+    }
+    // 当前拼写中的拼音文本（全键档用 pinyinBuffer，9 键档用拼写器）。
+    val composingText = if (nineKeyMode) nineKeyComposer.composingText else pinyinBuffer
+    val candidates = if (zhMode) getCandidates(composingText) else emptyList()
+
+    /** 候选行点选：第 index 个字上屏，清缓冲。 */
+    fun commitCandidate(index: Int) {
+        val ch = selectCandidate(composingText, index) ?: return
+        if (nineKeyMode) nineKeyComposer.reset() else pinyinBuffer = ""
+        nineKey.reset()
+        emit(query + ch)
+    }
+
+    /** 全键档字母键：中文走拼音缓冲，英文直接上屏（小写，与旧行为一致）。 */
+    fun onLetterKey(ch: Char) {
+        val letter = ch.lowercaseChar()
+        if (!zhMode) {
+            emit(query + letter)
+            return
+        }
+        val r = appendLetter(pinyinBuffer, letter)
+        r.commit?.let { emit(query + it) }
+        pinyinBuffer = r.buffer
+    }
+
+    /** 9 键档数字键：中文走拼音拼写器，英文走多击直出（旧行为）。 */
+    fun onNineKeyDigit(digit: String) {
+        if (!zhMode) {
+            emit(nineKey.press(digit, query, System.currentTimeMillis()))
+            return
+        }
+        nineKeyComposer.press(digit, System.currentTimeMillis())?.let { emit(query + it) }
+    }
+
+    /** 退格：中文模式先删拼音缓冲/待定字母，再删搜索框字符。 */
+    fun onBackspace() {
+        if (zhMode) {
+            if (nineKeyMode) {
+                if (nineKeyComposer.backspace()) return
+            } else if (pinyinBuffer.isNotEmpty()) {
+                pinyinBuffer = pinyinBuffer.dropLast(1)
+                return
+            }
+        }
+        nineKey.reset()
+        if (query.isNotEmpty()) emit(query.dropLast(1))
+    }
+
+    /** 空格：中文模式有合法音节时选首选字上屏，否则加空格。 */
+    fun onSpace() {
+        if (zhMode) {
+            if (nineKeyMode) {
+                nineKeyComposer.settle()?.let { emit(query + it) }
+                val first = commitFirstCandidate(nineKeyComposer.buffer)
+                if (first != null) {
+                    nineKeyComposer.reset()
+                    emit(query + first)
+                    return
+                }
+            } else {
+                val first = commitFirstCandidate(pinyinBuffer)
+                if (first != null) {
+                    pinyinBuffer = ""
+                    emit(query + first)
+                    return
+                }
+            }
+        }
+        emit(query + " ")
+    }
+
+    /** 搜索键：中文缓冲有合法音节时先把首选字上屏，再用完整关键词搜。 */
+    fun handleSearch() {
+        var finalQuery = query
+        if (zhMode) {
+            if (nineKeyMode) {
+                nineKeyComposer.settle()?.let { finalQuery += it }
+                commitFirstCandidate(nineKeyComposer.buffer)?.let {
+                    finalQuery += it
+                    nineKeyComposer.reset()
+                }
+            } else {
+                commitFirstCandidate(pinyinBuffer)?.let {
+                    finalQuery += it
+                    pinyinBuffer = ""
+                }
+            }
+        }
+        if (finalQuery != query) emit(finalQuery)
+        onSearch(finalQuery)
+    }
+
+    /** 切拼音档/切中英文时清掉未落定的拼音缓冲与多击状态。 */
+    fun clearPinyinState() {
+        pinyinBuffer = ""
+        nineKeyComposer.reset()
+        nineKey.reset()
+    }
 
     // 打开即把焦点落到首键，遥控可直接按方向键选键。
     // 第 6 轮 P2-8：按 nineKeyMode 键——QWERTY↔9 键切换后当前聚焦的切换
@@ -146,13 +283,72 @@ fun OnScreenKeyboard(
                 color = OrionColors.TextSecondary,
             )
             Spacer(modifier = Modifier.weight(1f))
+            // 第 74 轮：中/英切换（全键、9 键、符号三档顶栏共用，两布局都要有）。
+            KeyboardKey(
+                label = if (zhMode) "中文" else "英文",
+                onClick = {
+                    zhMode = !zhMode
+                    clearPinyinState()
+                },
+            )
             KeyboardKey(
                 label = if (nineKeyMode) "切全键" else "切 9 键",
                 onClick = {
                     nineKeyMode = !nineKeyMode
                     if (nineKeyMode) symbolMode = false
+                    clearPinyinState()
                 },
             )
+        }
+        // 第 74 轮：中文拼音候选行（固定 56dp 高，没候选时留空行/提示，键盘不
+        // 上下跳；RN PinyinKeyboard 同款）。只在中文模式显示；英文不拼拼音。
+        if (zhMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (composingText.isNotEmpty()) {
+                        Text(
+                            text = composingText,
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.Brand,
+                        )
+                    }
+                    if (candidates.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            itemsIndexed(candidates.take(MAX_CANDIDATES_SHOWN)) { index, ch ->
+                                CategoryChip(
+                                    text = ch,
+                                    selected = false,
+                                    onClick = { commitCandidate(index) },
+                                )
+                            }
+                        }
+                    } else if (composingText.isNotEmpty()) {
+                        Text(
+                            text = if (isSyllablePrefix(composingText)) {
+                                "继续拼…"
+                            } else {
+                                "无此拼音候选，按删除修改（ü 用 v 代替，如 nv=女）"
+                            },
+                            style = OrionTextStyles.Small,
+                            color = OrionColors.TextSecondary,
+                        )
+                    } else {
+                        Text(
+                            text = "中文模式：输入拼音，选字上屏；空格选首选字",
+                            style = OrionTextStyles.Small,
+                            color = OrionColors.TextSecondary,
+                        )
+                    }
+                }
+            }
         }
         if (nineKeyMode) {
             val rows = listOf(
@@ -165,11 +361,7 @@ fun OnScreenKeyboard(
                     row.forEachIndexed { index, (digit, letters) ->
                         KeyboardKey(
                             label = "$digit\n$letters",
-                            onClick = {
-                                onQueryChange(
-                                    nineKey.press(digit, query, System.currentTimeMillis()),
-                                )
-                            },
+                            onClick = { onNineKeyDigit(digit) },
                             modifier = Modifier
                                 .weight(1f)
                                 .then(
@@ -186,20 +378,20 @@ fun OnScreenKeyboard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 KeyboardKey(
                     label = "全键",
-                    onClick = { nineKeyMode = false },
+                    onClick = {
+                        nineKeyMode = false
+                        clearPinyinState()
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 KeyboardKey(
                     label = "0 空格",
-                    onClick = { onQueryChange(query + " ") },
+                    onClick = { onSpace() },
                     modifier = Modifier.weight(1f),
                 )
                 KeyboardKey(
                     label = "退格",
-                    onClick = {
-                        nineKey.reset()
-                        onQueryChange(query.dropLast(1))
-                    },
+                    onClick = { onBackspace() },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -217,7 +409,7 @@ fun OnScreenKeyboard(
                     row.forEachIndexed { index, ch ->
                         KeyboardKey(
                             label = ch.toString(),
-                            onClick = { onQueryChange(query + ch) },
+                            onClick = { emit(query + ch) },
                             modifier = Modifier
                                 .weight(1f)
                                 .then(
@@ -235,20 +427,20 @@ fun OnScreenKeyboard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 KeyboardKey(
                     label = "ABC",
-                    onClick = { symbolMode = false },
+                    onClick = {
+                        symbolMode = false
+                        clearPinyinState()
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 KeyboardKey(
                     label = "空格",
-                    onClick = { onQueryChange(query + " ") },
+                    onClick = { onSpace() },
                     modifier = Modifier.weight(2f),
                 )
                 KeyboardKey(
                     label = "退格",
-                    onClick = {
-                        nineKey.reset()
-                        onQueryChange(query.dropLast(1))
-                    },
+                    onClick = { onBackspace() },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -263,7 +455,7 @@ fun OnScreenKeyboard(
                     row.forEachIndexed { index, ch ->
                         KeyboardKey(
                             label = ch.toString(),
-                            onClick = { onQueryChange(query + ch.lowercaseChar()) },
+                            onClick = { onLetterKey(ch) },
                             modifier = Modifier
                                 .weight(1f)
                                 .then(
@@ -284,6 +476,7 @@ fun OnScreenKeyboard(
                     onClick = {
                         nineKeyMode = true
                         symbolMode = false
+                        clearPinyinState()
                     },
                     modifier = Modifier.weight(1f),
                 )
@@ -293,20 +486,18 @@ fun OnScreenKeyboard(
                     onClick = {
                         symbolMode = true
                         nineKeyMode = false
+                        clearPinyinState()
                     },
                     modifier = Modifier.weight(1f),
                 )
                 KeyboardKey(
                     label = "空格",
-                    onClick = { onQueryChange(query + " ") },
+                    onClick = { onSpace() },
                     modifier = Modifier.weight(2f),
                 )
                 KeyboardKey(
                     label = "退格",
-                    onClick = {
-                        nineKey.reset()
-                        onQueryChange(query.dropLast(1))
-                    },
+                    onClick = { onBackspace() },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -314,7 +505,7 @@ fun OnScreenKeyboard(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             KeyboardKey(
                 label = "搜索",
-                onClick = onSearch,
+                onClick = { handleSearch() },
                 modifier = Modifier.weight(1f),
             )
             KeyboardKey(
@@ -325,7 +516,7 @@ fun OnScreenKeyboard(
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "提示：敲拼音字母后，下方出现中文候选（iQIYI 联想），点选填入搜索框；搜含符号的词可切 [123] 符号板；搜中文词也可用“手机扫码输入”。",
+            text = "提示：中文模式敲拼音出候选（本地词典，不用联网），点选上屏，空格选首选字；9 键同键连续字母须停顿 1 秒再按；点“英文”直接输字母；搜含符号的词可切 [123] 符号板；搜中文词也可用“手机扫码输入”。",
             style = OrionTextStyles.Small,
             color = OrionColors.TextSecondary,
         )

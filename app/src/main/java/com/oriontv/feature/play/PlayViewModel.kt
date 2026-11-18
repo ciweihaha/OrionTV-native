@@ -245,18 +245,6 @@ class PlayViewModel @Inject constructor(
         introSkippedThisEpisode = false
         skipIntroCapsule.resetForEpisode()
         nextEpisodeShownForIndex = -1
-        // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画。
-        viewModelScope.launch {
-            // A8-P2-3：DataStore 读失败会让协程未捕获崩溃；失败即保持默认值
-            //（MainActivity 另有持续跟新的缓存值兜底，见 A4-P2-5）。
-            runCatching { settingsRepository.currentBackgroundPlayback() }
-                .onSuccess { playerManager.backgroundPlaybackEnabled = it }
-                .onFailure {
-                    // B17-P2-1：取消异常原样重抛，不当成普通读失败用默认值。
-                    if (it is CancellationException) throw it
-                    AppLog.w("PlayViewModel", "后台播放开关读入失败，用默认值：${it.message}")
-                }
-        }
         _uiState.update { resetUiStateForNewKey(it, episodeIndex, positionMs, title) }
         startSearch()
         startPolling()
@@ -436,9 +424,6 @@ class PlayViewModel @Inject constructor(
             cachedAutoSkipIntro = settingsRepository.autoSkipIntro.first()
             cachedIntroSkipSeconds = settingsRepository.introSkipSeconds.first()
             cachedNextEpisodeOverlayEnabled = settingsRepository.nextEpisodeOverlayEnabled.first()
-            // A4-P2-5：后台播放开关也在这里同步重读（设置页返回/切回前台时刷新），
-            // 不只靠进页时那一次异步读入。
-            playerManager.backgroundPlaybackEnabled = settingsRepository.currentBackgroundPlayback()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -480,9 +465,8 @@ class PlayViewModel @Inject constructor(
     private suspend fun startEpisode(result: SearchResult, episodeIndex: Int, startPositionMs: Long? = null, resumePaused: Boolean = false) {
         // A9-P1-2：开播前复核页面仍在前台——搜源/读断点期间按 Home 后，搜源完成
         // 仍会在后台调到这里；后台的新开播暂缓（待补开播已由 launchStartEpisode
-        // 记下），回前台时 onPageResumed() 补开播；已开播过的延续（PiP 内自动换源/
-        // 下一集、开关开着的继续播）不受影响。
-        if (!shouldStartPlayback(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
+        // 记下），回前台时 onPageResumed() 补开播。
+        if (!shouldStartPlayback(pageActive)) return
         val generation = ++startEpisodeGeneration
         // A4-P2-8：新一集开播的挂起操作（读设置/断点，服务端模式下还有网络读）
         // 期间旧的就绪超时仍挂着，可能误触自动换源；开播先取消旧超时。
@@ -680,12 +664,11 @@ class PlayViewModel @Inject constructor(
         // 第 8 轮 P2-3：离页后播放器错误回调不累加失败计数、不弹 Toast、不落
         // 错误态——startEpisode 的 shouldStartPlayback 门控已拦住重播（无音频
         // 泄漏），但门控之前的账已算了（failedSources/autoSwitchAttempts 累加、
-        // 自动换源记 pendingStart、最终落错误态）；后台播放开着时按“已开播过的
-        // 延续”放行（与 startEpisode 同谓词）。只记待补开播：回页时
+        // 自动换源记 pendingStart、最终落错误态）。只记待补开播：回页时
         // onPageResumed 凭 pendingStart 重播当前源（不记失败、不换源——回页后
         // 若再失败，在页内走正常自动换源）；不记待补时回页无任何恢复，播放器会
         // 停在错误态、OK 也无法自愈（play() 不重挂 media item）。
-        if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) {
+        if (!shouldHandlePlaybackError(pageActive)) {
             // A16-P2-1：播完态下当前进度即片尾位置，直接记会让回页补开播触发
             // 起点溢出守卫误判、自动换源并记当前源失效；播完态记 0L 从头播。
             // A20-P2-1：待补开播也带上暂停态——暂停后离页期间播错、回页补开播
@@ -806,12 +789,12 @@ class PlayViewModel @Inject constructor(
                 // A5-P2-2：轮询开头判归属——播放器被直播页抢走后，本页的
                 // 轮询不再读位置/写状态（之前无归属校验，跨页互相覆盖进度）。
                 if (!playerManager.isCurrentOwner(playbackToken)) continue
-                // P2-9 前台门控：切后台且后台播放关着时，本轮只空转，不读播放器、
-                // 不刷 UI 状态、不存断点；后台播放开着时仍要全量推进——自动跳片头、
-                // 下一集预告在后台也要走，否则后台播完不会自动切下一集。
+                // P2-9 前台门控：切后台时本轮只空转，不读播放器、不刷 UI 状态、
+                // 不存断点；播放器本身由 MainActivity 在 onUserLeaveHint 里暂停，
+                // 不靠轮询停。
                 // 注意：门控只看 Activity 前台（PlayScreen 的 ON_PAUSE/ON_RESUME），
                 // 应用内被其他页盖住时 Activity 仍是 resumed，轮询照常跑。
-                if (!shouldPoll(isForeground, playerManager.backgroundPlaybackEnabled)) continue
+                if (!shouldPoll(isForeground)) continue
                 // A26-P2-1：URL 门控——认领后、挂片前的窗口内归属门控恒为真，
                 // 轮询是唯一没加 URL 门控的 live 信号读点（A25-P2-1 只给
                 // handlePlaybackError/onPlaybackEnded/saveRecordNow 加了门控）：
@@ -1541,23 +1524,10 @@ class PlayViewModel @Inject constructor(
         readyTimeoutJob?.cancel()
         searchJob?.cancel()
         playerManager.removeListener(playerListener)
-        // 后台播放开着：退出播放页后继续播（画中画/后台音频），不 pause、不 stop；
-        // 关着：沿用旧行为，退出即停播。
+        // 后台播放已移除（第 74 轮）：退出播放页即停播，不再按开关区分。
         cleanupScope.launch {
-            // A7-P2-4：清理协程读 DataStore 也要包 runCatching——偏好损坏时
-            // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
-            // LiveViewModel.onCleared 同款）。
-            val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
-                // B17-P2-1：取消异常原样重抛，不当成读失败按关处理。
-                .onFailure { if (it is CancellationException) throw it }
-                .getOrDefault(false)
-            if (backgroundOn) {
-                playerManager.backgroundPlaybackEnabled = true
-            } else {
-                playerManager.backgroundPlaybackEnabled = false
-                playerManager.pauseIfOwner(playbackToken)
-                playerManager.stopIfOwner(playbackToken)
-            }
+            playerManager.pauseIfOwner(playbackToken)
+            playerManager.stopIfOwner(playbackToken)
         }
         // cleanupScope 不在这里 cancel：断点保存协程要在 onCleared 之后跑完。
         super.onCleared()
@@ -1708,29 +1678,24 @@ class PlayViewModel @Inject constructor(
             overlayEnabled && episodeIndex < episodeCount - 1 && dismissedForIndex != episodeIndex
 
         /**
-         * 后台是否允许开播（可单测，A9-P1-2）：页面在前台时一律允许；
-         * 后台时只允许已开播过的延续（PiP 内自动换源/下一集、开关开着的继续播），
-         * 从未开播过的新开播一律暂缓（开关开时是无 PiP 窗口的后台音频，
-         * 开关关时违背开关语义）；暂缓的开播由 onPageResumed() 回前台时补上。
+         * 后台是否允许开播（可单测，A9-P1-2；第 74 轮后台播放已移除）：页面在前台
+         * 时一律允许；后台的新开播一律暂缓；暂缓的开播由 onPageResumed() 回前台
+         * 时补上。
          * 与 LiveViewModel.shouldStartPlayback 同款谓词（两页各一份，见该处注释）。
          */
         internal fun shouldStartPlayback(
             pageActive: Boolean,
-            backgroundPlaybackEnabled: Boolean,
-            playbackStarted: Boolean,
-        ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+        ): Boolean = pageActive
 
         /**
-         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3）：与开播门控同谓词——
-         * 前台一律处理；后台只处理已开播过的延续（PiP 内断流恢复/自动换源）；
-         * 离页且后台播放关着时不处理（不累加失败计数、不弹 Toast、不落错误态），
-         * 只记 pendingStart 待补开播，回页时 onPageResumed 重播当前源。
+         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3；第 74 轮后台播放
+         * 已移除）：与开播门控同谓词——前台一律处理；离页时不处理（不累加失败
+         * 计数、不弹 Toast、不落错误态），只记 pendingStart 待补开播，回页时
+         * onPageResumed 重播当前源。
          */
         internal fun shouldHandlePlaybackError(
             pageActive: Boolean,
-            backgroundPlaybackEnabled: Boolean,
-            playbackStarted: Boolean,
-        ): Boolean = shouldStartPlayback(pageActive, backgroundPlaybackEnabled, playbackStarted)
+        ): Boolean = shouldStartPlayback(pageActive)
         /**
          * 轮询里片尾前 10 秒预告是否应提前出现（可单测，第 7 轮 P2-2）：
          * 本集还没出过（nextEpisodeShownForIndex != episodeIndex）、开关开、
@@ -1804,12 +1769,12 @@ class PlayViewModel @Inject constructor(
             IntroSkip.shouldAutoSkip(positionMs, introEndMs, autoSkipEnabled, alreadySkipped, durationMs)
 
         /**
-         * 轮询是否应推进（可单测，P2-9）：在前台、或后台播放开着时都推进；
-         * 切后台且后台播放关着时只空转——UI 刷新与断点保存都停，
-         * 播放器本身由 MainActivity 在 onUserLeaveHint 里暂停，不靠轮询停。
+         * 轮询是否应推进（可单测，P2-9；第 74 轮后台播放已移除）：只在前台推进；
+         * 切后台时只空转——UI 刷新与断点保存都停，播放器本身由 MainActivity
+         * 在 onUserLeaveHint 里暂停，不靠轮询停。
          */
-        internal fun shouldPoll(isForeground: Boolean, backgroundPlaybackEnabled: Boolean): Boolean =
-            isForeground || backgroundPlaybackEnabled
+        internal fun shouldPoll(isForeground: Boolean): Boolean =
+            isForeground
 
         /**
          * 起点是否已超出本源时长（可单测，A7-P2-2）：ExoPlayer 的 seekTo 会钳制到

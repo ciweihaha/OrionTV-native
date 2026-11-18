@@ -96,7 +96,7 @@ class SettingsViewModel @Inject constructor(
             // B6-P2-9：combine/collect 加 try/catch——DataStore 流抛错时旧实现
             // 让协程直接死掉，isLoading 恒 true、设置页永久空白；现在落错误态。
             try {
-                // 显式类型参数：9 条流元素类型不一（String/Boolean/Int），Kotlin 2.4 起
+                // 显式类型参数：8 条流元素类型不一（String/Boolean/Int），Kotlin 2.4 起
                 // 不再允许把 reified 类型参数推断为交集类型。
                 combine<Any?, SettingsUiState>(
                 settingsRepository.apiBaseUrl,
@@ -105,7 +105,6 @@ class SettingsViewModel @Inject constructor(
                 settingsRepository.autoSkipIntro,
                 settingsRepository.introSkipSeconds,
                 settingsRepository.incognitoMode,
-                settingsRepository.backgroundPlayback,
                 settingsRepository.speedMemory,
                 settingsRepository.remoteInputEnabled,
             ) { values ->
@@ -121,9 +120,8 @@ class SettingsViewModel @Inject constructor(
                     autoSkipIntro = values[3] as Boolean,
                     introSkipSeconds = values[4] as Int,
                     incognitoMode = values[5] as Boolean,
-                    backgroundPlayback = values[6] as Boolean,
-                    speedMemory = values[7] as Boolean,
-                    remoteInputEnabled = values[8] as Boolean,
+                    speedMemory = values[6] as Boolean,
+                    remoteInputEnabled = values[7] as Boolean,
                 )
             }.collect { loaded ->
                 // B19-P2-2：待定档位优先于流值——点按后写盘落盘前的窗口内，
@@ -387,9 +385,6 @@ class SettingsViewModel @Inject constructor(
     fun setIncognitoMode(value: Boolean) =
         saveSetting("incognitoMode") { settingsRepository.setIncognitoMode(value) }
 
-    fun setBackgroundPlayback(value: Boolean) =
-        saveSetting("backgroundPlayback") { settingsRepository.setBackgroundPlayback(value) }
-
     /** 片头时长：点按循环切换档位（0/30/60/90/120 秒，0=不跳）。 */
     fun cycleIntroSkipSeconds() {
         // B19-P2-2：以待定值（有）或当前态算下一档，同步记下待定并乐观更新
@@ -443,6 +438,5 @@ data class SettingsUiState(
     val introSkipSeconds: Int = 90,
     val speedMemory: Boolean = true,
     val incognitoMode: Boolean = false,
-    val backgroundPlayback: Boolean = false,
     val remoteInputEnabled: Boolean = false,
 )

@@ -65,7 +65,7 @@ import kotlinx.coroutines.delay
 /**
  * 搜索页（ui-design.md §5.5）：
  * 顶部搜索框（屏上键盘 + 扫码远程输入入口）+ 输入时下方联想 chips；
- * 结果网格；无结果提示 + “换个关键词”；搜索历史 chips（可单条删除）；
+ * 结果网格；无结果提示 + “换个关键词”；搜索历史 chips（常驻不跳、标题旁“清除”一键清空）；
  * 搜索不清空已输内容，返回搜索页保留上次结果。
  * 焦点（P1-4）：首进落搜索框；从详情返回时恢复上次点的结果卡片，不拉回搜索框。
  */
@@ -422,38 +422,43 @@ fun SearchScreen(
                     }
                 }
 
-                // 搜索历史 chip（可单条删除；点按填回并搜索）。
-                if (uiState.query.isBlank() && uiState.history.isNotEmpty()) {
+                // 第 74 轮：搜索历史 chip 常驻——输字后也不卸载（原来 query 非空
+                // 即不渲染，历史一输字就消失、下方内容全往上跳）；每词旁的“删除”
+                // 去掉，标题旁一个“清除”按钮，一点清空全部。
+                if (uiState.history.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(text = "搜索历史", style = OrionTextStyles.SectionTitle)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "搜索历史",
+                            style = OrionTextStyles.SectionTitle,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryButton(
+                            text = "清除",
+                            onClick = {
+                                viewModel.clearHistory()
+                                // 清空后整行被卸载，焦点回搜索框，不留在已卸载的按钮上。
+                                searchRequester.requestFocus()
+                            },
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
                         items(uiState.history) { keyword ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CategoryChip(
-                                    text = keyword,
-                                    selected = false,
-                                    onClick = {
-                                        showKeyboard = false
-                                        viewModel.searchHistory(keyword)
-                                        // C6-P1-3：点历史 chip 后整行被卸载（query 非空即
-                                        // 不渲染历史行），焦点无处可去；先回搜索框——
-                                        // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
-                                        searchRequester.requestFocus()
-                                    },
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
-                                SecondaryButton(
-                                    text = "删除",
-                                    onClick = {
-                                        viewModel.deleteHistory(keyword)
-                                        // C6-P1-3：删掉的 chip 行被卸载，焦点回搜索框，
-                                        // 不留在已卸载的按钮上。
-                                        searchRequester.requestFocus()
-                                    },
-                                )
-                            }
+                            CategoryChip(
+                                text = keyword,
+                                selected = false,
+                                onClick = {
+                                    showKeyboard = false
+                                    viewModel.searchHistory(keyword)
+                                    // C6-P1-3：点历史 chip 后搜新词，焦点回搜索框——
+                                    // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
+                                    searchRequester.requestFocus()
+                                },
+                            )
                         }
                     }
                 }
@@ -474,9 +479,11 @@ fun SearchScreen(
                     OnScreenKeyboard(
                         query = uiState.query,
                         onQueryChange = { viewModel.onQueryChange(it) },
-                        onSearch = {
+                        // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
+                        // 直接用它搜，不再读可能还没更新的 uiState.query。
+                        onSearch = { finalQuery ->
                             showKeyboard = false
-                            viewModel.searchNow(uiState.query)
+                            viewModel.searchNow(finalQuery)
                         },
                         onDismiss = { showKeyboard = false },
                     )

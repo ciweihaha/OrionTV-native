@@ -138,18 +138,6 @@ class LiveViewModel @Inject constructor(
         initialised = true
         // A5-P2-9：init() 里的 claim 已删——playCurrent() 开播时自会认领，
         // 这里先认领一次纯属多余（首个代际从未播过任何内容就被下一代取代）。
-        // 后台播放开关读入 PlayerManager：MainActivity.onUserLeaveHint 靠它决定是否进画中画；
-        // 之前只有点播页读这个开关，直播页按 Home 从不进 PiP、回首页必停播。
-        viewModelScope.launch {
-            // B9-P2-1：DataStore 读失败不让协程未捕获崩溃；失败即保持现有值。
-            runCatching { settingsRepository.currentBackgroundPlayback() }
-                .onSuccess { playerManager.backgroundPlaybackEnabled = it }
-                .onFailure {
-                    // B17-P2-1：取消异常原样重抛，不当成普通读失败沿用旧值。
-                    if (it is CancellationException) throw it
-                    AppLog.w("LiveViewModel", "后台播放开关读入失败，沿用现有值：${it.message}")
-                }
-        }
         initJob = viewModelScope.launch {
             val favJson = runCatching { settingsRepository.currentLiveFavChannelsJson() }
                 // B17-P2-1：取消异常原样重抛，不当成读失败回落空串。
@@ -387,9 +375,8 @@ class LiveViewModel @Inject constructor(
     private fun playCurrent() {
         // A9-P1-1：开播前复核页面仍在前台——加载期间按 Home 后，init 完成、
         // 数字键 1.5 秒提交定时器到点、刷新完成都可能在后台调到这里；后台的
-        // 新开播暂缓（不认领、不碰播放器），回前台时 onPageResumed() 补开播；
-        // 已开播过的延续（PiP 内断流恢复、开关开着的继续播）不受影响。
-        if (!shouldStartPlayback(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
+        // 新开播暂缓（不认领、不碰播放器），回前台时 onPageResumed() 补开播。
+        if (!shouldStartPlayback(pageActive)) return
         // A4-P2-9：每次开播重新认领播放代际（错误/状态回调核对后再处理）。
         playbackToken = playerManager.claimPlayback()
         // 换台即开启新的稳定窗口：旧台的稳定确认任务不再有效（P1-6）。
@@ -443,10 +430,9 @@ class LiveViewModel @Inject constructor(
         // playCurrent 的 shouldStartPlayback 门控已拦住重播（无音频泄漏），
         // 但门控之前的账已算了（controller.onPlaybackError 推进 failCount/
         // lineIndex/currentIndex，TryLine/NextChannel 还弹“正在尝试备用线路”
-        // Toast、GiveUp 还置 playbackFailed）；后台播放开着时按“已开播过的
-        // 延续”放行（与 playCurrent 同谓词），回页时 onPageResumed 按
-        // shouldResumePlayback 重开播当前台，不丢恢复。
-        if (!shouldHandlePlaybackError(pageActive, playerManager.backgroundPlaybackEnabled, playbackStarted)) return
+        // Toast、GiveUp 还置 playbackFailed）；离页的错误一律不处理，回页时
+        // onPageResumed 按 shouldResumePlayback 重开播当前台，不丢恢复。
+        if (!shouldHandlePlaybackError(pageActive)) return
         // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
         stablePlayJob?.cancel()
         val state = _uiState.value
@@ -518,9 +504,8 @@ class LiveViewModel @Inject constructor(
 
     /**
      * 离页（A5-P1-2/A5-P2-10，供 LiveScreen 的 ON_PAUSE 与 onDispose 调用）：
-     * 后台播放开关关着时暂停本页的播放（导航轨切走直播页也一样，之前音频
-     * 继续播）；时钟与 EPG 刷新定时器随页停掉，切走后不再后台空转。
-     * 开关开着时不暂停（画中画/后台音频继续），但定时器同样停——回页时重起。
+     * 离页即暂停本页的播放（导航轨切走直播页也一样，之前音频继续播）；
+     * 时钟与 EPG 刷新定时器随页停掉，切走后不再后台空转。
      * 第 7 轮 P1-1：待定播放任务（就绪超时/数字键提交/面板定时器）一并取消——
      * 旧实现只停 ticker/EPG，15 秒就绪超时、数字键提交、面板定时器到点仍会
      * playCurrent()，音频泄漏到别的页面；到点回调另凭 pagePaused 二次核对。
@@ -528,9 +513,7 @@ class LiveViewModel @Inject constructor(
     fun onPagePaused() {
         pageActive = false
         pagePaused = true
-        if (!playerManager.backgroundPlaybackEnabled) {
-            playerManager.pauseIfOwner(playbackToken)
-        }
+        playerManager.pauseIfOwner(playbackToken)
         tickerJob?.cancel()
         epgRefreshJob?.cancel()
         // A9-P1-1 + 第 7 轮 P1-1：离页即取消待定播放任务——就绪超时/数字键提交/
@@ -939,23 +922,10 @@ class LiveViewModel @Inject constructor(
         stablePlayJob?.cancel()
         digitCommitJob?.cancel()
         playerManager.removeListener(playerListener)
-        // 后台播放开着：退出直播页后继续播（画中画/后台音频），不 pause、不 stop；
-        // 关着：沿用旧行为，退出即停播。与 PlayViewModel.onCleared 同款逻辑。
+        // 后台播放已移除（第 74 轮）：退出直播页即停播，不再按开关区分。
         cleanupScope.launch {
-            // A7-P2-4：清理协程读 DataStore 也要包 runCatching——偏好损坏时
-            // currentBackgroundPlayback 抛错，之前会让清理协程崩溃（与
-            // PlayViewModel.onCleared 同款）。
-            val backgroundOn = runCatching { settingsRepository.currentBackgroundPlayback() }
-                // B17-P2-1：取消异常原样重抛，不当成读失败按关处理。
-                .onFailure { if (it is CancellationException) throw it }
-                .getOrDefault(false)
-            if (backgroundOn) {
-                playerManager.backgroundPlaybackEnabled = true
-            } else {
-                playerManager.backgroundPlaybackEnabled = false
-                playerManager.pauseIfOwner(playbackToken)
-                playerManager.stopIfOwner(playbackToken)
-            }
+            playerManager.pauseIfOwner(playbackToken)
+            playerManager.stopIfOwner(playbackToken)
         }
         // cleanupScope 不在这里 cancel：后台判断协程要在 onCleared 之后跑完。
         super.onCleared()
@@ -1024,28 +994,22 @@ class LiveViewModel @Inject constructor(
             panelOpen && !epgDialogOpen
 
         /**
-         * 后台是否允许开播（可单测，A9-P1-1）：页面在前台时一律允许；
-         * 后台时只允许已开播过的延续（PiP 内断流恢复、开关开着的继续播），
-         * 从未开播过的新开播一律暂缓（开关开时是无 PiP 窗口的后台音频，
-         * 开关关时违背开关语义）；暂缓的开播由 onPageResumed() 回前台时补上。
+         * 后台是否允许开播（可单测，A9-P1-1；第 74 轮后台播放已移除）：
+         * 页面在前台时一律允许；后台的新开播一律暂缓；暂缓的开播由
+         * onPageResumed() 回前台时补上。
          */
         internal fun shouldStartPlayback(
             pageActive: Boolean,
-            backgroundPlaybackEnabled: Boolean,
-            playbackStarted: Boolean,
-        ): Boolean = pageActive || (backgroundPlaybackEnabled && playbackStarted)
+        ): Boolean = pageActive
 
         /**
-         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3）：与开播门控同谓词——
-         * 前台一律处理；后台只处理已开播过的延续（PiP 内断流恢复）；离页且后台
-         * 播放关着时不处理（不推进失败计数、不弹 Toast、不落失败态），回页时
-         * onPageResumed 重开播当前台。
+         * 离页后播放器错误是否应处理（可单测，第 8 轮 P2-3；第 74 轮后台播放
+         * 已移除）：与开播门控同谓词——前台一律处理；离页时不处理（不推进
+         * 失败计数、不弹 Toast、不落失败态），回页时 onPageResumed 重开播当前台。
          */
         internal fun shouldHandlePlaybackError(
             pageActive: Boolean,
-            backgroundPlaybackEnabled: Boolean,
-            playbackStarted: Boolean,
-        ): Boolean = shouldStartPlayback(pageActive, backgroundPlaybackEnabled, playbackStarted)
+        ): Boolean = shouldStartPlayback(pageActive)
 
         /**
          * 关面板时是否应重播当前台（可单测，A10-P2-3）：信号异常且未在播、
