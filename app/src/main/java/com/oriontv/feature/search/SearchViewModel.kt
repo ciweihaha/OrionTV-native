@@ -290,13 +290,14 @@ class SearchViewModel @Inject constructor(
         //（不走 searchNow 的存档，避免循环写；executeSearch 自己落态时存）。
         if (shouldResumeInterruptedSearch(query, searchedQuery, results, restoredError)) {
             val gen = ++generation
-            // B41-P2-2：恢复重跑先同步置 isLoading=true——executeSearch 的缓存命中
-            // 分支先走 recordSearchHistory（DataStore 读 + 服务端写历史 POST +
-            // 读最新历史 GET 两次网络往返，写失败还重试一次），全程结束才落态；
-            // 不等它，历史往返耗时内 isLoading=false、results=[]、error=null、
-            // query 非空，SearchScreen 四分支全不命中、只剩 24dp Spacer。只改
-            // 恢复重跑分支，不动 executeSearch 开头（那会改正常缓存命中路径的
-            // 行为——旧结果先闪成“正在搜索…”）。
+            // B41-P2-2：恢复重跑先同步置 isLoading=true——第 72 轮之前，
+            // executeSearch 的缓存命中分支先走 recordSearchHistory（DataStore 读 +
+            // 服务端写历史 POST + 读最新历史 GET 两次网络往返，写失败还重试一次），
+            // 全程结束才落态；不等它，历史往返耗时内 isLoading=false、results=[]、
+            // error=null、query 非空，SearchScreen 四分支全不命中、只剩 24dp Spacer。
+            // 第 72 轮起结果先落态、历史放后台，恢复重跑的同步 isLoading=true 仍保留
+            //（缓存命中也是先出旧结果再刷历史，不等它时恢复窗口内仍是旧结果，
+            // 不再是空白 Spacer；置 true 只是保底）。
             _uiState.value = _uiState.value.copy(isLoading = true)
             searchJob = viewModelScope.launch { executeSearch(query, gen) }
         }
@@ -334,6 +335,32 @@ class SearchViewModel @Inject constructor(
         return historySaved to freshHistory
     }
 
+    /**
+     * 后台写历史/读最新历史（第 72 轮）：结果已先落态，这里只刷新 history
+     * 与保存失败的 Toast；代次过期时不写态（B4-P2-3 同款复核——用户已发起
+     * 新搜索时，旧搜索的历史刷新不得覆盖新搜索的状态）。
+     * B37-P2-1：历史保存成功时保留现有 Toast（见 executeSearch 各分支旧注释：
+     * toast 是共用字段，无条件清掉会让在途的“远程输入开启失败…”提示
+     * 未满 2 秒即消失；保留同一事件对象时消费 effect 的 key 不变，
+     * 原 2 秒计时继续走、不会赖着不走）。
+     * B9-P2-3：缓存命中与网络成功共用——搜过的词进历史、历史列表刷新，
+     * 只是不再堵在出结果之前。
+     */
+    private fun recordSearchHistoryInBackground(query: String, gen: Int) {
+        viewModelScope.launch {
+            val (historySaved, freshHistory) = recordSearchHistory(query)
+            if (gen != generation) return@launch
+            _uiState.value = _uiState.value.copy(
+                history = freshHistory,
+                toast = if (!historySaved) {
+                    nextToastEvent("搜索历史保存失败，本次搜索不受影响")
+                } else {
+                    _uiState.value.toast
+                },
+            )
+        }
+    }
+
     private suspend fun executeSearch(query: String, gen: Int = generation) {
         // B65-P2-1：searchedQuery 只在各落态分支置（缓存命中与网络成功
         // 落态已有赋值，三个失败落态各补一个）——入口先置会让在途窗口内
@@ -341,29 +368,18 @@ class SearchViewModel @Inject constructor(
         // 谓词从此误判不再重跑。落态前 results 仍属上一词，searchedQuery
         // 必须与 results 同步落态；代次已过期时直接 return，不置。
         cache.get(query)?.let { cached ->
-            // B9-P2-3：缓存命中也写历史/读最新历史——之前直接 return，搜过的词
-            // 不进历史、历史列表也不刷新；与网络分支走同一段逻辑。
-            val (historySaved, freshHistory) = recordSearchHistory(query)
-            // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
-            // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
-            if (gen != generation) return
             _uiState.value = _uiState.value.copy(
                 results = cached,
                 isLoading = false,
                 error = if (cached.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
-                history = freshHistory,
-                // B37-P2-1：历史保存成功时保留现有 Toast，不写 null——toast 是共用字段，
-                // enableRemoteInput() 失败也往这里写“远程输入开启失败…”；在途搜索完成时
-                // 若无条件清掉，那条失败提示未满 2 秒即消失。保留同一事件对象时消费
-                // effect 的 key（toast.id）不变，原 2 秒计时继续走、不会赖着不走。
-                toast = if (!historySaved) {
-                    nextToastEvent("搜索历史保存失败，本次搜索不受影响")
-                } else {
-                    _uiState.value.toast
-                },
             )
             saveSearchState()
+            // 第 72 轮：结果先出，历史写/读放后台——之前缓存命中也要等写历史
+            //（DataStore 读 + 服务端写历史 POST + 读最新历史 GET 两段往返）
+            // 全程结束才落态，旧结果白白晚出；历史随后刷新
+            //（见 recordSearchHistoryInBackground）。
+            recordSearchHistoryInBackground(query, gen)
             return
         }
         _uiState.value = _uiState.value.copy(isLoading = true, error = null)
@@ -387,25 +403,17 @@ class SearchViewModel @Inject constructor(
             if (gen != generation) return
             // P2-11：空结果不缓存（服务端刚上新内容时用户不再持续看到空结果）。
             if (shouldCacheSearchResults(results)) cache.put(query, results)
-            // B9-P2-3：写历史/读最新历史走共用 helper（缓存命中分支同款）。
-            val (historySaved, freshHistory) = recordSearchHistory(query)
-            // B4-P2-3：两次挂起调用（写历史、读最新 20 条）后复核代次——其间
-            // 用户若已发起新搜索，旧结果不得覆盖新搜索的状态。
-            if (gen != generation) return
             _uiState.value = _uiState.value.copy(
                 results = results,
                 isLoading = false,
                 error = if (results.isEmpty()) SearchError.Empty else null,
                 searchedQuery = query,
-                history = freshHistory,
-                // B37-P2-1：同缓存命中分支——历史保存成功时保留现有 Toast（见上）。
-                toast = if (!historySaved) {
-                    nextToastEvent("搜索历史保存失败，本次搜索不受影响")
-                } else {
-                    _uiState.value.toast
-                },
             )
             saveSearchState()
+            // 第 72 轮：结果先出，历史写/读放后台（同缓存命中分支）——之前结果
+            // 落态前串行走了写历史/读最新历史两段往返，服务端模式下两次网络
+            // 往返都堵在出结果之前。
+            recordSearchHistoryInBackground(query, gen)
         } catch (e: TimeoutCancellationException) {
             // B5-P1-2：MoonTvApi.searchVideos 的 150 秒总超时是
             // TimeoutCancellationException（CE 子类），按 SearchError.Timeout

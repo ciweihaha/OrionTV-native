@@ -763,6 +763,14 @@ class PlayViewModel @Inject constructor(
             handlePlaybackError(null, resumeFromStart = true)
             return
         }
+        // 第 72 轮：播完诊断——提前结束（如 27 秒播完 42 分钟的片）再次出现时，
+        // 凭这行直接区分“断点续播到片尾”（起点即片尾附近）与“列表/播放器
+        // 提前结束”（起点为 0、位置远小于片长）。
+        AppLog.i(
+            "PlayViewModel",
+            "播完：第 ${state.episodeIndex + 1} 集，位置=${playerManager.currentPositionMs}ms，" +
+                "片长=${playerManager.durationMs}ms，开播起点=${episodeStartPositionMs}ms",
+        )
         saveRecordNow()
         // A6-P1-2：看完一集删旧断点——saveRecordNow 只做到“临近片尾不新存”，
         // 之前轮询存下的旧断点（片尾前 10 秒外）还在，重开会从片尾前续播；

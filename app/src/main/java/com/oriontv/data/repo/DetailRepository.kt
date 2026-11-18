@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
@@ -36,6 +37,17 @@ class DetailRepository @Inject constructor(
     private val aggApi: AggApi,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    /**
+     * agg 详情结果的进程内缓存（第 72 轮）：只做失败兜底，不做优先命中——
+     * 正常路径仍每次走网络（新集数不被缓存拖旧）；网络失败或空结果时才用
+     * 缓存顶上去。播放页按标题重搜、聚合侧偶发掉标题时，刚在详情页/上一集
+     * 搜到过的片不再直接报“没有找到相关内容”。TTL 见
+     * [DetailSearchLogic.AGG_DETAIL_CACHE_TTL_MS]。
+     */
+    private data class CachedAggDetail(val results: List<SearchResult>, val savedAtMs: Long)
+
+    private val aggDetailCache = ConcurrentHashMap<String, CachedAggDetail>()
+
     /**
      * 详情搜索。首选源结果先通过 [onUpdate] 发出（allLoaded=false），
      * 全量搜索完成后合并其余源再发一次（allLoaded=true）。
@@ -98,14 +110,59 @@ class DetailRepository @Inject constructor(
      * 未配服务器时的详情回落：agg 直连（`ac=detail`，见 AggApi）。
      * ① id 直取：agg 卡片的 vod_id 是 `站点~编号`；② id 不是 agg 形式
      *（豆瓣卡片的 id 就是标题、收藏/记录里的服务端 id）时按标题在 agg 里搜，
-     * 精确标题匹配才认；两路都空即“没有找到相关内容”。网络错原样抛，
-     * 由 DetailViewModel 落“加载失败，请检查网络后重试”。
+     * 精确标题匹配才认；两路都空或网络失败时先用进程内缓存兜底（第 72 轮，
+     * 见类头注释），缓存也没有才报“没有找到相关内容”（网络错原样抛，
+     * 由 DetailViewModel 落“加载失败，请检查网络后重试”）。
      */
     private suspend fun searchDetailViaAgg(
         q: String,
         id: String?,
         onUpdate: (results: List<SearchResult>, allLoaded: Boolean) -> Unit,
     ) {
+        val cacheKey = DetailSearchLogic.aggDetailCacheKey(q, id)
+        // 第 72 轮：网络失败/空结果时用进程内缓存顶上（见类头注释）——
+        // 取消异常原样重抛；其他异常先记下，缓存未命中时再原样抛出，
+        // 不把网络错误报成“没有找到相关内容”。
+        var lastError: Exception? = null
+        val results = try {
+            fetchAggDetailResults(q, id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            lastError = e
+            null
+        }
+        if (!results.isNullOrEmpty()) {
+            aggDetailCache[cacheKey] =
+                CachedAggDetail(results, System.currentTimeMillis())
+            // agg 只有这一组源，没有更多源可合并，allLoaded 直接为真。
+            onUpdate(results, true)
+            return
+        }
+        val cached = aggDetailCache[cacheKey]
+        val fallback = DetailSearchLogic.selectAggDetailFallback(
+            cached?.results,
+            cached?.savedAtMs ?: 0L,
+            System.currentTimeMillis(),
+        )
+        if (fallback != null) {
+            onUpdate(fallback, true)
+            return
+        }
+        if (lastError != null) throw lastError
+        throw IllegalStateException("没有找到相关内容")
+    }
+
+    /**
+     * agg 详情拉取（searchDetailViaAgg 的网络部分）：① id 直取（`ac=detail`），
+     * ② id 不是 agg 形式时按标题在 agg 里搜、精确标题匹配才认；两路都空
+     * 返回空列表（由调用方决定是报“没有找到相关内容”还是用缓存兜底）。
+     * 网络错原样抛（调用方落“加载失败，请检查网络后重试”）。
+     */
+    private suspend fun fetchAggDetailResults(
+        q: String,
+        id: String?,
+    ): List<SearchResult> {
         var detailItem: AggDetailItem? = null
         if (!id.isNullOrBlank() && id.contains("~")) {
             detailItem = try {
@@ -126,13 +183,12 @@ class DetailRepository @Inject constructor(
                 null
             }
         }
-        val item = detailItem ?: throw IllegalStateException("没有找到相关内容")
+        val item = detailItem ?: return emptyList()
         val results = DetailSearchLogic.mapAggDetailToResults(item)
         if (results.isEmpty() || results.all { it.episodes.isEmpty() }) {
-            throw IllegalStateException("没有找到相关内容")
+            return emptyList()
         }
-        // agg 只有这一组源，没有更多源可合并，allLoaded 直接为真。
-        onUpdate(results, true)
+        return results
     }
 
     private suspend fun fullSearch(
@@ -218,6 +274,34 @@ class DetailRepository @Inject constructor(
 object DetailSearchLogic {
     /** 详情搜索扇出与清晰度检测共用的并发上限（plan §5.2）。 */
     const val SEARCH_CONCURRENCY_LIMIT = 5
+
+    /**
+     * agg 详情缓存的兜底有效期（第 72 轮）：30 分钟——只做失败兜底，不做
+     * 优先命中，过期即不用；新集数最多晚 30 分钟才在“失败兜底”路径里
+     * 出现，正常网络路径每次都取最新，不受它影响。
+     */
+    const val AGG_DETAIL_CACHE_TTL_MS = 30 * 60 * 1000L
+
+    /**
+     * agg 详情缓存的键（可单测，第 72 轮）：agg 复合 id（`站点~编号`）直接
+     * 按 id 区分——同一部片换站点的 id 不同，各自缓存；非 agg 形式 id
+     *（豆瓣卡片的 id 就是标题）按归一化标题区分。
+     */
+    fun aggDetailCacheKey(q: String, id: String?): String =
+        if (!id.isNullOrBlank() && id.contains("~")) "agg:id:$id"
+        else "agg:q:${MoonTvApi.normalizeTitle(q)}"
+
+    /**
+     * agg 详情缓存是否可用作失败兜底（可单测，第 72 轮）：有结果且在
+     * 有效期内才用；空结果、过期、从未缓存过都返回 null（调用方按原样报错）。
+     */
+    fun selectAggDetailFallback(
+        cached: List<SearchResult>?,
+        cachedAtMs: Long,
+        nowMs: Long,
+    ): List<SearchResult>? =
+        if (!cached.isNullOrEmpty() && nowMs - cachedAtMs <= AGG_DETAIL_CACHE_TTL_MS) cached
+        else null
 
     /**
      * 第 70 轮：stripHtml 的两个 Regex 只编一次——原来每调一次 stripHtml

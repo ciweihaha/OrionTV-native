@@ -192,4 +192,59 @@ class DetailSearchLogicTest {
         assertNull(DetailSearchLogic.stripHtml(null))
         assertNull(DetailSearchLogic.stripHtml("  "))
     }
+
+    // 第 72 轮：agg 详情缓存（失败兜底）的键与有效期判定。
+
+    @Test
+    fun `aggDetailCacheKey uses composite id when present`() {
+        assertEquals(
+            "agg:id:api_43~160299",
+            DetailSearchLogic.aggDetailCacheKey("联邦调查局第九季", "api_43~160299"),
+        )
+    }
+
+    @Test
+    fun `aggDetailCacheKey falls back to normalized title`() {
+        assertEquals(
+            "agg:q:阿龙2025",
+            DetailSearchLogic.aggDetailCacheKey(" 阿龙 2025 ", "阿龙2025"),
+        )
+        assertEquals(
+            "agg:q:阿龙2025",
+            DetailSearchLogic.aggDetailCacheKey("阿龙2025", null),
+        )
+        assertEquals(
+            "agg:q:阿龙2025",
+            DetailSearchLogic.aggDetailCacheKey("阿龙2025", ""),
+        )
+    }
+
+    @Test
+    fun `selectAggDetailFallback returns fresh cache`() {
+        val cached = listOf(result("agg:jinyingyun", episodes = 7))
+        val now = 1_000_000L
+        assertEquals(
+            cached,
+            DetailSearchLogic.selectAggDetailFallback(
+                cached,
+                now - DetailSearchLogic.AGG_DETAIL_CACHE_TTL_MS,
+                now,
+            ),
+        )
+    }
+
+    @Test
+    fun `selectAggDetailFallback rejects expired or empty cache`() {
+        val cached = listOf(result("agg:jinyingyun", episodes = 7))
+        val now = 1_000_000L
+        assertNull(
+            DetailSearchLogic.selectAggDetailFallback(
+                cached,
+                now - DetailSearchLogic.AGG_DETAIL_CACHE_TTL_MS - 1L,
+                now,
+            ),
+        )
+        assertNull(DetailSearchLogic.selectAggDetailFallback(emptyList(), now, now))
+        assertNull(DetailSearchLogic.selectAggDetailFallback(null, now, now))
+    }
 }
