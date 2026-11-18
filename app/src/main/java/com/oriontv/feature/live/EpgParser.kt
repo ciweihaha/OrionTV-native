@@ -95,11 +95,24 @@ object EpgParser {
         val channelNames: Map<String, String>,
     )
 
-    fun parse(xml: String): EpgData {
+    /**
+     * 解析 EPG XML。factory 参数仅供单测注入（模拟 Android 解析器行为）；
+     * 生产调用用默认的 DocumentBuilderFactory.newInstance()。
+     */
+    fun parse(
+        xml: String,
+        factory: DocumentBuilderFactory = DocumentBuilderFactory.newInstance(),
+    ): EpgData {
         checkEntityDeclarations(xml)
-        val factory = DocumentBuilderFactory.newInstance()
         factory.isNamespaceAware = false
-        factory.isXIncludeAware = false
+        // 第 74 轮（v2.0.12）：不要调 factory.isXIncludeAware = false——
+        // XInclude 默认就是关的，EPG（XMLTV）从不用 xi:include；而 Android
+        // 的 DocumentBuilderFactoryImpl 没有覆写 setXIncludeAware，继承的
+        // 基类实现直接抛 UnsupportedOperationException（"This parser does
+        // not support specification \"Unknown\" version \"0.0\""），parse
+        // 在打第一行日志前就抛错，fetchEpg 吞掉后只剩 toast，logcat 里零行
+        // EPG 日志（v2.0.11 平板复测 2026-11-19 02:36 的唯一一行 EPG 日志
+        // 就是这个异常）。删掉这行即可，防护不受影响。
         // 防 XXE：真实节目单以 `<!DOCTYPE tv SYSTEM "xmltv.dtd">` 开头，
         // disallow-doctype-decl 会直接拒掉整份 EPG（P0-1），故不禁用 DOCTYPE；
         // 改为禁止拉取外部 DTD/Schema（JAXP 属性名用字符串常量——Android 的

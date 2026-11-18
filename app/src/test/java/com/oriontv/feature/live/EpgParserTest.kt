@@ -325,6 +325,61 @@ class EpgParserTest {
         assertNull(data.programmesByChannel["cctv3"])
     }
 
+    @Test
+    fun `parses real saved epg file when setXIncludeAware throws (Android Harmony)`() {
+        // 第 74 轮（v2.0.12）：Android 的 DocumentBuilderFactoryImpl 没有覆写
+        // setXIncludeAware，调它直接抛 UnsupportedOperationException；旧 parse
+        // 在 AppLog.i 之前就调了这一行，真机上每次解析都在这里抛错，节目单
+        // 永远拉不到。修掉之后，即使 factory 的 setXIncludeAware 会抛，解析
+        // 也必须成功（且 XInclude 仍是关的）。
+        val xml = javaClass.classLoader
+            ?.getResourceAsStream("epg-real-20261118.xml")
+            ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            ?: error("缺少测试资源 epg-real-20261118.xml")
+        val factory = ThrowingXIncludeFactory()
+        val data = EpgParser.parse(xml, factory)
+        assertEquals(57, data.channelNames.size)
+        assertEquals(2413, data.programmesByChannel.values.sumOf { it.size })
+        assertFalse(factory.isXIncludeAware)
+    }
+
+    /** 模拟 Android（Harmony）解析器：除 setXIncludeAware 外一律委托给真实解析器。 */
+    private class ThrowingXIncludeFactory(
+        private val delegate: DocumentBuilderFactory = DocumentBuilderFactory.newInstance(),
+    ) : DocumentBuilderFactory() {
+        override fun setXIncludeAware(state: Boolean) {
+            throw UnsupportedOperationException(
+                "This parser does not support specification \"Unknown\" version \"0.0\"",
+            )
+        }
+
+        override fun isXIncludeAware(): Boolean = delegate.isXIncludeAware
+
+        override fun setNamespaceAware(awareness: Boolean) {
+            delegate.isNamespaceAware = awareness
+        }
+
+        override fun isNamespaceAware(): Boolean = delegate.isNamespaceAware
+
+        override fun newDocumentBuilder(): DocumentBuilder = delegate.newDocumentBuilder()
+
+        override fun setFeature(name: String, value: Boolean) {
+            delegate.setFeature(name, value)
+        }
+
+        override fun getFeature(name: String): Boolean = delegate.getFeature(name)
+
+        override fun setAttribute(name: String, value: Any) {
+            delegate.setAttribute(name, value)
+        }
+
+        override fun getAttribute(name: String): Any? = delegate.getAttribute(name)
+
+        override fun setExpandEntityReferences(expand: Boolean) {
+            delegate.setExpandEntityReferences(expand)
+        }
+    }
+
     /** 模拟 Android 解析器：setFeature 一律抛错（Android 全版本不支持 FEATURE_SECURE_PROCESSING）。 */
     private class UnsupportedFeatureFactory : DocumentBuilderFactory() {
         override fun setFeature(name: String, value: Boolean) {
