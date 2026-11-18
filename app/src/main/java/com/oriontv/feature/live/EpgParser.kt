@@ -26,7 +26,8 @@ object EpgParser {
      * 内部实体声明上限（D-P1-3）：真实 EPG 的 DOCTYPE 是外部
      * `<!DOCTYPE tv SYSTEM "xmltv.dtd">`，不含内部 `<!ENTITY`；
      * 超过上限即按投毒处理、拒绝解析（billion laughs 式膨胀的第一道关）。
-     * 第二道是 FEATURE_SECURE_PROCESSING（解析器自带膨胀上限兜底）。
+     * 第二道是 FEATURE_SECURE_PROCESSING（JVM 解析器自带膨胀上限兜底；
+     * Android 不支持该特性时只记 warning，见 trySetSecureProcessing）。
      */
     internal const val MAX_ENTITY_DECLARATIONS = 5
 
@@ -58,6 +59,26 @@ object EpgParser {
         }
     }
 
+    /**
+     * 第 74 轮：FEATURE_SECURE_PROCESSING 设不上不再抛错——它是 JAXP
+     * 标准特性，但 Android 全版本都不支持（AOSP DocumentBuilderFactory
+     * 注明不支持，Android 官方文档亦然），setFeature 直接抛
+     * ParserConfigurationException。旧实现把它当必选项、设不上就抛
+     * EpgSecurityException 拒绝解析：JVM 单测用的 JDK 解析器支持 FSP，
+     * 全部通过；真机（Android 7.0）上每次解析都在这里抛错，节目单永远
+     * 拉不到——且抛错点在 AppLog.i 之前，logcat 里零行 EPG 解析日志，
+     * 线上完全无法定位。改成与其他五项安全特性同款：返回是否成功设上，
+     * 失败只记 warning、继续解析。剩余防护仍在：内部实体声明预扫描
+     * （checkEntityDeclarations，上限 5 条）是防 billion laughs 的主
+     * 防线，外部 DTD/Schema 与外部实体加载也都尽量关闭；EPG 源是固定
+     * 的同源地址（ysp.ciweihaha.win），不是用户输入的 XML。
+     */
+    internal fun trySetSecureProcessing(factory: DocumentBuilderFactory): Boolean =
+        runCatching {
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+            true
+        }.getOrDefault(false)
+
     @Serializable
     data class Programme(
         val channelId: String,
@@ -85,19 +106,12 @@ object EpgParser {
         // javax.xml.XMLConstants 没有 ACCESS_EXTERNAL_DTD/SCHEMA 这两个字段），
         // 再关外部实体与外部 DTD 加载。
         //
-        // D-P1-3：FEATURE_SECURE_PROCESSING 是必选项（JAXP 标准特性），
-        // 设不上说明本机解析器不可信，抛 EpgSecurityException 拒绝解析，
-        // 不再包在 runCatching 里只记一条日志就继续裸奔；
+        // 第 74 轮：FEATURE_SECURE_PROCESSING 是可选项（见 trySetSecureProcessing），
+        // 不再硬要求——Android 全版本都不支持，硬要求等于真机永远拒绝解析。
         // Oracle 的 entityExpansionLimit 等属性名 Android 实现不支持，
-        // 不硬编进来，靠 FSP 自带膨胀上限 + 上面的声明数预扫描兜底。
-        try {
-            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-        } catch (e: Exception) {
-            throw EpgSecurityException(
-                "EPG 解析器不支持 FEATURE_SECURE_PROCESSING，拒绝解析：${e.message}",
-            )
-        }
+        // 不硬编进来，靠预扫描 + 外部实体开关兜底。
         val features = linkedMapOf<String, Boolean>()
+        features["FEATURE_SECURE_PROCESSING"] = trySetSecureProcessing(factory)
         features["ACCESS_EXTERNAL_DTD"] = runCatching {
             factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "")
             true

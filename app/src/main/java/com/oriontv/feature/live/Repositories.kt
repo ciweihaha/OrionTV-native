@@ -1,5 +1,6 @@
 package com.oriontv.feature.live
 
+import com.oriontv.core.util.AppLog
 import com.oriontv.data.api.ApiClient
 import com.oriontv.data.api.BodyTooLargeException
 import com.oriontv.data.api.executeCancellable
@@ -263,20 +264,41 @@ class EpgRepository @Inject constructor(
     /**
      * 纯拉网（15 秒超时、3MB 上限；协程取消原样抛出）。
      * 第 9 轮 D9-P2-8：返回密封结果区分“拉取失败”与“成功但空表”（同 fetchChannels）。
+     * 第 74 轮：失败不再静默——之前这里 catch 后直接返回 Failed，线上出问题
+     * 时 logcat 里没有任何 EPG 失败记录，无法区分 HTTP 失败、体超限、解析
+     * 抛错（v2.0.9 的节目单故障就是这么漏过去的）。现在分别记：HTTP 状态码、
+     * 响应体问题、异常类型与消息；成功记 body 大小与解析出的台数/节目数。
      */
     suspend fun fetchEpg(): LiveFetchResult<EpgParser.EpgData> = withContext(ioDispatcher) {
         try {
             val request = Request.Builder().url(EPG_URL).get().build()
             playlistClient.newCall(request).executeCancellable().use { response ->
-                if (!response.isSuccessful) return@withContext LiveFetchResult.Failed
+                if (!response.isSuccessful) {
+                    AppLog.w("EpgRepository", "EPG 拉取失败：HTTP ${response.code}")
+                    return@withContext LiveFetchResult.Failed
+                }
                 // A4-P2-2：流式限量读，超 3MB 即停，不先整读 body 再判上限。
                 val body = readBodyCapped(response, ApiClient.MAX_CACHE_BYTES)
-                    ?: return@withContext LiveFetchResult.Failed
-                LiveFetchResult.Success(EpgParser.parse(body))
+                    ?: run {
+                        AppLog.w(
+                            "EpgRepository",
+                            "EPG 拉取失败：响应体为空或超 ${ApiClient.MAX_CACHE_BYTES} 字节上限",
+                        )
+                        return@withContext LiveFetchResult.Failed
+                    }
+                val data = EpgParser.parse(body)
+                val totalProgrammes = data.programmesByChannel.values.sumOf { it.size }
+                AppLog.i(
+                    "EpgRepository",
+                    "EPG 拉取成功：${body.length} 字节，${data.programmesByChannel.size} 台，" +
+                        "$totalProgrammes 条节目",
+                )
+                LiveFetchResult.Success(data)
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AppLog.w("EpgRepository", "EPG 拉取失败：${e::class.java.simpleName}：${e.message}")
             LiveFetchResult.Failed
         }
     }

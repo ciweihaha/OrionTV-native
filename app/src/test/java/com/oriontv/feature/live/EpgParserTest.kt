@@ -6,6 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import javax.xml.parsers.DocumentBuilder
+import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.ParserConfigurationException
 
 class EpgParserTest {
 
@@ -287,6 +290,58 @@ class EpgParserTest {
         )
         assertEquals("短节目", EpgParser.findNowPlaying(list, 3_900_000L)?.title)
         assertEquals("长节目", EpgParser.findNowPlaying(list, 5_000_000L)?.title)
+    }
+
+    @Test
+    fun `trySetSecureProcessing returns false when feature unsupported instead of throwing`() {
+        // 第 74 轮：模拟 Android 解析器——FEATURE_SECURE_PROCESSING 在 Android
+        // 全版本都不支持，setFeature 直接抛 ParserConfigurationException；
+        // 旧实现在这里抛 EpgSecurityException，等于真机上永远拒绝解析。
+        assertFalse(EpgParser.trySetSecureProcessing(UnsupportedFeatureFactory()))
+    }
+
+    @Test
+    fun `trySetSecureProcessing returns true on JVM parser`() {
+        // JDK 解析器支持 FSP，正常设上。
+        assertTrue(EpgParser.trySetSecureProcessing(DocumentBuilderFactory.newInstance()))
+    }
+
+    @Test
+    fun `parses real saved epg file`() {
+        // 第 74 轮：用 2026-11-18 23:48 从服务端保存的真实 epg.xml（384KB、
+        // 57 台、2413 条节目）做解析验证——服务端 11-19 的文件还没发布，
+        // 先以这份为准。文件里没有 cctv1/cctv3（服务端数据缺口），解析后
+        // 同样没有（不是解析丢数据）。
+        val xml = javaClass.classLoader
+            ?.getResourceAsStream("epg-real-20261118.xml")
+            ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            ?: error("缺少测试资源 epg-real-20261118.xml")
+        val data = EpgParser.parse(xml)
+        assertEquals(57, data.channelNames.size)
+        assertEquals(56, data.programmesByChannel.size)
+        assertEquals(2413, data.programmesByChannel.values.sumOf { it.size })
+        assertEquals(38, data.programmesByChannel["cctv2"]?.size)
+        assertNull(data.programmesByChannel["cctv1"])
+        assertNull(data.programmesByChannel["cctv3"])
+    }
+
+    /** 模拟 Android 解析器：setFeature 一律抛错（Android 全版本不支持 FEATURE_SECURE_PROCESSING）。 */
+    private class UnsupportedFeatureFactory : DocumentBuilderFactory() {
+        override fun setFeature(name: String, value: Boolean) {
+            throw ParserConfigurationException("Feature '$name' is not recognized.")
+        }
+
+        override fun getFeature(name: String): Boolean {
+            throw ParserConfigurationException("Feature '$name' is not recognized.")
+        }
+
+        override fun newDocumentBuilder(): DocumentBuilder {
+            throw ParserConfigurationException("stub")
+        }
+
+        override fun setAttribute(name: String, value: Any) = Unit
+
+        override fun getAttribute(name: String): Any? = null
     }
 
     @Test
