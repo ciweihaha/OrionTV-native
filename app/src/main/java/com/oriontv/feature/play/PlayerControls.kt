@@ -131,17 +131,27 @@ fun PlayerControls(
         }
     }
 
-    // 触摸修复：控制条根的空白处点按（见 onVideoTap 参数说明）——
+    // 触摸修复：视频区空白处点按（见 onVideoTap 参数说明）——
     // rememberUpdatedState 兜底：手势检测器只注册一次，回调总读最新值，
     // 不因每秒进度 recomposition 重启而丢点按。
+    // 第 73 轮：tap 检测器从根 Box 移到背景兄弟层（第一个子 Box，在交互
+    // 内容之下）——原先检测器是所有按钮的祖先，父级 onTap 与按钮 onClick
+    // 竞态：点“选集”→ onClick 打开抽屉 → 父级 onTap 随即关闭抽屉/隐藏
+    // 控制条，看起来就是“点不动”（第 72 轮遗留 2；详情页换源不在
+    // PlayerControls 里，所以是好的）。改后点按只落在视频空白处才触发，
+    // 控制条背景上的点按不再隐藏控制条（小面积，可接受）。
     val latestVideoTap = rememberUpdatedState(onVideoTap)
     Box(
-        modifier = modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { latestVideoTap.value() })
-            },
+        modifier = modifier.fillMaxSize(),
     ) {
+        // 背景 tap 层：兄弟层，不含任何按钮——点按只在视频空白处触发。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { latestVideoTap.value() })
+                },
+        )
         // 顶部：标题 + 集数 + 源名。P2-11：单行省略，不让长片名延伸到屏幕中央
         // 与预览气泡重叠；气泡同时下移到标题行之下（top 96dp），双保险。
         Text(

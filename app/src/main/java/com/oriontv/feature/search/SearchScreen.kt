@@ -27,14 +27,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -87,6 +89,9 @@ fun SearchScreen(
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
     val searchRequester = remember { FocusRequester() }
+    // 第 73 轮：预览阶段焦点移动（onPreviewKeyEvent）与系统输入法收起用。
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scanButtonRequester = remember { FocusRequester() }
     // C8-P1-3/A8-P2-2：错误态按钮的焦点锚点（“重试”之前根本没有 requester）。
     val retryRequester = remember { FocusRequester() }
@@ -96,14 +101,14 @@ fun SearchScreen(
     // 用户分不清焦点在搜索框还是在旁边的按钮上）。
     var searchBoxFocused by remember { mutableStateOf(false) }
     // C10-P2-1：输入框内部用 TextFieldValue，才能知道光标位置（与设置输入框
-    // 同款，见 SettingsInputRow 的 C7-P2-3）：光标不在边界时左右键只移光标
-    //（消费松键，不跳焦点）；光标已在行首/行尾时放行——左出到导航轨、
-    // 右进“屏上键盘/手机扫码输入”按钮，是有意逃逸，不是陷阱破口。
+    // 同款，见 SettingsInputRow 的 C7-P2-3）：光标不在边界时左右键只移光标；
+    // 光标已在行首/行尾时移焦点——左出到导航轨、右进“屏上键盘/手机扫码输入”
+    // 按钮，是有意逃逸，不是陷阱破口。
+    // 第 73 轮：焦点移动改到 onPreviewKeyEvent（KeyDown 预览阶段）——
+    // BasicTextField 在 KeyDown 就吃掉方向键做光标移动，KeyUp 阶段再处理
+    // 焦点已无从移动（第 72 轮实测：搜索框里按 下/右 焦点出不去）。
+    // 旧的 KeyUp 快照法（cursorBeforeLeftMove/cursorBeforeRightMove）随之删除。
     var searchTextFieldValue by remember { mutableStateOf(TextFieldValue(uiState.query)) }
-    // C10-P2-1：左右键按下前光标位置的快照（同款快照法：光标移动发生在 KeyDown，
-    // KeyUp 时读到的已是移动后的位置，按移动后位置判断会误判）。
-    var cursorBeforeLeftMove by remember { mutableStateOf(-1) }
-    var cursorBeforeRightMove by remember { mutableStateOf(-1) }
     // 外部改了 query（历史填回、清空、屏上键盘输入）时同步回输入框，光标落行尾。
     LaunchedEffect(uiState.query) {
         if (uiState.query != searchTextFieldValue.text) {
@@ -148,6 +153,9 @@ fun SearchScreen(
     LaunchedEffect(showKeyboard) {
         if (showKeyboard) {
             keyboardWasOpen = true
+            // 第 73 轮：应用内键盘打开时收起系统输入法——两键盘同时开会抢空间，
+            // 系统输入法还会把结果区再压一截。输入框焦点不受影响。
+            keyboardController?.hide()
         } else if (keyboardWasOpen) {
             keyboardWasOpen = false
             // Jewel 第 8 轮 P1-1：键盘卸载时键盘焦点态不再回调，手动清掉，
@@ -330,45 +338,30 @@ fun SearchScreen(
                                 // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
                                 // 后续加载不再重复收回。
                                 if (it.isFocused) resultsAreaHadFocus = false
-                                // B53-P2-2：失焦即清左右键快照（与设置输入框同款）——
-                                // 焦点切走后残留的旧快照不能再用来判定下一次 KeyUp
-                                // （无配对 KeyDown 的 KeyUp，见 shouldConsumeSearchLeftKeyUp）。
-                                if (!it.isFocused) {
-                                    cursorBeforeLeftMove = -1
-                                    cursorBeforeRightMove = -1
-                                }
                             }
                             .onPreviewKeyEvent { event ->
-                                // C10-P2-1：隧道阶段先于输入框自己的光标移动，读到的是
-                                // 移动前位置；只快照、不消费（C7-P2-3 同款）。
-                                if (event.type == KeyEventType.KeyDown) {
-                                    when (event.key) {
-                                        Key.DirectionLeft -> cursorBeforeLeftMove =
-                                            searchTextFieldValue.selection.start
-                                        Key.DirectionRight -> cursorBeforeRightMove =
-                                            searchTextFieldValue.selection.end
-                                        else -> Unit
-                                    }
-                                }
-                                false
-                            }
-                            .onKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyUp) {
-                                    when (event.key) {
-                                        // 按移动前光标位置判断——不在边界时消费松键，
-                                        // 只移光标、不跳焦点；已在边界时放行（左出导航轨、
-                                        // 右进同行按钮，是有意逃逸）。
-                                        Key.DirectionLeft -> shouldConsumeSearchLeftKeyUp(
-                                            cursorBeforeLeftMove,
-                                            searchTextFieldValue.selection.start,
-                                        )
-                                        Key.DirectionRight -> shouldConsumeSearchRightKeyUp(
-                                            cursorBeforeRightMove,
-                                            searchTextFieldValue.selection.end,
-                                            searchTextFieldValue.text.length,
-                                        )
-                                        else -> false
-                                    }
+                                // 第 73 轮：焦点移动必须发生在 KeyDown 预览阶段——
+                                // BasicTextField 在 KeyDown 就吃掉方向键做光标移动，
+                                // 等 KeyUp 再处理时焦点移动已无从发生（第 72 轮实测：
+                                // 搜索框里按 下/右 焦点出不去，提示词也点不动）。
+                                // 判定见 shouldMoveSearchFocusOnKeyDown（可单测）。
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                if (
+                                    shouldMoveSearchFocusOnKeyDown(
+                                        key = event.key,
+                                        cursorStart = searchTextFieldValue.selection.start,
+                                        cursorEnd = searchTextFieldValue.selection.end,
+                                        textLength = searchTextFieldValue.text.length,
+                                    )
+                                ) {
+                                    focusManager.moveFocus(
+                                        when (event.key) {
+                                            Key.DirectionLeft -> FocusDirection.Left
+                                            Key.DirectionRight -> FocusDirection.Right
+                                            Key.DirectionUp -> FocusDirection.Up
+                                            else -> FocusDirection.Down
+                                        },
+                                    )
                                 } else {
                                     false
                                 }
@@ -402,6 +395,69 @@ fun SearchScreen(
                     )
                 }
             }
+            // 第 73 轮：联想 chip + 历史 chip 移到键盘上方（输入时内容，理应在
+            // 输入框旁边）——原先在结果区顶部，键盘打开后结果区被压到 ~0，
+            // chip 被顶出屏幕、点不到（第 72 轮遗留 1a/1b）。
+            // 焦点 latch 与结果区同款：chip 获焦即置位，加载开始时 chip 卸载、
+            // 焦点丢失，effect 凭 latch 把焦点收回搜索框。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
+            ) {
+                // 联想 chip（输入时出现，点按直接搜）。
+                if (uiState.suggestions.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                        items(uiState.suggestions) { suggestion ->
+                            CategoryChip(
+                                text = suggestion,
+                                selected = false,
+                                onClick = {
+                                    showKeyboard = false
+                                    viewModel.searchNow(suggestion)
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // 搜索历史 chip（可单条删除；点按填回并搜索）。
+                if (uiState.query.isBlank() && uiState.history.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(text = "搜索历史", style = OrionTextStyles.SectionTitle)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                        items(uiState.history) { keyword ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CategoryChip(
+                                    text = keyword,
+                                    selected = false,
+                                    onClick = {
+                                        showKeyboard = false
+                                        viewModel.searchHistory(keyword)
+                                        // C6-P1-3：点历史 chip 后整行被卸载（query 非空即
+                                        // 不渲染历史行），焦点无处可去；先回搜索框——
+                                        // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
+                                        searchRequester.requestFocus()
+                                    },
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
+                                SecondaryButton(
+                                    text = "删除",
+                                    onClick = {
+                                        viewModel.deleteHistory(keyword)
+                                        // C6-P1-3：删掉的 chip 行被卸载，焦点回搜索框，
+                                        // 不留在已卸载的按钮上。
+                                        searchRequester.requestFocus()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
             // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
             // 都是“搜完”，都收起，不再盖住下方结果区）。
@@ -427,68 +483,17 @@ fun SearchScreen(
                 }
             }
 
-            // Jewel 第 8 轮 P1-1：结果区容器（联想 chip + 历史 chip + 结果/错误区）——
+            // Jewel 第 8 轮 P1-1：结果区容器（结果/错误区）——
             // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
             // effect 凭 latch（而非卸载后的现读焦点态）决定收回搜索框。
+            // 第 73 轮：联想 chip + 历史 chip 已移到键盘上方（本文件上部），
+            // 不再属于结果区。
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
             ) {
-            // 联想 chip（输入时出现，点按直接搜）。
-            if (uiState.suggestions.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                    items(uiState.suggestions) { suggestion ->
-                        CategoryChip(
-                            text = suggestion,
-                            selected = false,
-                            onClick = {
-                                showKeyboard = false
-                                viewModel.searchNow(suggestion)
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 搜索历史 chip（可单条删除；点按填回并搜索）。
-            if (uiState.query.isBlank() && uiState.history.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(text = "搜索历史", style = OrionTextStyles.SectionTitle)
-                Spacer(modifier = Modifier.height(12.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                    items(uiState.history) { keyword ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CategoryChip(
-                                text = keyword,
-                                selected = false,
-                                onClick = {
-                                    showKeyboard = false
-                                    viewModel.searchHistory(keyword)
-                                    // C6-P1-3：点历史 chip 后整行被卸载（query 非空即
-                                    // 不渲染历史行），焦点无处可去；先回搜索框——
-                                    // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
-                                    searchRequester.requestFocus()
-                                },
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            // P2-27：删除按钮加大目标、与 chip 拉开距离（原“×”偏小且紧贴）。
-                            SecondaryButton(
-                                text = "删除",
-                                onClick = {
-                                    viewModel.deleteHistory(keyword)
-                                    // C6-P1-3：删掉的 chip 行被卸载，焦点回搜索框，
-                                    // 不留在已卸载的按钮上。
-                                    searchRequester.requestFocus()
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
             Spacer(modifier = Modifier.height(24.dp))
             when {
                 uiState.isLoading -> {
@@ -621,28 +626,30 @@ fun SearchScreen(
     }
 }
 
-/** 搜索框左键松键是否消费（可单测，C10-P2-1）：与设置输入框同款快照法——
- * 光标不在行首时只移光标（消费松键，不跳到导航轨）；已在行首时放行，
- * 冒泡回左侧导航轨（与设置页“回左菜单”同款有意逃逸，不是陷阱破口）。
- * 注意入参必须是 KeyDown 时快照的移动前位置，KeyUp 时读到的已是移动后位置。
- * B53-P2-2（与设置侧 Jewel P2-5/P2-8 同款）：-1（未知/无配对 KeyDown）时
- * 默认消费、不放行——留在框内是可恢复的安全方向；取 min(快照, 当前光标)——
- * 长按到行首时最后一次快照是到 0 之前的位置（1），只按快照判定会误消费。 */
-internal fun shouldConsumeSearchLeftKeyUp(cursorBeforeMove: Int, cursorNow: Int): Boolean {
-    if (cursorBeforeMove == -1) return true
-    return minOf(cursorBeforeMove, cursorNow) != 0
-}
-
-/** 搜索框右键松键是否消费（可单测，C10-P2-1）：光标不在行尾时只移光标；
- * 已在行尾时放行，焦点移到右侧“屏上键盘/手机扫码输入”按钮。
- * B53-P2-2：-1 默认消费（与左键同款安全方向）；取 max(快照, 当前光标)——
- * 右向移动的边界在行尾，取两者中更靠行尾的一个：长按到行尾时最后一次快照
- * 是到行尾之前的位置（len-1），当前光标已是 len，只按快照（或取 min）判定
- * 会误消费、松手后仍留在框内。短按从 len-1 到 len 同款：松手即放行（与左键
- * 从 1 到 0 松手即回导航轨一致，见设置侧 Jewel P2-8）。 */
-internal fun shouldConsumeSearchRightKeyUp(cursorBeforeMove: Int, cursorNow: Int, textLength: Int): Boolean {
-    if (cursorBeforeMove == -1) return true
-    return maxOf(cursorBeforeMove, cursorNow) < textLength
+/** 搜索框方向键在 KeyDown 预览阶段是否应移焦点（可单测，第 73 轮）：
+ * 取代旧的 KeyUp 快照法（shouldConsumeSearchLeftKeyUp/RightKeyUp）——
+ * BasicTextField 在 KeyDown 就吃掉方向键做光标移动，等 KeyUp 再处理时
+ * 焦点移动已无从发生（第 72 轮实测：搜索框里按 下/右 焦点出不去）。
+ * 返回 true 时调用方用 FocusManager.moveFocus 移焦点并消费事件；
+ * 返回 false 时放行，让输入框自己移光标。
+ * - Left：光标在行首（start <= 0）才移焦点（左出到导航轨）；
+ *   不在行首时只移光标。
+ * - Right：光标在行尾（end >= textLength）才移焦点
+ *   （右进“屏上键盘/手机扫码输入”按钮）；不在行尾时只移光标。
+ * - Down/Up：永远移焦点——单行搜索框，无多行文本可移光标；
+ *   键盘开着时 Down 进键盘，关着时 Down 进提示词/结果区。
+ * 注意：光标位置取的是 KeyDown 预览阶段读到的值（移动前位置），
+ * 与旧快照法等价，但判定与移动发生在同一次事件里，不再跨阶段。 */
+internal fun shouldMoveSearchFocusOnKeyDown(
+    key: Key,
+    cursorStart: Int,
+    cursorEnd: Int,
+    textLength: Int,
+): Boolean = when (key) {
+    Key.DirectionLeft -> cursorStart <= 0
+    Key.DirectionRight -> cursorEnd >= textLength
+    Key.DirectionDown, Key.DirectionUp -> true
+    else -> false
 }
 
 /**

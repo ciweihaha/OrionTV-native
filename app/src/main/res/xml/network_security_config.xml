@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  第 73 轮：平台级信任配置——Android 7.0 系统信任库没有 ISRG Root X1/X2，
+  Let's Encrypt 证书的图床（电影行全站 p.lzp261118.com、电视行 8 个图床）
+  在 Coil/OkHttp 里 TLS 握手失败，海报全黑。v2.0.7 的 TlsTrust 只修了
+  HttpsURLConnection（ExoPlayer 播放流），Coil 不走它。
+  本配置信任 system + ISRG X1 + ISRG X2，覆盖所有网络栈（OkHttp/Coil、
+  HttpURLConnection、ExoPlayer）；不降低安全（只加两个公开根，不放行明文，
+  usesCleartextTraffic 仍为 false）。
+-->
+<network-security-config>
+    <base-config>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/isrg_root_x1" />
+            <certificates src="@raw/isrg_root_x2" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

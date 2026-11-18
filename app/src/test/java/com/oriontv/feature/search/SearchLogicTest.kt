@@ -1,5 +1,6 @@
 package com.oriontv.feature.search
 
+import androidx.compose.ui.input.key.Key
 import com.oriontv.data.api.SearchResponseException
 import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
@@ -64,36 +65,33 @@ class SearchLogicTest {
     }
 
     @Test
-    fun `search box horizontal keys move cursor only except at edges`() {
-        // C10-P2-1：与设置输入框同款快照法——光标不在边界时左右键只移光标
-        //（消费松键，不跳焦点）；已在行首时左键放行回导航轨、已在行尾时
-        // 右键放行进同行按钮，是有意逃逸
-        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 3, cursorNow = 2))
-        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 1, cursorNow = 1))
-        assertFalse(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 0, cursorNow = 0))
-        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 0, cursorNow = 1, textLength = 3))
-        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 1, cursorNow = 2, textLength = 3))
-        assertFalse(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 3, cursorNow = 3, textLength = 3))
+    fun `search box horizontal keys move focus only at edges`() {
+        // 第 73 轮：KeyDown 预览阶段判定——光标不在边界时放行（只移光标）；
+        // 已在行首时左键移焦点回导航轨、已在行尾时右键移焦点进同行按钮。
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.DirectionLeft, cursorStart = 3, cursorEnd = 3, textLength = 5))
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.DirectionLeft, cursorStart = 1, cursorEnd = 1, textLength = 5))
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionLeft, cursorStart = 0, cursorEnd = 0, textLength = 5))
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.DirectionRight, cursorStart = 0, cursorEnd = 1, textLength = 3))
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.DirectionRight, cursorStart = 1, cursorEnd = 2, textLength = 3))
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionRight, cursorStart = 3, cursorEnd = 3, textLength = 3))
     }
 
     @Test
-    fun `search box unpaired key up defaults to consume`() {
-        // B53-P2-2（与设置侧 Jewel P2-5 同款）：快照 -1（无配对 KeyDown）时
-        // 默认消费、不放行——左键不意外逃到导航轨，留在框内是可恢复的安全方向。
-        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = -1, cursorNow = 3))
-        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = -1, cursorNow = 0))
-        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = -1, cursorNow = 3, textLength = 3))
+    fun `search box vertical keys always move focus`() {
+        // 第 73 轮：单行搜索框，Up/Down 没有多行文本可移光标，永远移焦点——
+        // 键盘开着时 Down 进键盘，关着时 Down 进提示词/结果区。
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionDown, cursorStart = 2, cursorEnd = 2, textLength = 5))
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionUp, cursorStart = 2, cursorEnd = 2, textLength = 5))
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionDown, cursorStart = 0, cursorEnd = 0, textLength = 0))
+        assertTrue(shouldMoveSearchFocusOnKeyDown(Key.DirectionUp, cursorStart = 0, cursorEnd = 0, textLength = 0))
     }
 
     @Test
-    fun `search box long press to edge releases on key up`() {
-        // B53-P2-2（与设置侧 Jewel P2-8 同款）：长按左键到行首、最后一次快照
-        // 是到 0 之前的位置（1），取 min(快照, 当前光标) 即放行；光标还在中间
-        // 时消费。右键同款：长按到行尾取 max，短按从 len-1 到 len 松手即放行。
-        assertFalse(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 1, cursorNow = 0))
-        assertTrue(shouldConsumeSearchLeftKeyUp(cursorBeforeMove = 2, cursorNow = 1))
-        assertFalse(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 2, cursorNow = 3, textLength = 3))
-        assertTrue(shouldConsumeSearchRightKeyUp(cursorBeforeMove = 1, cursorNow = 2, textLength = 3))
+    fun `search box other keys never move focus`() {
+        // 第 73 轮：Enter/Backspace/Tab 等键不触发焦点移动。
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.Enter, cursorStart = 0, cursorEnd = 0, textLength = 5))
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.Backspace, cursorStart = 3, cursorEnd = 3, textLength = 5))
+        assertFalse(shouldMoveSearchFocusOnKeyDown(Key.Tab, cursorStart = 0, cursorEnd = 0, textLength = 5))
     }
 
     @Test

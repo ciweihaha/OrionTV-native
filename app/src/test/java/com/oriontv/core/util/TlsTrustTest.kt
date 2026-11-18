@@ -25,6 +25,17 @@ class TlsTrustTest {
         return file.readBytes()
     }
 
+    /** 第 73 轮：读 X2 根文件（图床 jinyingimage/huyajs 等链到 X2）。 */
+    private fun bundledRootX2Pem(): ByteArray {
+        val candidates = listOf(
+            File("src/main/res/raw/isrg_root_x2.pem"),
+            File("app/src/main/res/raw/isrg_root_x2.pem"),
+        )
+        val file = candidates.firstOrNull { it.exists() }
+            ?: error("找不到内置根证书 res/raw/isrg_root_x2.pem，候选：$candidates")
+        return file.readBytes()
+    }
+
     @Test
     fun `bundled root parses to ISRG Root X1 CA certificate`() {
         val cert = TlsTrust.parsePemCertificate(bundledRootPem())
@@ -41,6 +52,21 @@ class TlsTrustTest {
     }
 
     @Test
+    fun `bundled X2 root parses to ISRG Root X2 CA certificate`() {
+        // 第 73 轮：X2 根必须真实、可用——电视行 5 个图床链到 X2。
+        val cert = TlsTrust.parsePemCertificate(bundledRootX2Pem())
+        assertTrue(cert.subjectX500Principal.name.contains("CN=ISRG Root X2"))
+        assertTrue(cert.issuerX500Principal.name.contains("CN=ISRG Root X2"))
+        assertTrue(cert.basicConstraints >= 0)
+    }
+
+    @Test
+    fun `bundled X2 root fingerprint matches published ISRG Root X2 fingerprint`() {
+        val cert = TlsTrust.parsePemCertificate(bundledRootX2Pem())
+        assertEquals(TlsTrust.ISRG_ROOT_X2_SHA256, TlsTrust.sha256Fingerprint(cert))
+    }
+
+    @Test
     fun `ssl context builds with bundled root as accepted issuer`() {
         val pem = bundledRootPem()
         val sslContext = TlsTrust.sslContextWithExtraRoots(pem)
@@ -49,6 +75,22 @@ class TlsTrustTest {
         val trustManager = TlsTrust.combinedTrustManager(listOf(cert))
         assertTrue(
             trustManager.acceptedIssuers.any { it.encoded.contentEquals(cert.encoded) },
+        )
+    }
+
+    @Test
+    fun `ssl context builds with both bundled roots as accepted issuers`() {
+        // 第 73 轮：X1 + X2 两个根一起装进组合信任管理器。
+        val x1 = TlsTrust.parsePemCertificate(bundledRootPem())
+        val x2 = TlsTrust.parsePemCertificate(bundledRootX2Pem())
+        val sslContext = TlsTrust.sslContextWithExtraRoots(bundledRootPem(), bundledRootX2Pem())
+        assertTrue(sslContext.socketFactory != null)
+        val trustManager = TlsTrust.combinedTrustManager(listOf(x1, x2))
+        assertTrue(
+            trustManager.acceptedIssuers.any { it.encoded.contentEquals(x1.encoded) },
+        )
+        assertTrue(
+            trustManager.acceptedIssuers.any { it.encoded.contentEquals(x2.encoded) },
         )
     }
 }
