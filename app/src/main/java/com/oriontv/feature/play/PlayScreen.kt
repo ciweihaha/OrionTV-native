@@ -1,8 +1,13 @@
 package com.oriontv.feature.play
 
 import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -24,6 +30,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +54,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -58,6 +68,7 @@ import androidx.tv.material3.Text
 import com.oriontv.core.focus.onKeyUp
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.core.focus.requestFocusWithRetry
+import com.oriontv.data.api.AssrtSubtitle
 import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.ui.components.CategoryChip
 import com.oriontv.ui.components.LoadingAnimation
@@ -66,6 +77,7 @@ import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
 import com.oriontv.ui.components.consumeTaps
 import com.oriontv.ui.theme.OrionColors
+import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
 import kotlinx.coroutines.delay
 
@@ -368,6 +380,17 @@ fun PlayScreen(
     // 播放错误页“重试”按钮的焦点：错误出现时默认落到它（P2-3，与直播失败页一致）。
     val errorRetryRequester = remember { FocusRequester() }
     var previousDrawer by remember { mutableStateOf<PlayDrawer?>(null) }
+    // 第 76 轮 v2.0.15：外挂字幕文件选择器（SAF，任意文件，扩展名由 ViewModel 校验）。
+    // 选到的 content:// URI 直接喂给 Media3，不复制。文件名从 ContentResolver 读
+    // DISPLAY_NAME，读不到回落到 URI 最后一段。
+    val context = LocalContext.current
+    val subtitleFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = resolveSubtitleFileName(context, uri)
+        viewModel.setExternalSubtitleFile(uri, name)
+    }
     // C8-P2-3：错误在抽屉打开时出现，先关抽屉、等抽屉关了再落焦点——
     // 直接落焦会把焦点抢到遮罩下的“重试”按钮上；抽屉关闭 effect 见下。
     var errorPendingAfterDrawerClose by remember { mutableStateOf(false) }
@@ -392,6 +415,12 @@ fun PlayScreen(
     LaunchedEffect(focusRestoreTick) {
         if (shouldRestoreRootFocusOnTick(focusRestoreTick, uiState.drawer != null)) {
             rootRequester.requestFocus()
+        }
+    }
+    // 第 76 轮 v2.0.15：字幕菜单打开时读入已存的 Assrt 令牌（输入框回显）。
+    LaunchedEffect(uiState.drawer) {
+        if (uiState.drawer == PlayDrawer.SUBTITLE) {
+            viewModel.loadAssrtToken()
         }
     }
 
@@ -1127,10 +1156,13 @@ fun PlayScreen(
                 onOpenEpisodes = { viewModel.openDrawer(PlayDrawer.EPISODES); pokeControls() },
                 onOpenSpeed = { viewModel.openDrawer(PlayDrawer.SPEED); pokeControls() },
                 onOpenSources = { viewModel.openDrawer(PlayDrawer.SOURCES); pokeControls() },
-                // 第 70 轮：字幕循环切换（无内嵌字幕轨时按钮禁用）。
-                subtitleLabel = subtitleButtonLabel(uiState.subtitleTracks, uiState.selectedSubtitleIndex),
-                subtitleEnabled = uiState.subtitleTracks.isNotEmpty(),
-                onCycleSubtitle = { viewModel.cycleSubtitle(); pokeControls() },
+                // 第 76 轮 v2.0.15：字幕菜单（内嵌轨/外挂文件/在线搜字幕）；总有可做的事，
+                // 不再因无内嵌轨禁用——无轨时仍可挂外挂字幕、在线搜字幕。
+                subtitleLabel = subtitleButtonLabelWithExternal(
+                    uiState.subtitleTracks, uiState.selectedSubtitleIndex, uiState.externalSubtitle?.name,
+                ),
+                subtitleEnabled = true,
+                onOpenSubtitle = { viewModel.openDrawer(PlayDrawer.SUBTITLE); pokeControls() },
                 // 触摸修复：控制条显着时，视频区空白处点按走视频点按回调
                 // （收控制条/关抽屉/提交预览落点，与遥控器同款行为）。
                 onVideoTap = { latestVideoTap.value() },
@@ -1194,6 +1226,31 @@ fun PlayScreen(
                     onFocusFailed = { onDrawerFocusFailed() },
                     globalModalOpen = globalModalOpen,
                     focusRestoreTick = focusRestoreTick,
+                )
+            }
+            // 第 76 轮 v2.0.15：字幕菜单（内嵌轨/外挂文件/在线搜字幕）。
+            PlayDrawer.SUBTITLE -> PlayDrawerPanel(title = "字幕") {
+                SubtitleDrawerContent(
+                    tracks = uiState.subtitleTracks,
+                    selectedIndex = uiState.selectedSubtitleIndex,
+                    externalSubtitle = uiState.externalSubtitle,
+                    searchResults = uiState.subtitleSearchResults,
+                    searchLoading = uiState.subtitleSearchLoading,
+                    searchError = uiState.subtitleSearchError,
+                    downloadingName = uiState.subtitleDownloadingName,
+                    assrtToken = uiState.assrtToken,
+                    defaultQuery = uiState.current?.title.orEmpty(),
+                    onSelectTrack = { viewModel.selectSubtitleTrack(it) },
+                    onPickSubtitleFile = { subtitleFilePicker.launch("*/*") },
+                    onClearExternal = { viewModel.clearExternalSubtitle() },
+                    onSearchOnline = { viewModel.searchSubtitlesOnline(it) },
+                    onDownloadSubtitle = { viewModel.downloadAndApplySubtitle(it) },
+                    onSaveToken = { viewModel.saveAssrtToken(it) },
+                    onFocusEdgeChange = { left, bottom ->
+                        drawerLeftEdgeFocused = left
+                        drawerBottomEdgeFocused = bottom
+                    },
+                    onFocusFailed = { onDrawerFocusFailed() },
                 )
             }
             null -> Unit
@@ -1465,4 +1522,219 @@ private fun SpeedDrawerContent(
             )
         }
     }
+}
+
+/**
+ * 字幕菜单（第 76 轮 v2.0.15）：内嵌字幕轨 / 外挂字幕文件 / 在线搜字幕（Assrt）。
+ * 抽屉 480dp 宽，内容上下滚动（LazyColumn）。搜索框默认当前片名；
+ * 令牌框回显已存令牌（assrt.net 免费申请），保存后才生效。
+ */
+@Composable
+private fun SubtitleDrawerContent(
+    tracks: List<SubtitleTrackInfo>,
+    selectedIndex: Int?,
+    externalSubtitle: ExternalSubtitle?,
+    searchResults: List<AssrtSubtitle>,
+    searchLoading: Boolean,
+    searchError: String?,
+    downloadingName: String?,
+    assrtToken: String,
+    defaultQuery: String,
+    onSelectTrack: (Int?) -> Unit,
+    onPickSubtitleFile: () -> Unit,
+    onClearExternal: () -> Unit,
+    onSearchOnline: (String) -> Unit,
+    onDownloadSubtitle: (AssrtSubtitle) -> Unit,
+    onSaveToken: (String) -> Unit,
+    /** C8-P1-2：焦点项在左缘/底缘时上报，供根部预览拦截做抽屉 containment。 */
+    onFocusEdgeChange: (Boolean, Boolean) -> Unit = { _, _ -> },
+    /** 第 7 轮 P2-4：初始落焦重试耗尽时的回退（默认不回退）。 */
+    onFocusFailed: () -> Unit = {},
+) {
+    var query by remember(defaultQuery) { mutableStateOf(defaultQuery) }
+    var token by remember(assrtToken) { mutableStateOf(assrtToken) }
+    // 令牌存进设置后回显：assrtToken 变了（保存成功）时同步到输入框。
+    LaunchedEffect(assrtToken) { token = assrtToken }
+    LazyColumn(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        item {
+            Text(text = "内嵌字幕", style = OrionTextStyles.SectionTitle)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        item {
+            CategoryChip(
+                text = "关字幕",
+                selected = selectedIndex == null && externalSubtitle == null,
+                onClick = { onSelectTrack(null) },
+            )
+        }
+        items(tracks.size) { index ->
+            val track = tracks[index]
+            CategoryChip(
+                text = subtitleDisplayName(track),
+                selected = selectedIndex == index && externalSubtitle == null,
+                onClick = { onSelectTrack(index) },
+            )
+        }
+        if (tracks.isEmpty()) {
+            item {
+                Text(
+                    text = "本片没有内嵌字幕轨",
+                    style = OrionTextStyles.Body,
+                    color = OrionColors.TextSecondary,
+                )
+            }
+        }
+        item {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = "外挂字幕", style = OrionTextStyles.SectionTitle)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        if (externalSubtitle != null) {
+            item {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "已挂：${externalSubtitle.name}",
+                        style = OrionTextStyles.Body,
+                        color = OrionColors.Text,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SecondaryButton(text = "清除", onClick = onClearExternal)
+                }
+            }
+        }
+        item {
+            SecondaryButton(text = "选择字幕文件（.srt/.ass/.vtt）", onClick = onPickSubtitleFile)
+        }
+        item {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = "在线搜字幕", style = OrionTextStyles.SectionTitle)
+            Spacer(modifier = Modifier.height(8.dp))
+            SubtitleField(
+                label = "片名",
+                value = query,
+                onValueChange = { query = it },
+                placeholder = "输入片名",
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton(
+                    text = if (searchLoading) "搜索中…" else "搜索",
+                    onClick = { onSearchOnline(query) },
+                    enabled = !searchLoading,
+                )
+            }
+        }
+        if (searchError != null) {
+            item {
+                Text(text = searchError, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+            }
+        }
+        if (downloadingName != null) {
+            item {
+                Text(text = "正在下载：$downloadingName…", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+            }
+        }
+        items(searchResults) { result ->
+            CategoryChip(
+                text = if (result.lang.isNotBlank()) "${result.name}（${result.lang}）" else result.name,
+                selected = false,
+                onClick = { onDownloadSubtitle(result) },
+            )
+        }
+        item {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = "Assrt 令牌", style = OrionTextStyles.SectionTitle)
+            Spacer(modifier = Modifier.height(8.dp))
+            SubtitleField(
+                label = "令牌",
+                value = token,
+                onValueChange = { token = it },
+                placeholder = "去 assrt.net 免费申请",
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            SecondaryButton(text = "保存令牌", onClick = { onSaveToken(token) })
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "在线搜字幕需要令牌（免费）。没填令牌时搜索会提示去申请。",
+                style = OrionTextStyles.Body,
+                color = OrionColors.TextSecondary,
+            )
+        }
+    }
+}
+
+/** 字幕菜单的输入框（第 76 轮 v2.0.15）：LoginField 同款焦点态（品牌色描边 + 背景提亮）。 */
+@Composable
+private fun SubtitleField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Column {
+        Text(text = label, style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
+        Spacer(modifier = Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(OrionDimens.CardCornerRadius))
+                .background(if (focused) OrionColors.SurfaceVariant else OrionColors.Surface)
+                .border(
+                    width = if (focused) OrionDimens.FocusBorderWidth else 1.dp,
+                    color = if (focused) OrionColors.Brand else OrionColors.Divider,
+                    shape = RoundedCornerShape(OrionDimens.CardCornerRadius),
+                )
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                singleLine = true,
+                modifier = modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focused = it.isFocused },
+                decorationBox = { innerTextField ->
+                    if (value.isEmpty()) {
+                        Text(text = placeholder, style = OrionTextStyles.Body, color = OrionColors.TextWeak)
+                    }
+                    innerTextField()
+                },
+            )
+        }
+    }
+}
+
+/**
+ * SAF 选到的字幕文件名（第 76 轮 v2.0.15）：优先读 ContentResolver 的
+ * DISPLAY_NAME；读不到回落到 URI 最后一段；都没有返回 "subtitle.srt"。
+ */
+private fun resolveSubtitleFileName(context: android.content.Context, uri: Uri): String {
+    if (uri.scheme == "content") {
+        try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (index >= 0) {
+                            val name = cursor.getString(index)
+                            if (!name.isNullOrBlank()) return name
+                        }
+                    }
+                }
+        } catch (_: Exception) {
+            // 读不到显示名时回落到 URI 最后一段。
+        }
+    }
+    return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "subtitle.srt"
 }

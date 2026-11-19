@@ -207,6 +207,10 @@ class SettingsRepository @Inject constructor(
     suspend fun setSpeedMemory(value: Boolean) = settingsDataStore.setSpeedMemory(value)
     suspend fun currentSpeedMemory(): Boolean = speedMemory.first()
     suspend fun currentIncognitoMode(): Boolean = incognitoMode.first()
+    /** 第 76 轮 v2.0.15：读 Assrt 在线搜字幕令牌（空串 = 未填）。 */
+    suspend fun currentAssrtToken(): String = settingsDataStore.currentAssrtToken()
+    /** 第 76 轮 v2.0.15：存 Assrt 在线搜字幕令牌。 */
+    suspend fun setAssrtToken(value: String) = settingsDataStore.setAssrtToken(value)
     suspend fun currentUpdateLastCheckTime(): Long = settingsDataStore.updateLastCheckTime.first()
     suspend fun currentUpdateSkipVersion(): String = settingsDataStore.updateSkipVersion.first()
     suspend fun setUpdateLastCheckTime(value: Long) = settingsDataStore.setUpdateLastCheckTime(value)

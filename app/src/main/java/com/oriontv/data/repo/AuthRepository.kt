@@ -330,7 +330,11 @@ class AuthRepository @Inject constructor(
         } catch (_: Exception) {
             null
         }
-        if (saved == null) {
+        // 第 76 轮 v2.0.15：内置账号的密码过期会“自动退出”——服务端密码改过
+        // （2026-11-19 重设）后，旧版存下的密码还是旧的；旧实现只在“无保存
+        // 凭据”时才种，存着旧密码时不覆盖，静默重登一直用旧密码失败、弹登录框。
+        // 判定见 shouldSeedBuiltinCredentials（纯逻辑，可单测）。
+        if (shouldSeedBuiltinCredentials(saved, builtinAccount)) {
             try {
                 credentialsStore.save(builtinAccount.username, builtinAccount.password)
             } catch (e: CancellationException) {
@@ -638,3 +642,22 @@ internal fun shouldAutoShowLoginModal(
     epochUnchanged: Boolean,
     dismissedByUser: Boolean,
 ): Boolean = !restored && !loggedOut && epochUnchanged && !dismissedByUser
+
+/**
+ * 第 76 轮 v2.0.15：内置凭据是否需要（重）种入（纯逻辑，可单测）。
+ * - 无保存凭据 → 种入（新装/首次冷启动）。
+ * - 保存的用户名就是内置用户名（admin）且密码与当前内置密码不一致 →
+ *   覆盖（服务端密码改过后，旧密码一直静默重登失败、弹登录框，就是用户
+ *   报的“登录自动退出”；该服务器只有一个管理员账号，保存的 admin 凭据
+ *   就是内置账号本身，覆盖是安全的）。
+ * - 保存的用户名不是内置用户名（用户自己的账号）→ 不动。
+ * - 保存的密码与内置密码一致 → 不用重写。
+ */
+internal fun shouldSeedBuiltinCredentials(
+    saved: Pair<String, String>?,
+    builtinAccount: BuiltinAccount,
+): Boolean {
+    if (saved == null) return true
+    return saved.first == builtinAccount.username &&
+        saved.second != builtinAccount.password
+}

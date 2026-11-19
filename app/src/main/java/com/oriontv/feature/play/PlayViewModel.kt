@@ -2,6 +2,7 @@ package com.oriontv.feature.play
 
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
@@ -9,6 +10,9 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
 import com.oriontv.core.util.AppLog
+import com.oriontv.data.api.AssrtApi
+import com.oriontv.data.api.AssrtSubtitle
+import com.oriontv.data.api.AssrtSubtitleFile
 import com.oriontv.data.api.MoonTvApi
 import com.oriontv.data.api.PlayRecord
 import com.oriontv.data.api.SearchResult
@@ -17,6 +21,7 @@ import com.oriontv.data.repo.DetailSearchLogic
 import com.oriontv.data.repo.PlayRecordsRepository
 import com.oriontv.data.repo.PlayerSettingsRepository
 import com.oriontv.data.repo.SettingsRepository
+import java.io.File
 import com.oriontv.ui.components.ToastEvent
 import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -39,8 +44,20 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
-/** 播放抽屉：选集 / 换源 / 倍速（三者互斥，打开时焦点落在当前项）。 */
-enum class PlayDrawer { EPISODES, SOURCES, SPEED }
+/** 播放抽屉：选集 / 换源 / 倍速 / 字幕（四者互斥，打开时焦点落在当前项）。 */
+enum class PlayDrawer { EPISODES, SOURCES, SPEED, SUBTITLE }
+
+/**
+ * 外挂字幕（第 76 轮 v2.0.15）：用户选的字幕文件或在线下载的字幕。
+ * uriString 是 content://（SAF 选文件）或 file://（Assrt 下载落盘）；
+ * videoKey 是“片名|集号”，换片/换集时外挂字幕失效（上集的字幕不带到下集）。
+ */
+data class ExternalSubtitle(
+    val uriString: String,
+    val name: String,
+    val mimeType: String,
+    val videoKey: String,
+)
 
 /**
  * 播放 ViewModel（ui-design.md §5.3，plan §4.5）：
@@ -55,6 +72,7 @@ class PlayViewModel @Inject constructor(
     private val playRecordsRepository: PlayRecordsRepository,
     private val playerSettingsRepository: PlayerSettingsRepository,
     private val settingsRepository: SettingsRepository,
+    private val assrtApi: AssrtApi,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(PlayUiState(isLoading = true))
     val uiState: StateFlow<PlayUiState> = _uiState.asStateFlow()
@@ -65,6 +83,10 @@ class PlayViewModel @Inject constructor(
     private var pollJob: Job? = null
     private var readyTimeoutJob: Job? = null
     private var searchJob: Job? = null
+    /** 第 76 轮 v2.0.15：在线搜字幕的在途任务（新搜索取消旧的）。 */
+    private var subtitleSearchJob: Job? = null
+    /** 第 76 轮 v2.0.15：在线下载字幕的在途任务（取消后不应用）。 */
+    private var subtitleDownloadJob: Job? = null
     /** A5-P1-5：开播串行化——startEpisode 六处原来都是 fire-and-forget，
      * 并发开播会让 UI 与播放器演到不同集、断点存错集。同一时刻只留一次开播。 */
     private var startEpisodeJob: Job? = null
@@ -585,7 +607,26 @@ class PlayViewModel @Inject constructor(
         startPositionOverflowHandled = false
         // A5-P1-5：播流前复核代际——挂起读数期间已有新开播时，旧开播不再碰播放器。
         if (generation != startEpisodeGeneration) return
-        playerManager.playUrl(episodes[episodeIndex], startPosition, autoPlay = !resumePaused)
+        // 第 76 轮 v2.0.15：外挂字幕按片认——换片/换集时上集的外挂字幕失效，
+        // 清掉（不带到新集）；同集重挂/换源/重试时保留，继续用外挂字幕播。
+        val newVideoKey = "${result.title.trim()}|$episodeIndex"
+        val externalForThisVideo = _uiState.value.externalSubtitle
+            ?.takeIf { it.videoKey == newVideoKey }
+        if (_uiState.value.externalSubtitle != null && externalForThisVideo == null) {
+            _uiState.update { it.copy(externalSubtitle = null) }
+        }
+        if (externalForThisVideo != null) {
+            playerManager.playUrlWithSubtitle(
+                episodes[episodeIndex],
+                Uri.parse(externalForThisVideo.uriString),
+                externalForThisVideo.mimeType,
+                externalForThisVideo.name,
+                startPosition,
+                autoPlay = !resumePaused,
+            )
+        } else {
+            playerManager.playUrl(episodes[episodeIndex], startPosition, autoPlay = !resumePaused)
+        }
         playbackStarted = true
         // A5-P1-5：收尾写状态前再复核一次代际，旧开播不覆盖新开播的集/状态。
         if (generation != startEpisodeGeneration) return
@@ -1340,7 +1381,24 @@ class PlayViewModel @Inject constructor(
      */
     private fun refreshSubtitleTracks() {
         val state = _uiState.value
-        val newTracks = playerManager.availableSubtitleTracks()
+        val allTracks = playerManager.availableSubtitleTracks()
+        // 第 76 轮 v2.0.15：外挂字幕挂着时不自动选内嵌轨——外挂字幕是
+        // SubtitleConfiguration 挂的，Media3 按 SELECTION_FLAG_DEFAULT 默认选它；
+        // 这里再下发内嵌 override 会盖掉外挂字幕。外挂轨（label = 外挂文件名）
+        // 从内嵌列表里滤掉，不在菜单里出现两次；只更新轨道列表供菜单展示，
+        // 选中态保持关（内嵌），外挂字幕名单独显示。
+        val externalName = state.externalSubtitle?.name
+        val newTracks = if (externalName != null) {
+            allTracks.filter { it.label != externalName }
+        } else {
+            allTracks
+        }
+        if (externalName != null) {
+            if (newTracks != state.subtitleTracks || state.selectedSubtitleIndex != null) {
+                _uiState.update { it.copy(subtitleTracks = newTracks, selectedSubtitleIndex = null) }
+            }
+            return
+        }
         if (state.episodeGeneration != subtitleGeneration) {
             subtitleManualChoice = false
             subtitleGeneration = state.episodeGeneration
@@ -1380,6 +1438,180 @@ class PlayViewModel @Inject constructor(
                 toast = nextToastEvent(subtitleButtonLabel(state.subtitleTracks, next)),
             )
         }
+    }
+
+    /**
+     * 字幕菜单直接选内嵌轨（第 76 轮 v2.0.15）：index null = 关字幕。
+     * 与 cycleSubtitle 同款下发 + 记手动选择；选内嵌轨即切回内嵌字幕，
+     * 外挂字幕随之清除（两者互斥，不叠在一起显示）。
+     */
+    fun selectSubtitleTrack(index: Int?) {
+        val state = _uiState.value
+        val track = index?.let { state.subtitleTracks.getOrNull(it) }
+        if (index != null && track == null) return
+        subtitleManualChoice = true
+        playerManager.setSubtitleTrack(track)
+        lastAppliedSubtitle = track
+        _uiState.update {
+            it.copy(
+                selectedSubtitleIndex = index,
+                externalSubtitle = null,
+                toast = nextToastEvent(subtitleButtonLabel(state.subtitleTracks, index)),
+            )
+        }
+    }
+
+    /**
+     * 外挂字幕：挂上用户选的字幕文件（第 76 轮 v2.0.15）。
+     * SAF 选文件拿到的 content:// URI 直接喂给 Media3（不需要复制到本地，
+     * 播放器按 URI 读）。挂上后从当前位置重挂本集（外挂字幕是挂在媒体项上的，
+     * 必须重挂才生效）；内嵌字幕轨随之关掉（外挂优先，避免两行字幕叠在一起）。
+     * 不支持的扩展名（mimeType 为 null）直接报 Toast，不重挂。
+     */
+    fun setExternalSubtitleFile(uri: Uri, name: String) {
+        val mimeType = subtitleMimeType(name)
+        if (mimeType == null) {
+            _uiState.update { it.copy(toast = nextToastEvent("不支持的字幕格式（仅 .srt/.ass/.vtt/.ttml）")) }
+            return
+        }
+        val state = _uiState.value
+        val videoKey = currentVideoKey(state) ?: return
+        val external = ExternalSubtitle(uri.toString(), name, mimeType, videoKey)
+        _uiState.update { it.copy(externalSubtitle = external, toast = nextToastEvent("已挂字幕：$name")) }
+        replayCurrentWithExternalSubtitle(external)
+    }
+
+    /** 外挂字幕：清除（第 76 轮 v2.0.15），从当前位置重挂本集（不带外挂字幕）。 */
+    fun clearExternalSubtitle() {
+        if (_uiState.value.externalSubtitle == null) return
+        _uiState.update { it.copy(externalSubtitle = null, toast = nextToastEvent("已清除外挂字幕")) }
+        replayCurrentWithExternalSubtitle(null)
+    }
+
+    /**
+     * 按当前外挂字幕重挂本集（第 76 轮 v2.0.15）：从当前位置续播，不丢进度。
+     * 外挂字幕为 null 时走 playUrl（不带字幕）；非 null 时走 playUrlWithSubtitle。
+     * 内嵌字幕轨一并关掉（外挂优先）；清除外挂后内嵌轨按自动首选恢复
+     * （refreshSubtitleTracks 在 onTracksChanged 里重算）。
+     */
+    private fun replayCurrentWithExternalSubtitle(external: ExternalSubtitle?) {
+        val state = _uiState.value
+        val url = state.current?.episodes?.getOrNull(state.episodeIndex) ?: return
+        val positionMs = playerManager.currentPositionMs
+        playerManager.setSubtitleTrack(null)
+        lastAppliedSubtitle = null
+        if (external != null) {
+            playerManager.playUrlWithSubtitle(
+                url, Uri.parse(external.uriString), external.mimeType, external.name, positionMs,
+            )
+        } else {
+            playerManager.playUrl(url, positionMs)
+        }
+        _uiState.update { it.copy(selectedSubtitleIndex = null) }
+    }
+
+    /**
+     * 在线搜字幕（第 76 轮 v2.0.15，Assrt）：关键词默认当前片名。
+     * token 未填时直接报错（不发请求）；搜索结果进 subtitleSearchResults。
+     * 新搜索取消旧的在途搜索。
+     */
+    fun searchSubtitlesOnline(query: String) {
+        val keyword = query.trim()
+        if (keyword.isEmpty()) {
+            _uiState.update { it.copy(subtitleSearchError = "请输入片名再搜") }
+            return
+        }
+        subtitleSearchJob?.cancel()
+        _uiState.update { it.copy(subtitleSearchLoading = true, subtitleSearchError = null, subtitleSearchResults = emptyList()) }
+        subtitleSearchJob = viewModelScope.launch {
+            try {
+                val token = settingsRepository.currentAssrtToken()
+                val results = assrtApi.search(keyword, token)
+                _uiState.update {
+                    it.copy(
+                        subtitleSearchLoading = false,
+                        subtitleSearchResults = results,
+                        subtitleSearchError = if (results.isEmpty()) "没搜到字幕，换个片名试试" else null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(subtitleSearchLoading = false, subtitleSearchError = e.message ?: "搜索失败")
+                }
+            }
+        }
+    }
+
+    /** 清掉在线搜字幕的结果/错误（字幕菜单关闭时调，不留旧结果）。 */
+    fun clearSubtitleSearch() {
+        subtitleSearchJob?.cancel()
+        _uiState.update { it.copy(subtitleSearchResults = emptyList(), subtitleSearchError = null, subtitleSearchLoading = false) }
+    }
+
+    /**
+     * 在线下载字幕并挂上（第 76 轮 v2.0.15，Assrt）：先查详情拿可下载文件，
+     * 有多个文件时取第一个支持的字幕文件（详情接口已按扩展名过滤）；
+     * 下载到应用缓存目录（zip 自动解压挑字幕），再按外挂字幕挂上。
+     * 下载中 subtitleDownloadingName 显示文件名；失败报 Toast。
+     */
+    fun downloadAndApplySubtitle(subtitle: AssrtSubtitle) {
+        subtitleDownloadJob?.cancel()
+        _uiState.update { it.copy(subtitleDownloadingName = subtitle.name) }
+        subtitleDownloadJob = viewModelScope.launch {
+            try {
+                val token = settingsRepository.currentAssrtToken()
+                val files = assrtApi.detail(subtitle.id, token)
+                val file = files.firstOrNull() ?: throw java.io.IOException("没有可下载的字幕文件")
+                val cacheDir = File(playerManager.appContext.cacheDir, "subtitles")
+                val downloaded = assrtApi.downloadToFile(file, cacheDir)
+                val mimeType = subtitleMimeType(downloaded.name)
+                    ?: throw java.io.IOException("不支持的字幕格式：${downloaded.name}")
+                val state = _uiState.value
+                val videoKey = currentVideoKey(state) ?: return@launch
+                val external = ExternalSubtitle(
+                    Uri.fromFile(downloaded).toString(), downloaded.name, mimeType, videoKey,
+                )
+                _uiState.update {
+                    it.copy(
+                        externalSubtitle = external,
+                        subtitleDownloadingName = null,
+                        toast = nextToastEvent("已挂字幕：${downloaded.name}"),
+                    )
+                }
+                replayCurrentWithExternalSubtitle(external)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(subtitleDownloadingName = null, toast = nextToastEvent("字幕下载失败：${e.message}"))
+                }
+            }
+        }
+    }
+
+    /** 存 Assrt 令牌（第 76 轮 v2.0.15，字幕菜单的令牌输入框调）。 */
+    fun saveAssrtToken(token: String) {
+        viewModelScope.launch {
+            settingsRepository.setAssrtToken(token.trim())
+            _uiState.update { it.copy(assrtToken = token.trim(), toast = nextToastEvent("令牌已保存")) }
+        }
+    }
+
+    /** 读 Assrt 令牌进状态（第 76 轮 v2.0.15，字幕菜单打开时调，输入框回显已存令牌）。 */
+    fun loadAssrtToken() {
+        viewModelScope.launch {
+            val token = settingsRepository.currentAssrtToken()
+            _uiState.update { it.copy(assrtToken = token) }
+        }
+    }
+
+    /** 当前片的视频键（片名|集号），外挂字幕按它认片；未开播时 null。 */
+    private fun currentVideoKey(state: PlayUiState): String? {
+        val title = state.current?.title?.trim().orEmpty()
+        if (title.isEmpty()) return null
+        return "$title|${state.episodeIndex}"
     }
 
     /** 落点预览缩略图：MediaMetadataRetriever 尽力抓帧，m3u8 抓不到时返回 null（用海报兜底）。 */
@@ -2007,4 +2239,16 @@ data class PlayUiState(
     val subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     /** 当前选中字幕轨在 subtitleTracks 里的下标；null = 关字幕。 */
     val selectedSubtitleIndex: Int? = null,
+    /** 外挂字幕（第 76 轮 v2.0.15）：null = 没挂；挂上后内嵌字幕轨让位（外挂优先显示）。 */
+    val externalSubtitle: ExternalSubtitle? = null,
+    /** 在线搜字幕结果（第 76 轮 v2.0.15，Assrt 搜索返回的组列表）。 */
+    val subtitleSearchResults: List<AssrtSubtitle> = emptyList(),
+    /** 在线搜字幕进行中。 */
+    val subtitleSearchLoading: Boolean = false,
+    /** 在线搜字幕错误文案（null = 无错误）。 */
+    val subtitleSearchError: String? = null,
+    /** 在线搜字幕正在下载的文件名（null = 没在下载）。 */
+    val subtitleDownloadingName: String? = null,
+    /** Assrt 令牌（第 76 轮 v2.0.15）：字幕菜单打开时由 loadAssrtToken 读入；空串 = 未填。 */
+    val assrtToken: String = "",
 )

@@ -215,6 +215,17 @@ class LiveController(
     }
 
     /**
+     * 第 76 轮 v2.0.15：只记一次失败、不决策（供 LiveViewModel 的“重拿新链接”
+     * 先行重试用）——先记失败再去刷新 M3U 重试，重试也失败时下一次
+     * handlePlaybackError 见 failCount 已是 1，走正常备用线路/跳台链，
+     * 不会每次失败都刷新、无限循环。短暂成功作废与 onPlaybackError 同款。
+     */
+    fun recordFailure() {
+        lastSuccessAtMs = null
+        failCount++
+    }
+
+    /**
      * 断流处理（RN `handlePlaybackError` 同款）：
      * 失败计数 +1；>5 停手；面板打开时只提示；否则先试未试过的备用线路，全部试完跳下一台。
      */

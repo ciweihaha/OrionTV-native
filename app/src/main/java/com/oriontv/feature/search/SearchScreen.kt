@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -395,11 +396,55 @@ fun SearchScreen(
                     )
                 }
             }
+            // 第 76 轮 v2.0.14：搜索页改成影视 app（FongMi）搜索页的两栏布局——
+            // 键盘在左半边、结果/热搜在右半边（左右并排、各占一半），不再是悬浮
+            // 在底部的面板盖住结果区（键盘打开后结果区被压到 ~0、底部被遮挡，
+            // 用户 2026-11-19 10:22 模板照片）。键盘关着时右栏占满全宽。
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                // 左栏：屏上键盘（A–Z 字母键盘，见 OnScreenKeyboard）。
+                if (showKeyboard) {
+                    // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
+                    // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .padding(top = 16.dp, end = 16.dp)
+                            .onFocusChanged {
+                                keyboardHasFocus = it.hasFocus
+                                if (it.hasFocus) resultsAreaHadFocus = false
+                            },
+                    ) {
+                        OnScreenKeyboard(
+                            query = uiState.query,
+                            onQueryChange = { viewModel.onQueryChange(it) },
+                            // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
+                            // 直接用它搜，不再读可能还没更新的 uiState.query。
+                            onSearch = { finalQuery ->
+                                showKeyboard = false
+                                viewModel.searchNow(finalQuery)
+                            },
+                            onDismiss = { showKeyboard = false },
+                            modifier = Modifier.fillMaxHeight(),
+                        )
+                    }
+                }
+                // 右栏：联想/历史 chip + 结果区。
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                ) {
             // 第 73 轮：联想 chip + 历史 chip 移到键盘上方（输入时内容，理应在
             // 输入框旁边）——原先在结果区顶部，键盘打开后结果区被压到 ~0，
             // chip 被顶出屏幕、点不到（第 72 轮遗留 1a/1b）。
             // 焦点 latch 与结果区同款：chip 获焦即置位，加载开始时 chip 卸载、
             // 焦点丢失，effect 凭 latch 把焦点收回搜索框。
+            // 第 76 轮：两栏布局后 chip 在右栏顶部（与结果区同栏）。
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -466,29 +511,7 @@ fun SearchScreen(
             // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
             // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
             // 都是“搜完”，都收起，不再盖住下方结果区）。
-            if (showKeyboard) {
-                Spacer(modifier = Modifier.height(16.dp))
-                // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
-                // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
-                Box(
-                    modifier = Modifier.onFocusChanged {
-                        keyboardHasFocus = it.hasFocus
-                        if (it.hasFocus) resultsAreaHadFocus = false
-                    },
-                ) {
-                    OnScreenKeyboard(
-                        query = uiState.query,
-                        onQueryChange = { viewModel.onQueryChange(it) },
-                        // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
-                        // 直接用它搜，不再读可能还没更新的 uiState.query。
-                        onSearch = { finalQuery ->
-                            showKeyboard = false
-                            viewModel.searchNow(finalQuery)
-                        },
-                        onDismiss = { showKeyboard = false },
-                    )
-                }
-            }
+            // 第 76 轮：键盘已移到左栏（见上），这里不再重复渲染。
 
             // Jewel 第 8 轮 P1-1：结果区容器（结果/错误区）——
             // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
@@ -551,7 +574,9 @@ fun SearchScreen(
                 uiState.results.isNotEmpty() -> {
                     LazyVerticalGrid(
                         state = gridState,
-                        columns = GridCells.Fixed(6),
+                        // 第 76 轮：两栏布局时右栏只剩一半宽，6 列卡太窄，改 3 列；
+                        // 键盘关着时右栏占满全宽，仍是 6 列（旧行为不变）。
+                        columns = GridCells.Fixed(if (showKeyboard) 3 else 6),
                         horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
                         verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
                         modifier = Modifier.fillMaxSize(),
@@ -595,6 +620,8 @@ fun SearchScreen(
                 }
             }
             } // Jewel 第 8 轮 P1-1：结果区容器结束。
+                } // 第 76 轮：右栏（联想/历史 chip + 结果区）结束。
+            } // 第 76 轮：两栏 Row 结束。
 
         }
 

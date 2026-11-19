@@ -207,4 +207,32 @@ class LiveViewModelLogicTest {
         // 目标为空 → 重播
         assertFalse(LiveViewModel.shouldResumeBuffering(null, url, url, isBuffering = true))
     }
+
+    @Test
+    fun `nextChannelUrl returns next channel first url wrapping around`() {
+        // 第 76 轮 v2.0.15：切台预加载——取下一台首条线路，末尾循环回首台。
+        val channels = listOf(
+            M3uParser.Channel(id = "1", name = "CCTV-1", urls = listOf("http://a/1.m3u8")),
+            M3uParser.Channel(id = "2", name = "CCTV-5", urls = listOf("http://a/5.m3u8")),
+            M3uParser.Channel(id = "3", name = "CCTV-6", urls = listOf("http://a/6.m3u8")),
+        )
+        assertEquals("http://a/5.m3u8", LiveViewModel.nextChannelUrl(channels, 0, "http://a/1.m3u8"))
+        assertEquals("http://a/1.m3u8", LiveViewModel.nextChannelUrl(channels, 2, "http://a/6.m3u8"))
+    }
+
+    @Test
+    fun `nextChannelUrl returns null when no preload makes sense`() {
+        // 第 76 轮 v2.0.15：空表/下一台无 URL/与当前台同 URL 时不预加载。
+        assertEquals(null, LiveViewModel.nextChannelUrl(emptyList(), 0, "http://a/1.m3u8"))
+        val sameUrl = listOf(
+            M3uParser.Channel(id = "1", name = "A", urls = listOf("http://a/1.m3u8")),
+            M3uParser.Channel(id = "2", name = "B", urls = listOf("http://a/1.m3u8")),
+        )
+        assertEquals(null, LiveViewModel.nextChannelUrl(sameUrl, 0, "http://a/1.m3u8"))
+        val noUrl = listOf(
+            M3uParser.Channel(id = "1", name = "A", urls = listOf("http://a/1.m3u8")),
+            M3uParser.Channel(id = "2", name = "B", urls = emptyList()),
+        )
+        assertEquals(null, LiveViewModel.nextChannelUrl(noUrl, 0, "http://a/1.m3u8"))
+    }
 }

@@ -83,6 +83,37 @@ fun choosePreferredSubtitleTrack(tracks: List<SubtitleTrackInfo>): Int? {
 }
 
 /**
+ * 外挂字幕文件（第 76 轮 v2.0.15）：支持的扩展名，与 FongMi SubtitleArchive 同款
+ * （.srt .ass .ssa .vtt .ttml .xml .dfxp）；.zip 是字幕压缩包，下载后要解压再挑。
+ */
+val SUPPORTED_SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "ttml", "xml", "dfxp")
+
+/** 该文件名是不是支持的外挂字幕（按扩展名，不区分大小写）。 */
+fun isSupportedSubtitleFile(name: String): Boolean {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return ext in SUPPORTED_SUBTITLE_EXTENSIONS
+}
+
+/** 该文件名是不是字幕压缩包（.zip，Assrt 下载常是 zip，须解压再挑字幕文件）。 */
+fun isSubtitleZip(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase() == "zip"
+
+/**
+ * 外挂字幕的 Media3 MIME 类型（可单测，返回 MIME 字符串本身，不引 Media3，
+ * 与 androidx.media3.common.MimeTypes 的常量值一致）：
+ * .srt → application/x-subrip；.vtt → text/vtt；.ass/.ssa → text/x-ssa；
+ * .ttml/.xml/.dfxp → application/ttml+xml。不支持返回 null。
+ */
+fun subtitleMimeType(fileName: String): String? =
+    when (fileName.substringAfterLast('.', "").lowercase()) {
+        "srt" -> "application/x-subrip"
+        "vtt" -> "text/vtt"
+        "ass", "ssa" -> "text/x-ssa"
+        "ttml", "xml", "dfxp" -> "application/ttml+xml"
+        else -> null
+    }
+
+/**
  * 循环切换（可单测）：关 → 第 1 条 → 第 2 条 → … → 关。
  * 当前选中已不在列表里（换片后旧下标失效）时从第 1 条开始，不直接跳到关。
  */
@@ -105,6 +136,22 @@ fun subtitleButtonLabel(tracks: List<SubtitleTrackInfo>, selectedIndex: Int?): S
     if (tracks.isEmpty()) return "字幕：无字幕"
     val selected = selectedIndex?.let { tracks.getOrNull(it) } ?: return "字幕：关"
     return "字幕：${subtitleDisplayName(selected)}"
+}
+
+/**
+ * 控制条字幕按钮文案（含外挂字幕，第 76 轮 v2.0.15）：挂了外挂字幕时优先显示
+ * 外挂文件名（过长截断到 12 字）；否则同 [subtitleButtonLabel]。
+ */
+fun subtitleButtonLabelWithExternal(
+    tracks: List<SubtitleTrackInfo>,
+    selectedIndex: Int?,
+    externalName: String?,
+): String {
+    if (externalName != null) {
+        val short = if (externalName.length > 12) externalName.take(12) + "…" else externalName
+        return "字幕：$short"
+    }
+    return subtitleButtonLabel(tracks, selectedIndex)
 }
 
 /** 字幕刷新决策（可单测）：新列表下的选中下标 + 是否需要向播放器下发。 */

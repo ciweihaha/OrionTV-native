@@ -411,8 +411,16 @@ class LiveViewModel @Inject constructor(
             // 同 URL 重播（OK 重试当前台）：先停掉旧 item 才能真正重挂播放器。
             if (url == lastPlayedUrl) playerManager.stop()
             lastPlayedUrl = url
-            playerManager.playUrl(url)
+            // 第 76 轮 v2.0.15：切台预加载——目标台已是预加载的下一项时瞬切
+            // （已缓冲，不用重新建链、拉 manifest）；否则正常开播。
+            if (!playerManager.advanceToPreloaded(url)) {
+                playerManager.playUrl(url)
+            }
         }
+        // 第 76 轮 v2.0.15：开播后预加载下一台（后台缓冲，下次切台瞬切）。
+        // 播放列表是 [当前台, 下一台]；点播页抢走播放器后 playUrl 会清掉列表，
+        // 回直播页 playCurrent 重新挂，不会残留旧预加载。
+        preloadNextChannel()
         playbackStarted = true
         _uiState.update {
             it.copy(
@@ -434,6 +442,18 @@ class LiveViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 第 76 轮 v2.0.15：预加载下一台——取当前台的下一台（循环）、首条线路 URL，
+     * 交给 PlayerManager 挂到播放列表后预缓冲。下一台不存在/无 URL/与当前台
+     * 同 URL 时不预加载。纯取值逻辑在 [nextChannelUrl]，可单测。
+     */
+    private fun preloadNextChannel() {
+        val channels = _uiState.value.channels
+        val nextUrl = nextChannelUrl(channels, controller.currentIndex, controller.currentUrl)
+            ?: return
+        playerManager.preloadNext(nextUrl)
+    }
+
     /** 断流：按 LiveController 的升级链处理（备用线路 → 下一台 → >5 次停手）。 */
     private fun handlePlaybackError() {
         // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
@@ -448,6 +468,63 @@ class LiveViewModel @Inject constructor(
         if (!shouldHandlePlaybackError(pageActive)) return
         // 断流即作废稳定窗口：稳定确认任务不再跑（P1-6）。
         stablePlayJob?.cancel()
+        val state = _uiState.value
+        if (state.channels.isEmpty()) return
+        // 第 76 轮 v2.0.15：第一次失败先重拿新链接——重拉 M3U（forceRefresh），
+        // 票据/签名过期的源（如凤凰）靠这个恢复；同一条旧链接重试多少次都没用
+        // （2004 BAD_HTTP_STATUS 常是链接过期）。刷新重试里记一次失败
+        // （recordFailure，见 refreshAndRetryCurrent）；重试也失败时下一次错误
+        // 见 failCount 已是 1，走正常备用线路/跳台链，不会每次失败都刷新、
+        // 无限循环。面板打开时不自动重连（与 NotifyOnly 同款：面板打开时失败
+        // 只提示、不自动动作）。refreshJob 在途时不重复拉（与 refreshChannels
+        // 同款守卫）。
+        if (controller.failCount == 0 && !state.panelOpen && refreshJob?.isActive != true) {
+            refreshAndRetryCurrent()
+            return
+        }
+        applyControllerErrorAction()
+    }
+
+    /**
+     * 第 76 轮 v2.0.15：重拉 M3U 拿新链接、重播当前台。刷新成功即用新链接重播
+     * （不管 URL 变没变，刷新拿到的就是最新链接）；刷新失败（拉网失败/空源）
+     * 才走原有备用线路/跳台链。刷新在途由调用方守卫，不并发拉网。
+     */
+    private fun refreshAndRetryCurrent() {
+        refreshJob = viewModelScope.launch {
+            val m3uUrl = runCatching { settingsRepository.currentM3uUrl() }
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrDefault("")
+            if (m3uUrl.isBlank()) {
+                applyControllerErrorAction()
+                return@launch
+            }
+            val fresh = m3uRepository.loadChannels(m3uUrl, forceRefresh = true)
+            if (shouldReportRefreshFailed(m3uRepository.loadFailed.value) || fresh.isEmpty()) {
+                applyControllerErrorAction()
+                return@launch
+            }
+            val current = controller.currentChannel
+            controller.setChannels(fresh, restoreUrl = controller.currentUrl, restoreName = current?.name)
+            // setChannels 会清零 failCount（换表即新会话）——这里是同台重试，
+            // 不是换台，失败计数必须留着：记一次失败，下一次错误走正常备用线路/
+            // 跳台链，不会每次失败都刷新、无限循环。
+            controller.recordFailure()
+            _uiState.update {
+                it.copy(
+                    channels = fresh,
+                    currentIndex = controller.currentIndex,
+                    lineIndex = controller.lineIndex,
+                    channelsVersion = it.channelsVersion + 1,
+                )
+            }
+            showToast("信号异常，已换新链接重试…")
+            playCurrent()
+        }
+    }
+
+    /** 断流：按 LiveController 的升级链处理（备用线路 → 下一台 → >5 次停手）。 */
+    private fun applyControllerErrorAction() {
         val state = _uiState.value
         if (state.channels.isEmpty()) return
         when (val action = controller.onPlaybackError(state.panelOpen)) {
@@ -1094,6 +1171,24 @@ class LiveViewModel @Inject constructor(
          */
         internal fun shouldReportRefreshFailed(loadFailed: Boolean): Boolean =
             loadFailed
+
+        /**
+         * 切台预加载的下一台 URL（可单测，第 76 轮 v2.0.15）：取当前台的下一台
+         * （循环到首台）、首条线路 URL；无频道/下一台无 URL/与当前台同 URL
+         * 时返回 null（不预加载）。只取首条线路——预加载是“下一台能瞬切”，
+         * 备用线路留给断流链。
+         */
+        internal fun nextChannelUrl(
+            channels: List<M3uParser.Channel>,
+            currentIndex: Int,
+            currentUrl: String?,
+        ): String? {
+            if (channels.isEmpty()) return null
+            val nextIndex = (currentIndex + 1) % channels.size
+            val nextUrl = channels[nextIndex].urls.firstOrNull().orEmpty()
+            if (nextUrl.isBlank() || nextUrl == currentUrl) return null
+            return nextUrl
+        }
 
         /**
          * 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败的轻提示文案（可单测，与 M3U

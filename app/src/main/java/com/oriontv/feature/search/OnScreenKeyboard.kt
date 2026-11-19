@@ -142,6 +142,15 @@ fun OnScreenKeyboard(
     var zhMode by remember { mutableStateOf(true) }
     var pinyinBuffer by remember { mutableStateOf("") }
     val nineKeyComposer = remember { PinyinNineKeyComposer() }
+    // 第 76 轮 v2.0.14：拼写器是 remember 里的普通对象（非 State）——中文 9 键
+    // 按数字只改拼写器内部状态，大多不触发 emit（只有旧音节落定上屏时才 emit），
+    // Compose 不知道要重组，候选行/拼写文本不更新，看着就是“点了没反应”
+    // （英文 9 键走 emit、全键中文走 pinyinBuffer State，所以都正常）。
+    // 每次拼写器变化后 bumpComposingTick() +1；下行读它即订阅，强制重组重读
+    // composingText。值本身不用，只起“重组信号”作用。
+    var composingTick by remember { mutableStateOf(0) }
+    /** 拼写器变了就 +1，强制重组重读 composingText（见 composingTick 注释）。 */
+    fun bumpComposingTick() { composingTick++ }
     // 本键盘自己发出的 query（经 emit），外部改 query（历史填回、清空、屏上
     // 键盘外的输入）时清掉未落定的拼音缓冲与多击状态，不留脏缓冲。
     var lastEmittedQuery by remember { mutableStateOf(query) }
@@ -149,6 +158,7 @@ fun OnScreenKeyboard(
         if (query != lastEmittedQuery) {
             pinyinBuffer = ""
             nineKeyComposer.reset()
+            bumpComposingTick()
             nineKey.reset()
             lastEmittedQuery = query
         }
@@ -158,13 +168,21 @@ fun OnScreenKeyboard(
         onQueryChange(newQuery)
     }
     // 当前拼写中的拼音文本（全键档用 pinyinBuffer，9 键档用拼写器）。
+    // 读 composingTick 即订阅（见上）：拼写器变化后重组，这里重读 composingText。
+    @Suppress("UNUSED_EXPRESSION")
+    composingTick
     val composingText = if (nineKeyMode) nineKeyComposer.composingText else pinyinBuffer
     val candidates = if (zhMode) getCandidates(composingText) else emptyList()
 
     /** 候选行点选：第 index 个字上屏，清缓冲。 */
     fun commitCandidate(index: Int) {
         val ch = selectCandidate(composingText, index) ?: return
-        if (nineKeyMode) nineKeyComposer.reset() else pinyinBuffer = ""
+        if (nineKeyMode) {
+            nineKeyComposer.reset()
+            bumpComposingTick()
+        } else {
+            pinyinBuffer = ""
+        }
         nineKey.reset()
         emit(query + ch)
     }
@@ -188,13 +206,17 @@ fun OnScreenKeyboard(
             return
         }
         nineKeyComposer.press(digit, System.currentTimeMillis())?.let { emit(query + it) }
+        bumpComposingTick()
     }
 
     /** 退格：中文模式先删拼音缓冲/待定字母，再删搜索框字符。 */
     fun onBackspace() {
         if (zhMode) {
             if (nineKeyMode) {
-                if (nineKeyComposer.backspace()) return
+                if (nineKeyComposer.backspace()) {
+                    bumpComposingTick()
+                    return
+                }
             } else if (pinyinBuffer.isNotEmpty()) {
                 pinyinBuffer = pinyinBuffer.dropLast(1)
                 return
@@ -209,9 +231,11 @@ fun OnScreenKeyboard(
         if (zhMode) {
             if (nineKeyMode) {
                 nineKeyComposer.settle()?.let { emit(query + it) }
+                bumpComposingTick()
                 val first = commitFirstCandidate(nineKeyComposer.buffer)
                 if (first != null) {
                     nineKeyComposer.reset()
+                    bumpComposingTick()
                     emit(query + first)
                     return
                 }
@@ -233,9 +257,11 @@ fun OnScreenKeyboard(
         if (zhMode) {
             if (nineKeyMode) {
                 nineKeyComposer.settle()?.let { finalQuery += it }
+                bumpComposingTick()
                 commitFirstCandidate(nineKeyComposer.buffer)?.let {
                     finalQuery += it
                     nineKeyComposer.reset()
+                    bumpComposingTick()
                 }
             } else {
                 commitFirstCandidate(pinyinBuffer)?.let {
@@ -252,6 +278,7 @@ fun OnScreenKeyboard(
     fun clearPinyinState() {
         pinyinBuffer = ""
         nineKeyComposer.reset()
+        bumpComposingTick()
         nineKey.reset()
     }
 
@@ -283,7 +310,9 @@ fun OnScreenKeyboard(
                 color = OrionColors.TextSecondary,
             )
             Spacer(modifier = Modifier.weight(1f))
-            // 第 74 轮：中/英切换（全键、9 键、符号三档顶栏共用，两布局都要有）。
+            // 第 76 轮 v2.0.14：顶行照影视 app（FongMi）搜索页——切换（中/英）、
+            // 123（数字/符号板）、删除（清空搜索框）、退格（删一字）。
+            // 9 键切换改到底部动作行（[9 键]/[全键] 按钮），顶行不再放。
             KeyboardKey(
                 label = if (zhMode) "中文" else "英文",
                 onClick = {
@@ -292,12 +321,23 @@ fun OnScreenKeyboard(
                 },
             )
             KeyboardKey(
-                label = if (nineKeyMode) "切全键" else "切 9 键",
+                label = "123",
                 onClick = {
-                    nineKeyMode = !nineKeyMode
-                    if (nineKeyMode) symbolMode = false
+                    symbolMode = true
+                    nineKeyMode = false
                     clearPinyinState()
                 },
+            )
+            KeyboardKey(
+                label = "删除",
+                onClick = {
+                    clearPinyinState()
+                    emit("")
+                },
+            )
+            KeyboardKey(
+                label = "退格",
+                onClick = { onBackspace() },
             )
         }
         // 第 74 轮：中文拼音候选行（固定 56dp 高，没候选时留空行/提示，键盘不
@@ -399,7 +439,9 @@ fun OnScreenKeyboard(
             // Jewel 第 9 轮 P2-6：[123] 符号板——搜含 `_`、`-`、`@` 等符号的词
             // 不用再绕手机扫码；行宽与 QWERTY 同款 10 键折算对齐。点符号直接追加
             // 进搜索框（不做大小写变换），退格清多击状态与字母档共用。
-            val rows = listOf("_-@#&*%+", ".,!?;:'\"", "()[]{}<>=")
+            // 第 76 轮 v2.0.14：顶行 123 键进本板，首行补数字行（全键档的数字行
+            // 随 QWERTY 一起撤了，数字放这里）。
+            val rows = listOf("0123456789", "_-@#&*%+", ".,!?;:'\"", "()[]{}<>=")
             rows.forEachIndexed { rowIndex, row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     // P2-10（第 5 轮）：各行键宽对齐——短行两侧补空白占位（权重
@@ -445,13 +487,13 @@ fun OnScreenKeyboard(
                 )
             }
         } else {
-            val rows = listOf("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM")
+            // 第 76 轮 v2.0.14：全键档改成影视 app（FongMi）搜索页的 A–Z 字母
+            // 键盘（5 列：A–E、F–J、K–O、P–T、U–Y、Z）——QWERTY 在电视上遥控
+            // 逐格找字母太慢，字母顺序排更顺手；数字行移到 123 板。
+            // 末行只有 Z，其余 4 格补空白占位（键宽对齐，跨行空间导航不跳格）。
+            val rows = listOf("ABCDE", "FGHIJ", "KLMNO", "PQRST", "UVWXY", "Z")
             rows.forEachIndexed { rowIndex, row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // P2-10（第 5 轮）：各行键宽对齐——短行两侧补空白占位（权重
-                    // 按 10 键行折算），不再让短行按键更宽、跨行空间导航跳格。
-                    val sideWeight = (10 - row.length) / 2f
-                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
                     row.forEachIndexed { index, ch ->
                         KeyboardKey(
                             label = ch.toString(),
@@ -467,7 +509,9 @@ fun OnScreenKeyboard(
                                 ),
                         )
                     }
-                    if (sideWeight > 0f) Spacer(modifier = Modifier.weight(sideWeight))
+                    repeat(5 - row.length) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -480,27 +524,28 @@ fun OnScreenKeyboard(
                     },
                     modifier = Modifier.weight(1f),
                 )
-                // Jewel 第 9 轮 P2-6：符号板入口——切符号档（同时清 9 键档）。
-                KeyboardKey(
-                    label = "[123]",
-                    onClick = {
-                        symbolMode = true
-                        nineKeyMode = false
-                        clearPinyinState()
-                    },
-                    modifier = Modifier.weight(1f),
-                )
+                // 123、退格已在顶行（第 76 轮），本行只留 9 键 + 宽空格（占 4 格）。
                 KeyboardKey(
                     label = "空格",
                     onClick = { onSpace() },
-                    modifier = Modifier.weight(2f),
-                )
-                KeyboardKey(
-                    label = "退格",
-                    onClick = { onBackspace() },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(4f),
                 )
             }
+        }
+        // 第 76 轮 v2.0.14：左下角输入法切换（照影视 app 搜索页）——“全键盘”
+        // （绿点，当前：内置屏上键盘）/“系统输入法”（蓝点：收起屏上键盘，
+        // 回搜索框走系统输入法；触屏平板上会弹出系统键盘）。
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            KeyboardKey(
+                label = "● 全键盘",
+                onClick = { /* 已是全键盘，当前档，不用切 */ },
+                modifier = Modifier.weight(1f),
+            )
+            KeyboardKey(
+                label = "● 系统输入法",
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             KeyboardKey(
@@ -516,7 +561,7 @@ fun OnScreenKeyboard(
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "提示：中文模式敲拼音出候选（本地词典，不用联网），点选上屏，空格选首选字；9 键同键连续字母须停顿 1 秒再按；点“英文”直接输字母；搜含符号的词可切 [123] 符号板；搜中文词也可用“手机扫码输入”。",
+            text = "提示：中文模式敲拼音出候选（本地词典，不用联网），点选上屏，空格选首选字；9 键同键连续字母须停顿 1 秒再按；点“英文”直接输字母；搜含符号的词可切 123 板；搜中文词也可用“手机扫码输入”。",
             style = OrionTextStyles.Small,
             color = OrionColors.TextSecondary,
         )

@@ -173,6 +173,51 @@ class AuthRepositoryBuiltinTest {
     }
 
     @Test
+    fun `builtin overwrites stale builtin password on cold start`() = runBlocking {
+        // 第 76 轮 v2.0.15：服务端密码改过后，旧版存下的旧密码一直静默重登失败、
+        // 弹登录框（用户报的“登录自动退出”）——保存的用户名就是内置用户名
+        // （admin）时，密码与当前内置密码不一致即覆盖成新的。
+        val api = FakeAuthApi()
+        val settings = FakeAuthSettings(baseUrl = BuiltinAccount.BASE_URL, marker = "")
+        val store = FakeCredentialStore(saved = "admin" to "old-pw")
+        val repo = repository(api = api, settings = settings, store = store)
+
+        repo.checkLoginStatus()
+
+        assertEquals("admin" to "builtin-pw", store.saved)
+        assertEquals(1, api.loginCalls)
+        assertEquals("admin", api.lastLoginUsername)
+        assertEquals("builtin-pw", api.lastLoginPassword)
+        assertTrue(repo.isLoggedIn.value)
+        assertFalse(repo.showLoginModal.value)
+    }
+
+    @Test
+    fun `builtin does not overwrite saved credentials of a different user`() = runBlocking {
+        // 用户名不是内置用户名（用户自己的账号）时，即使密码不同也不动。
+        val api = FakeAuthApi()
+        val settings = FakeAuthSettings(baseUrl = BuiltinAccount.BASE_URL, marker = "")
+        val store = FakeCredentialStore(saved = "someone" to "their-pw")
+        val repo = repository(api = api, settings = settings, store = store)
+
+        repo.checkLoginStatus()
+
+        assertEquals("someone" to "their-pw", store.saved)
+        assertEquals("someone", api.lastLoginUsername)
+        assertEquals("their-pw", api.lastLoginPassword)
+    }
+
+    @Test
+    fun `shouldSeedBuiltinCredentials decision table`() {
+        val builtin = BuiltinAccount("admin", "builtin-pw", BuiltinAccount.BASE_URL)
+        assertTrue(shouldSeedBuiltinCredentials(null, builtin))
+        assertTrue(shouldSeedBuiltinCredentials("admin" to "old-pw", builtin))
+        assertFalse(shouldSeedBuiltinCredentials("admin" to "builtin-pw", builtin))
+        assertFalse(shouldSeedBuiltinCredentials("user" to "pass", builtin))
+        assertFalse(shouldSeedBuiltinCredentials("user" to "builtin-pw", builtin))
+    }
+
+    @Test
     fun `builtin account reports configured only with password and url`() {
         assertTrue(BuiltinAccount("admin", "pw", BuiltinAccount.BASE_URL).isConfigured)
         assertFalse(BuiltinAccount("admin", "", BuiltinAccount.BASE_URL).isConfigured)

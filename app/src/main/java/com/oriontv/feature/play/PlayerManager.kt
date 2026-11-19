@@ -1,6 +1,7 @@
 package com.oriontv.feature.play
 
 import android.content.Context
+import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -43,6 +44,9 @@ class PlaybackGeneration {
 class PlayerManager @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
+    /** 应用上下文（供调用方取缓存目录等；第 76 轮 v2.0.15：在线字幕下载落盘用）。 */
+    val appContext: Context get() = context
+
     val player: ExoPlayer by lazy {
         ExoPlayer.Builder(context).build()
     }
@@ -96,6 +100,93 @@ class PlayerManager @Inject constructor(
         // A19-P2-2：autoPlay=false 时只挂项、不自动播出——暂停态 reclaim
         // 重挂媒体项用（播放器里无媒体项时页面会黑屏）；恢复播出走 togglePlayPause。
         if (autoPlay) player.play()
+    }
+
+    /**
+     * 外挂字幕开播（第 76 轮 v2.0.15）：把字幕文件作为 SubtitleConfiguration
+     * 挂到媒体项上，Media3 渲染外挂字幕（.srt/.vtt/.ass/.ttml 均支持）。
+     * subtitleUri 为 null 或 mimeType 为 null 时等同 playUrl（无外挂字幕）。
+     * 外挂字幕是“挂在媒体项上”的：换片/重挂必须重新传，PlayViewModel 在
+     * startEpisode 里按当前外挂字幕重传；清除外挂字幕后用 playUrl 重挂即去掉。
+     */
+    fun playUrlWithSubtitle(
+        url: String,
+        subtitleUri: Uri?,
+        subtitleMimeType: String?,
+        subtitleLabel: String? = null,
+        startPositionMs: Long = 0L,
+        autoPlay: Boolean = true,
+    ) {
+        val mediaItem = if (subtitleUri != null && subtitleMimeType != null) {
+            MediaItem.Builder()
+                .setUri(url)
+                .setSubtitleConfigurations(
+                    listOf(
+                        MediaItem.SubtitleConfiguration.Builder(subtitleUri)
+                            .setMimeType(subtitleMimeType)
+                            .setLanguage("zh")
+                            .setLabel(subtitleLabel)
+                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                            .build(),
+                    ),
+                )
+                .build()
+        } else {
+            MediaItem.fromUri(url)
+        }
+        player.setMediaItem(mediaItem)
+        if (startPositionMs > 0) player.seekTo(startPositionMs)
+        player.prepare()
+        if (autoPlay) player.play()
+    }
+
+    /**
+     * 直播切台预加载（第 76 轮 v2.0.15）：给正在播的直播项后面挂下一台，
+     * 播放器自动预缓冲下一项；切到下一台时 [advanceToPreloaded] 直接切已缓冲
+     * 的项，不用重新建链、拉 manifest。只用于直播；点播仍走 playUrl 单项。
+     * 刚瞬切完（当前项是第 1 项）时先去掉已播完的旧项、当前项落回第 0 项，
+     * 再挂新下一项；已有下一项且就是目标时不动（已在缓冲）。
+     * 任何一步异常只记日志、不崩溃（调用方走 playUrl 兜底）。
+     */
+    fun preloadNext(url: String) {
+        try {
+            if (player.mediaItemCount == 0) return
+            if (player.currentMediaItemIndex == 1) {
+                player.removeMediaItem(0)
+            }
+            if (player.currentMediaItemIndex != 0) return
+            val current = player.currentMediaItem?.localConfiguration?.uri?.toString()
+            if (current == url) return
+            if (player.mediaItemCount >= 2) {
+                val next = player.getMediaItemAt(1).localConfiguration?.uri?.toString()
+                if (next == url) return
+                player.removeMediaItem(1)
+            }
+            player.addMediaItem(MediaItem.fromUri(url))
+        } catch (e: Exception) {
+            AppLog.w("PlayerManager", "预加载下一台失败：${e.message}")
+        }
+    }
+
+    /**
+     * 切到已预加载的下一项（第 76 轮 v2.0.15）：目标台就是预加载的下一项时
+     * 瞬切（已缓冲），返回 true；否则返回 false，调用方走 playUrl 正常开播。
+     * 切完后播放列表是 [旧台, 新台]、当前项第 1 项，下一次 [preloadNext]
+     * 会先去掉旧项再挂新下一项。
+     */
+    fun advanceToPreloaded(targetUrl: String): Boolean {
+        return try {
+            if (player.mediaItemCount < 2) return false
+            if (player.currentMediaItemIndex != 0) return false
+            val next = player.getMediaItemAt(1).localConfiguration?.uri?.toString()
+            if (next != targetUrl) return false
+            player.seekToNextMediaItem()
+            player.play()
+            true
+        } catch (e: Exception) {
+            AppLog.w("PlayerManager", "瞬切预加载失败：${e.message}")
+            false
+        }
     }
 
     fun play() {

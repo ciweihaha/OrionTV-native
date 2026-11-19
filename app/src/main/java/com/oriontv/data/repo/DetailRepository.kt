@@ -98,7 +98,22 @@ class DetailRepository @Inject constructor(
         if (merged.isNotEmpty()) {
             onUpdate(merged, true)
         } else if (preferredResults.isEmpty()) {
-            throw preferredError ?: IllegalStateException("没有找到相关内容")
+            // 第 76 轮 v2.0.14：MoonTV 全量搜索 0 条时回落 agg 直取——首页卡片
+            // 本来就来自 agg（vod_id 是 `站点~编号`），MoonTV 的源里没有该标题
+            // 时详情直接报“没有找到相关内容”，就是用户报的“很多点进去没有资源”。
+            // agg 回落也失败/空时才按原样报错（网络错原样抛，不报成“没内容”）。
+            val aggResults = try {
+                fetchAggDetailResults(q, id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
+            if (aggResults.isNotEmpty()) {
+                onUpdate(aggResults, true)
+            } else {
+                throw preferredError ?: IllegalStateException("没有找到相关内容")
+            }
         }
         // 首选源已有结果但全量搜索 0 条：保持首选源结果，标记加载完成。
         if (preferredResults.isNotEmpty() && merged.isEmpty()) {

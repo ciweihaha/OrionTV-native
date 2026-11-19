@@ -78,6 +78,9 @@ class SettingsDataStore @Inject constructor(
 
         /** RN 首启迁移已跑过（D-P1-6）：跑完置 true，失败不置位、下次启动重试。 */
         val RN_MIGRATION_DONE = booleanPreferencesKey("rnMigrationDone")
+
+        /** 第 76 轮 v2.0.15：Assrt 在线搜字幕的令牌（用户去 assrt.net 免费申请，填进字幕菜单）。 */
+        val ASSRT_TOKEN = stringPreferencesKey("assrtToken")
     }
 
     val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL] ?: DEFAULT_API_BASE_URL }
@@ -101,6 +104,8 @@ class SettingsDataStore @Inject constructor(
     val liveLastChannel: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_LAST_CHANNEL].orEmpty() }
     val liveFavChannels: Flow<String> = context.settingsDataStore.data.map { it[Keys.LIVE_FAV_CHANNELS].orEmpty() }
     val rnMigrationDone: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.RN_MIGRATION_DONE] ?: false }
+    /** 第 76 轮 v2.0.15：Assrt 令牌（空串 = 未填，在线搜字幕时提示去申请）。 */
+    val assrtToken: Flow<String> = context.settingsDataStore.data.map { it[Keys.ASSRT_TOKEN].orEmpty() }
 
     /**
      * B13-P2-4：一次快照同时取 StorageType 与服务器地址——调用方（见
@@ -140,6 +145,16 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setM3uUrl(value: String) {
         context.settingsDataStore.edit { it[Keys.M3U_URL] = value }
+    }
+
+    /** 第 76 轮 v2.0.15：读 Assrt 令牌（空串 = 未填）。 */
+    suspend fun currentAssrtToken(): String {
+        return context.settingsDataStore.data.first()[Keys.ASSRT_TOKEN].orEmpty()
+    }
+
+    /** 第 76 轮 v2.0.15：存 Assrt 令牌。 */
+    suspend fun setAssrtToken(value: String) {
+        context.settingsDataStore.edit { it[Keys.ASSRT_TOKEN] = value }
     }
 
     /**

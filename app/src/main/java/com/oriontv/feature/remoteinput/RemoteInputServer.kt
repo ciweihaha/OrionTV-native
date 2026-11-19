@@ -104,6 +104,33 @@ class RemoteInputServer(
     private class ChunkedNotSupportedException : Exception()
 
     companion object {
+        /**
+         * 第 76 轮 v2.0.14：按候选顺序起服务，12346 被占（RN 版同端口）时顺延
+         * 到下一端口。返回（服务，实际端口）；全部被占时返回 null，调用方报错。
+         * 起失败的 server 立即 stop，不留占着端口的僵尸（NanoHTTPD 的 start()
+         * 抛错时端口可能已绑上）。
+         * [onServerCreated] 在每次创建 server 后立即回调（供调用方把候选
+         * server 记到 pending 变量里，启动中途被取消时 catch 能停掉它，
+         * 与 RemoteInputManager 的 B7-P1-1 兜底同款）。
+         */
+        fun startOnFirstFreePort(
+            router: RemoteInputRouter,
+            ports: List<Int> = RemoteInputService.PORT_CANDIDATES,
+            onServerCreated: (RemoteInputServer) -> Unit = {},
+        ): Pair<RemoteInputServer, Int>? {
+            for (port in ports) {
+                val server = RemoteInputServer(router, port)
+                onServerCreated(server)
+                try {
+                    server.start()
+                    return server to port
+                } catch (_: Exception) {
+                    runCatching { server.stop() }
+                }
+            }
+            return null
+        }
+
         /** 本机局域网 IPv4（优先站点本地地址）；拿不到时返回 null。 */
         fun localIpAddress(): String? {
             return try {

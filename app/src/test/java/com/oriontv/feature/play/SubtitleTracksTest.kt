@@ -145,4 +145,26 @@ class SubtitleTracksTest {
         assertNull(nothingApplied.selectedIndex)
         assertFalse(nothingApplied.shouldApply)
     }
+
+    @Test
+    fun `external subtitle file support and mime types`() {
+        // 第 76 轮 v2.0.15：外挂字幕扩展名与 Media3 MIME 类型映射。
+        assertTrue(isSupportedSubtitleFile("movie.srt"))
+        assertTrue(isSupportedSubtitleFile("movie.ASS"))
+        assertTrue(isSupportedSubtitleFile("movie.vtt"))
+        assertTrue(isSupportedSubtitleFile("movie.ttml"))
+        assertFalse(isSupportedSubtitleFile("movie.txt"))
+        assertFalse(isSupportedSubtitleFile("movie.zip"))
+        assertFalse(isSupportedSubtitleFile("movie"))
+        assertEquals("application/x-subrip", subtitleMimeType("a.srt"))
+        assertEquals("text/vtt", subtitleMimeType("a.vtt"))
+        assertEquals("text/x-ssa", subtitleMimeType("a.ass"))
+        assertEquals("text/x-ssa", subtitleMimeType("a.ssa"))
+        assertEquals("application/ttml+xml", subtitleMimeType("a.ttml"))
+        assertNull(subtitleMimeType("a.txt"))
+        assertNull(subtitleMimeType("a.zip"))
+        assertTrue(isSubtitleZip("subs.zip"))
+        assertTrue(isSubtitleZip("SUBS.ZIP"))
+        assertFalse(isSubtitleZip("subs.srt"))
+    }
 }

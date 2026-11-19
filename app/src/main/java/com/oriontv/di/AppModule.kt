@@ -121,6 +121,11 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideAssrtApi(client: OkHttpClient, json: Json): com.oriontv.data.api.AssrtApi =
+        com.oriontv.data.api.AssrtApi(client, json, Dispatchers.IO)
+
+    @Provides
+    @Singleton
     fun provideMoonTvApi(client: OkHttpClient, json: Json): MoonTvApi =
         MoonTvApi(client, json, Dispatchers.IO)
 

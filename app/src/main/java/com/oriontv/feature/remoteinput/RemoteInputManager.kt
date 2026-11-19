@@ -104,6 +104,14 @@ class RemoteInputManager @Inject constructor() {
     @Volatile
     private var rotationJob: Job? = null
 
+    /**
+     * 第 76 轮 v2.0.14：实际绑定的远程输入端口（12346 被占时顺延到候选端口）。
+     * IP 变化刷新显示地址时用它（不是默认 PORT），否则顺延后的地址会被刷回 12346。
+     * stopLocked() 里复位回默认端口。
+     */
+    @Volatile
+    private var actualPortState: Int = RemoteInputService.PORT
+
     /** 启动服务；已在跑时直接返回；并发启动共用同一次。 */
     suspend fun start() {
         desiredRunning = true
@@ -126,10 +134,20 @@ class RemoteInputManager @Inject constructor() {
             if (ip == null) {
                 throw IllegalStateException("无法获取 IP 地址，请确认设备已连接到 Wi-Fi 或以太网。")
             }
-            val newServer = RemoteInputServer(router)
+            // 第 76 轮 v2.0.14：12346 被占（RN 版同端口）时顺延候选端口；
+            // 全部被占时起失败，报错里列出全部试过的端口。
+            // onServerCreated 回调把每个候选 server 记到 pendingServer，
+            // 启动中途被取消时 catch 的 B7-P1-1 兜底能停掉它。
+            val started = withContext(Dispatchers.IO) {
+                RemoteInputServer.startOnFirstFreePort(router) { pendingServer = it }
+            } ?: throw IllegalStateException(
+                "远程输入启动失败：端口 ${RemoteInputService.PORT_CANDIDATES.joinToString("、")} 都被占用",
+            )
+            val newServer = started.first
+            val actualPort = started.second
             pendingServer = newServer
-            withContext(Dispatchers.IO) { newServer.start() }
             startedServer = newServer
+            actualPortState = actualPort
             val code = router.rotatePairingCode()
             // B6-P2-1：发布 server 与读停服标志放同一把锁里——之前 server 在
             // 锁外赋值，stop() 的停服协程可能刚把 server 置 null，随后这里
@@ -146,7 +164,7 @@ class RemoteInputManager @Inject constructor() {
             _state.update {
                 it.copy(
                     isRunning = true,
-                    serverUrl = "http://$ip:${RemoteInputService.PORT}",
+                    serverUrl = "http://$ip:$actualPort",
                     pairingCode = code,
                     error = null,
                     pairingCodeRemainingSeconds =
@@ -252,6 +270,8 @@ class RemoteInputManager @Inject constructor() {
             rotationJob = null
             runCatching { server?.stop() }
             server = null
+            // 第 76 轮：停服时实际端口复位回默认（下次启动重新顺延）。
+            actualPortState = RemoteInputService.PORT
             router.clearPairingCode()
             _state.update {
                 it.copy(
@@ -308,7 +328,8 @@ class RemoteInputManager @Inject constructor() {
         val newUrl = resolveServerUrlAfterIpChange(
             _state.value.serverUrl,
             RemoteInputServer.localIpAddress(),
-            RemoteInputService.PORT,
+            // 第 76 轮：用实际绑定端口（顺延后可能是 12347+），不是默认 PORT。
+            actualPortState,
         ) ?: return
         _state.update { it.copy(serverUrl = newUrl) }
     }

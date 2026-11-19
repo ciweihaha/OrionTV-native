@@ -84,6 +84,20 @@ class LiveControllerTest {
         assertEquals(0, c.failCount)
     }
 
+    @Test
+    fun `recordFailure only counts without deciding`() {
+        // 第 76 轮 v2.0.15：重拿新链接先行重试用——只记失败、不决策；
+        // 记完后下一次 onPlaybackError 仍按正常链走（备用线路/跳台）。
+        val c = LiveController(threeChannels)
+        c.recordFailure()
+        assertEquals(1, c.failCount)
+        assertEquals(0, c.currentIndex)
+        assertEquals(0, c.lineIndex)
+        val next = c.onPlaybackError(panelOpen = false)
+        assertTrue(next is LiveErrorAction.TryLine)
+        assertEquals(2, c.failCount)
+    }
+
     // ---- 断流自动处理 ----
 
     @Test

@@ -17,6 +17,7 @@ import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -395,7 +397,10 @@ class SearchViewModel @Inject constructor(
                 aggApi.searchVideos(query).list.orEmpty()
                     .map(DetailSearchLogic::mapAggItemToSearchResult)
             } else {
-                moonTvApi.searchVideos(baseUrl, query)
+                // 第 76 轮 v2.0.14：服务端 + agg 双路并行搜（搜全部已配源，不用手动
+                // 切源）——之前只走服务端，服务端源里没有的片搜不到；agg 37 站
+                // 汇总进来，服务端结果在前、agg 结果去重后补在后面。
+                searchAllSources(query, baseUrl)
             }
             // B-P2-23①：网络返回后复核 generation；迟到结果不得覆盖更新的搜索。
             //（旧任务被取消时，OkHttp 同步调用不响应取消，返回后本应由 CE 拦截，
@@ -441,6 +446,34 @@ class SearchViewModel @Inject constructor(
             // B33-P2-1：失败落态也要存一次，种类才进 SavedStateHandle。
             saveSearchState()
         }
+    }
+
+    /**
+     * 第 76 轮 v2.0.14：服务端 + agg 双路并行搜（搜全部已配源，不用手动切源）。
+     * supervisorScope：两路互不影响，一路失败时用另一路的结果顶上去；
+     * 两路都失败时抛服务端那边的错（与旧行为一致：搜索失败落错误态）。
+     * 取消必须原样抛出（runCatching 会吞 CancellationException，见内层检查）。
+     */
+    private suspend fun searchAllSources(
+        query: String,
+        baseUrl: String,
+    ): List<SearchResult> = supervisorScope {
+        val serverDeferred = async { moonTvApi.searchVideos(baseUrl, query) }
+        val aggDeferred = async {
+            aggApi.searchVideos(query).list.orEmpty()
+                .map(DetailSearchLogic::mapAggItemToSearchResult)
+        }
+        val serverOutcome = runCatching { serverDeferred.await() }
+        val aggOutcome = runCatching { aggDeferred.await() }
+        serverOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        aggOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        val serverResults = serverOutcome.getOrNull()
+        val aggResults = aggOutcome.getOrNull()
+        if (serverResults == null && aggResults == null) {
+            throw serverOutcome.exceptionOrNull() ?: aggOutcome.exceptionOrNull()
+                ?: IOException("搜索失败")
+        }
+        mergeSearchResults(serverResults.orEmpty(), aggResults.orEmpty(), query)
     }
 
     /** 联想 chips：历史里含当前输入的词（最多 5 条）。 */
@@ -586,6 +619,35 @@ fun shouldCacheSearchResults(results: List<SearchResult>): Boolean = results.isN
 /** 搜索结果条目键（纯逻辑，可单测）：source+id。 */
 fun searchResultKey(result: SearchResult): String =
     "${result.source}+${result.id.orEmpty()}"
+
+/**
+ * 第 76 轮 v2.0.14：双路搜索结果合并（纯逻辑，可单测）——服务端结果在前；
+ * agg 结果只留标题含关键词的（agg 的 wd 参数是模糊搜，会带回不相关的片），
+ * 再按（归一化标题 + 来源名）去重，同一部片同一来源只留一条（服务端那条）。
+ */
+fun mergeSearchResults(
+    serverResults: List<SearchResult>,
+    aggResults: List<SearchResult>,
+    query: String,
+): List<SearchResult> {
+    val normalizedQuery = MoonTvApi.normalizeTitle(query)
+    val seen = LinkedHashSet<String>()
+    val merged = ArrayList<SearchResult>(serverResults.size + aggResults.size)
+    for (result in serverResults) {
+        if (seen.add(searchResultDedupeKey(result))) merged.add(result)
+    }
+    for (result in aggResults) {
+        if (normalizedQuery.isNotBlank() &&
+            !MoonTvApi.normalizeTitle(result.title).contains(normalizedQuery)
+        ) continue
+        if (seen.add(searchResultDedupeKey(result))) merged.add(result)
+    }
+    return merged
+}
+
+/** 搜索合并去重键（纯逻辑，可单测）：归一化标题 + 来源名。 */
+internal fun searchResultDedupeKey(result: SearchResult): String =
+    "${MoonTvApi.normalizeTitle(result.title)}\u0001${result.source_name}"
 
 /** P2-9（第 5 轮）：按条目键找返回焦点位置（纯逻辑，可单测）；找不到返回 -1。 */
 fun findSavedResult(results: List<SearchResult>, savedKey: String?): Int {
