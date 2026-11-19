@@ -2,46 +2,27 @@ package com.oriontv.feature.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.oriontv.core.util.AppLog
 import com.oriontv.data.repo.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import kotlin.coroutines.cancellation.CancellationException
 
-/** 登录 ViewModel：登录弹窗 + 自动续期 + 退出登录（逻辑在 AuthRepository）。 */
+/**
+ * 登录状态 ViewModel（v2.0.17）：登录完全内置、永不弹登录框。
+ * 这里只剩冷启动检查的入口与登录态的只读暴露——登录弹窗（LoginModal）
+ * 与手动登录/退出登录入口已随 v2.0.17 删除；登录失败时 AuthRepository
+ * 在后台悄悄重试，UI 侧不处理登录。
+ */
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val authRepository: AuthRepository,
 ) : ViewModel() {
-    val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
-    val showLoginModal: StateFlow<Boolean> = authRepository.showLoginModal
-    val loginError: StateFlow<String?> = authRepository.loginError
 
+    val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
+
+    /** 冷启动检查：无地址 → 未登录；有标记 → 轻量校验；无标记 → 静默重登。 */
     fun checkLoginStatus() {
         viewModelScope.launch { authRepository.checkLoginStatus() }
     }
-
-    fun login(username: String, password: String) {
-        viewModelScope.launch { authRepository.login(username, password) }
-    }
-
-    fun logout() {
-        // 第 6 轮 D6-P2-14：AuthRepository.logout() 的契约是“远程登出抛错时
-        // 照常抛（只保证清理执行）”，裸 launch 接不住会让 viewModelScope
-        // 未捕获异常崩应用；这里接住记日志——本地会话在 finally 里已清干净。
-        viewModelScope.launch {
-            try {
-                authRepository.logout()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLog.w("AuthViewModel", "退出登录远程登出失败（本地会话已清理）：${e.message}")
-            }
-        }
-    }
-
-    fun showLogin() = authRepository.showLogin()
-    fun hideLogin() = authRepository.hideLogin()
 }

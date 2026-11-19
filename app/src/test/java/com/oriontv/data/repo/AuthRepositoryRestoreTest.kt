@@ -131,7 +131,6 @@ class AuthRepositoryRestoreTest {
         runBlocking {
             repo.checkLoginStatus()
             assertFalse(repo.isLoggedIn.value)
-            assertTrue(repo.showLoginModal.value)
             assertEquals(1, api.loginCalls)
             repo.logout()
             delay(400)
@@ -164,7 +163,8 @@ class AuthRepositoryRestoreTest {
     @Test
     fun `expired session with refresh already tried does not log in twice`() {
         // D6-P2-5：verifySession 的 getFavorites 触发 401 续期（登录 #1）后仍 401，
-        // checkLoginStatus 不再重跑 restoreSession（登录 #2），直接弹登录框。
+        // checkLoginStatus 不再重跑 restoreSession（登录 #2）；v2.0.17：不弹登录框，
+        // 只排一条静默重试链。
         val api = FakeAuthApi()
         api.favoritesBehavior = {
             // 模拟 MoonTvApi.execute 的 401 路径：先调续期回调，再抛过期异常
@@ -177,7 +177,6 @@ class AuthRepositoryRestoreTest {
         runBlocking { repo.checkLoginStatus() }
         assertEquals(1, api.loginCalls)
         assertFalse(repo.isLoggedIn.value)
-        assertTrue(repo.showLoginModal.value)
     }
 
     @Test
@@ -193,7 +192,6 @@ class AuthRepositoryRestoreTest {
         runBlocking { repo.checkLoginStatus() }
         assertEquals(1, api.loginCalls)
         assertTrue(repo.isLoggedIn.value)
-        assertFalse(repo.showLoginModal.value)
     }
 
     @Test
@@ -211,7 +209,6 @@ class AuthRepositoryRestoreTest {
             assertEquals(0, api.loginCalls)
             assertEquals(1, settings.refreshCalls)
             assertFalse(repo.isLoggedIn.value)
-            assertTrue(repo.showLoginModal.value)
             // 延迟重试若被排队，100ms 后 loginCalls 会变成 1。
             delay(400)
             assertEquals(0, api.loginCalls)
@@ -343,29 +340,32 @@ class AuthRepositoryRestoreTest {
     }
 
     @Test
-    fun `401 refresh failure shows login modal`() {
-        // B10-P1-1：会话使用中过期、静默续期失败时弹登录框——旧实现只抛
-        // UnauthorizedException，各调用方只落错误文案，进程内再无登录入口。
+    fun `401 refresh failure never shows a login modal and schedules silent retry`() {
+        // v2.0.17：会话使用中过期、静默续期失败时不弹登录框（登录弹窗已删除），
+        // 只在后台排一条静默重试链；重试成功后登录态自行恢复。
         val api = FakeAuthApi()
         val repo = repository(api)
+        repo.silentRetryDelaysMs = listOf(100L)
         runBlocking {
             assertTrue(repo.login("user", "pass").isSuccess)
             assertTrue(repo.isLoggedIn.value)
-            assertFalse(repo.showLoginModal.value)
             // 续期用的已保存凭据已过期：静默重登失败。
             api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.WrongCredentials))
             val restored = api.onUnauthorized?.invoke()
             assertFalse(restored!!)
             assertEquals(2, api.loginCalls)
             assertFalse(repo.isLoggedIn.value)
-            assertTrue(repo.showLoginModal.value)
+            // 静默重试链：100ms 后再试一次（Fake 队列已空，默认回 Success）。
+            delay(400)
+            assertEquals(3, api.loginCalls)
+            assertTrue(repo.isLoggedIn.value)
         }
     }
 
     @Test
-    fun `failed 401 refresh does not reopen modal after concurrent manual login`() {
+    fun `failed 401 refresh does not clear a concurrent manual login`() {
         // B10-P1-1 的代次守卫：恢复在途时用户手动登录成功，那是新会话，
-        // 旧恢复失败后不得把刚登进去的会话又弹回登录框（与 D7-P2-1 同款竞态）。
+        // 旧恢复失败后不得把刚登进去的会话清掉（与 D7-P2-1 同款竞态）。
         val gate = CompletableDeferred<MoonTvApi.LoginResult>()
         val api = FakeAuthApi(loginGate = gate)
         val settings = FakeAuthSettings(marker = "")
@@ -380,7 +380,6 @@ class AuthRepositoryRestoreTest {
             gate.complete(MoonTvApi.LoginResult.WrongCredentials)
             assertFalse(refreshJob.await()!!)
             assertTrue(repo.isLoggedIn.value)
-            assertFalse(repo.showLoginModal.value)
             assertEquals("1", settings.marker)
         }
     }
@@ -411,81 +410,6 @@ class AuthRepositoryRestoreTest {
     }
 
     @Test
-    fun `shouldAutoShowLoginModal only when restore failed and not dismissed`() {
-        // D8-P2-1 纯逻辑：恢复成功 / 已退出 / 恢复期间有人手动登入 /
-        // 用户本会话已手动关过框，四种情况都不自动弹。
-        assertTrue(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = true, dismissedByUser = false))
-        assertFalse(shouldAutoShowLoginModal(restored = true, loggedOut = false, epochUnchanged = true, dismissedByUser = false))
-        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = true, epochUnchanged = true, dismissedByUser = false))
-        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = false, dismissedByUser = false))
-        assertFalse(shouldAutoShowLoginModal(restored = false, loggedOut = false, epochUnchanged = true, dismissedByUser = true))
-    }
-
-    @Test
-    fun `dismissed login modal is not reopened by later 401`() {
-        // D8-P2-1：用户手动关掉登录框后，过期会话下再有服务端调用 401，
-        // 恢复再次失败也不得把框再弹出来；用户主动进登录入口后，节流重置。
-        val api = FakeAuthApi(
-            loginResults = ArrayDeque(
-                listOf(
-                    MoonTvApi.LoginResult.WrongCredentials,
-                    MoonTvApi.LoginResult.WrongCredentials,
-                    MoonTvApi.LoginResult.WrongCredentials,
-                    MoonTvApi.LoginResult.WrongCredentials,
-                ),
-            ),
-        )
-        val repo = repository(api)
-        runBlocking {
-            // 第一次 401：恢复失败，弹框。
-            assertFalse(api.onUnauthorized?.invoke()!!)
-            assertTrue(repo.showLoginModal.value)
-            // 用户手动关掉。
-            repo.hideLogin()
-            assertFalse(repo.showLoginModal.value)
-            // 第二次 401：恢复又失败，不得再弹。
-            assertFalse(api.onUnauthorized?.invoke()!!)
-            assertFalse(repo.showLoginModal.value)
-            // 用户主动进登录入口（showLogin）再关掉：节流重置后又被关掉，
-            // 第三次 401 仍不得弹。
-            repo.showLogin()
-            assertTrue(repo.showLoginModal.value)
-            repo.hideLogin()
-            assertFalse(api.onUnauthorized?.invoke()!!)
-            assertFalse(repo.showLoginModal.value)
-        }
-    }
-
-    @Test
-    fun `login success clears dismiss memory so later 401 shows modal again`() {
-        // D8-P2-1 的另一半：登录成功后，之前的手动关闭记忆失效——新会话
-        // 过期时自动弹框恢复。
-        val api = FakeAuthApi(
-            // 注意消耗顺序：第一次 401 的恢复耗 1 个；随后的手动登录须走
-            // 队列空时的默认 Success，所以这里只放 1 个。
-            loginResults = ArrayDeque(
-                listOf(
-                    MoonTvApi.LoginResult.WrongCredentials,
-                ),
-            ),
-        )
-        val repo = repository(api)
-        runBlocking {
-            assertFalse(api.onUnauthorized?.invoke()!!)
-            assertTrue(repo.showLoginModal.value)
-            repo.hideLogin()
-            assertFalse(repo.showLoginModal.value)
-            // 手动登录成功（loginResults 已空，Fake 默认回 Success）。
-            assertTrue(repo.login("user", "pass").isSuccess)
-            assertTrue(repo.isLoggedIn.value)
-            // 新会话下再 401、恢复失败：应重新弹框。
-            api.loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.WrongCredentials))
-            assertFalse(api.onUnauthorized?.invoke()!!)
-            assertTrue(repo.showLoginModal.value)
-        }
-    }
-
-    @Test
     fun `login completing after logout does not revive session`() {
         // D8-P2-6：登录 POST 在途时用户点了退出，登录成功返回时不得把
         // 已退出的会话置回 true，也不得把刚清掉的凭据/标记重存一遍。
@@ -503,7 +427,6 @@ class AuthRepositoryRestoreTest {
             val result = loginJob.await()
             assertTrue(result.isFailure)
             assertFalse(repo.isLoggedIn.value)
-            assertFalse(repo.showLoginModal.value)
             // 凭据与标记保持退出后的干净状态，未被登录重存。
             assertEquals(null, store.saved)
             assertEquals("", settings.marker)
@@ -524,5 +447,52 @@ class AuthRepositoryRestoreTest {
         }
         assertEquals(0, api.loginCalls)
         assertFalse(repo.isLoggedIn.value)
+    }
+
+    @Test
+    fun `failed cold start schedules silent retry that recovers login`() {
+        // v2.0.17：冷启动静默登录失败时不弹登录框，只在后台按间隔悄悄重试；
+        // 重试成功后登录态自行恢复（用户报的“第二次进来弹登录框”根因：
+        // 旧实现失败即弹框，现在失败只重试）。
+        val api = FakeAuthApi(
+            loginResults = ArrayDeque(listOf(MoonTvApi.LoginResult.WrongCredentials)),
+        )
+        val repo = repository(api)
+        repo.silentRetryDelaysMs = listOf(100L)
+        runBlocking {
+            repo.checkLoginStatus()
+            assertFalse(repo.isLoggedIn.value)
+            assertEquals(1, api.loginCalls)
+            // 100ms 后静默重试一次（Fake 队列已空，默认回 Success）。
+            delay(400)
+            assertEquals(2, api.loginCalls)
+            assertTrue(repo.isLoggedIn.value)
+        }
+    }
+
+    @Test
+    fun `logout cancels scheduled silent retry so it cannot log back in`() {
+        // v2.0.17：冷启动失败排队静默重试后，退出登录必须取消重试链，
+        // 否则重试会把已退出的会话悄悄登回去。
+        val api = FakeAuthApi(
+            loginResults = ArrayDeque(
+                listOf(
+                    MoonTvApi.LoginResult.WrongCredentials, // 冷启动初次恢复失败
+                    MoonTvApi.LoginResult.Success, // 重试触发时若跑起来会成功复登
+                ),
+            ),
+        )
+        val repo = repository(api)
+        repo.silentRetryDelaysMs = listOf(100L)
+        runBlocking {
+            repo.checkLoginStatus()
+            assertFalse(repo.isLoggedIn.value)
+            assertEquals(1, api.loginCalls)
+            repo.logout()
+            delay(400)
+            // 重试若未被取消，此时 loginCalls 会是 2、且已重新登录。
+            assertEquals(1, api.loginCalls)
+            assertFalse(repo.isLoggedIn.value)
+        }
     }
 }

@@ -100,7 +100,6 @@ class AuthRepositoryBuiltinTest {
         assertEquals("admin", api.lastLoginUsername)
         assertEquals("builtin-pw", api.lastLoginPassword)
         assertTrue(repo.isLoggedIn.value)
-        assertFalse(repo.showLoginModal.value)
         assertEquals("1", settings.marker)
     }
 
@@ -169,7 +168,6 @@ class AuthRepositoryBuiltinTest {
         assertNull(store.saved)
         assertEquals(0, api.loginCalls)
         assertFalse(repo.isLoggedIn.value)
-        assertFalse(repo.showLoginModal.value)
     }
 
     @Test
@@ -189,7 +187,6 @@ class AuthRepositoryBuiltinTest {
         assertEquals("admin", api.lastLoginUsername)
         assertEquals("builtin-pw", api.lastLoginPassword)
         assertTrue(repo.isLoggedIn.value)
-        assertFalse(repo.showLoginModal.value)
     }
 
     @Test

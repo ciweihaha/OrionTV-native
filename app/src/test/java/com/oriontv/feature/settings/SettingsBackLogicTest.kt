@@ -44,13 +44,6 @@ class SettingsBackLogicTest {
     }
 
     @Test
-    fun `login menu label follows login state`() {
-        // B11-P1-1：设置页末项按登录态切换“登录/退出登录”。
-        assertEquals("登录", loginMenuLabel(isLoggedIn = false))
-        assertEquals("退出登录", loginMenuLabel(isLoggedIn = true))
-    }
-
-    @Test
     fun `tick restore skips while qr modal is open`() {
         // C12-P2-5：设置页 tick 恢复无视二维码弹窗——拉回左菜单后弹窗遥控不可达；
         // 弹窗开着时跳过，关闭后由它自己的关闭 effect 把焦点还给触发按钮。

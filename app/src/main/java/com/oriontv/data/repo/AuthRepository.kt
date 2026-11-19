@@ -30,9 +30,10 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 登录会话仓库（ui-design.md §5.8，照搬 RN authStore）：
- * 登录弹窗 + 自动续期 + 退出登录；凭据放 EncryptedSharedPreferences，
+ * 内置账号静默登录 + 自动续期 + 退出登录；凭据放 EncryptedSharedPreferences，
  * 登录标记位 authCookies 只存 "1"/""；真 cookie 在 OkHttp CookieJar 里。
- * 401 续期：用已保存凭据重登（并发去重，只跑一次）；失败才弹登录框。
+ * 登录完全内置（v2.0.17）：启动时用内置账号静默登录，登录失败在后台悄悄重试，
+ * 永不弹登录框、也没有手动登录入口；401 续期失败同样只在后台重试。
  */
 @Singleton
 class AuthRepository @Inject constructor(
@@ -48,12 +49,6 @@ class AuthRepository @Inject constructor(
 ) {
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
-
-    private val _showLoginModal = MutableStateFlow(false)
-    val showLoginModal: StateFlow<Boolean> = _showLoginModal.asStateFlow()
-
-    private val _loginError = MutableStateFlow<String?>(null)
-    val loginError: StateFlow<String?> = _loginError.asStateFlow()
 
     private val restoreMutex = Mutex()
     /** 第 3 轮收尾 B-P2-17：在途恢复由各方共享（见 restoreSession）。 */
@@ -91,20 +86,19 @@ class AuthRepository @Inject constructor(
     internal var configRetryDelayMs: Long = CONFIG_RETRY_DELAY_MS
     /**
      * B10-P1-1：手动登录成功代次——login() 成功时推进一次；401 续期回调
-     * 在恢复失败后凭它判断恢复期间是否有人手动登进去了（是则不弹登录框，
-     * 否则把已过期会话的登录框弹出来；与 D7-P2-1“旧恢复不得清并发手动
-     * 登录”同款竞态，只不过这里守的是弹窗不是登录态）。
+     * 在恢复失败后凭它判断恢复期间是否有人手动登进去了（是则不把刚登进去
+     * 的会话标成未登录，与 D7-P2-1 同款竞态；v2.0.17：守的是登录态，
+     * 不再是旧的登录弹窗）。
      */
     private val manualLoginEpoch = AtomicInteger(0)
     /**
-     * 第 8 轮 D8-P2-1：用户手动关闭过登录框的记忆（进程内，与 loggedOut 同款
-     * 内存标志，无需持久化：进程重启后登录态本身走冷启动流程）。
-     * 401 回调的自动弹框只在用户未明确拒绝过时才弹——否则过期会话下每次
-     * 服务端调用 401 都会把刚关掉的框再弹出来。用户主动进登录入口
-     * （showLogin）、登录成功、退出登录时清掉：重新明确要登录后，自动弹框恢复。
+     * v2.0.17：静默登录重试链的等待间隔（毫秒），默认 [SILENT_RETRY_DELAYS_MS]；
+     * internal 可写只为单测能缩短等待，生产代码不动它。登录失败后按这条链
+     * 在后台悄悄重试，永不弹登录框；登录成功或退出登录时链自行停止。
      */
-    @Volatile
-    private var loginDismissedByUser = false
+    internal var silentRetryDelaysMs: List<Long> = SILENT_RETRY_DELAYS_MS
+    /** 静默登录重试链的在途任务（只排一个；logout() 时取消）。 */
+    private var silentRetryJob: Job? = null
     /**
      * 第 8 轮 D8-P2-6：登录态落盘与退出收尾的互斥——performRestore 的
      * “复核 + 置位”、login() 的“成功落盘”、logout() 的 finally 收尾，
@@ -123,26 +117,20 @@ class AuthRepository @Inject constructor(
                 false
             } else {
                 unauthorizedRefreshCount.incrementAndGet()
-                // B10-P1-1：续期失败即会话已过期，弹登录框——旧实现只由
-                // execute() 抛 UnauthorizedException，各调用方只落错误文案，
-                // 进程内再无登录入口（登录弹窗只在冷启动弹一次）。
-                // 恢复期间手动登录成功会推进 manualLoginEpoch，那是新会话，
-                // 不得把刚登进去的会话又弹回登录框；期间退出登录由 loggedOut 拦住。
+                // v2.0.17：续期失败即会话已过期——不弹登录框；恢复期间无人
+                // 手动登入时把登录态标成未登录（否则“已登录但会话已死”的
+                // 僵尸态会让首页继续发需登录的请求，且静默重试链因见已登录
+                // 而直接停掉），再排一条静默重试链。恢复期间有人手动登入
+                // （代次变了）时不碰登录态；退出登录由 loggedOut 拦住。
+                // restoreSession() 内部已有 D7-P2-1 守卫：恢复失败时只在
+                // 当前未登录时才写 false，不会清掉并发登录进来的新会话；
+                // 这里的代次复核是第二道防线（恢复开始前已登录的老会话
+                // 不受 D7-P2-1 守卫保护——它只拦“恢复期间才登入”的新会话）。
                 val epochBefore = manualLoginEpoch.get()
                 val restored = restoreSession()
-                // D8-P2-1：用户本会话已手动关过登录框时不再自动弹（见
-                // shouldAutoShowLoginModal）；只在用户主动进登录入口时再弹。
-                // B12-P2-9：检查-后-写竞态——上面复核与下面写态之间，手动登录
-                // 可能插进来（回调跑在 IO 线程，窗口极窄但真实存在），把刚登
-                // 进去的会话又写回未登录、弹回登录框；写态前再复核一次代次
-                // 与已退出标志，变了就不再碰登录态与弹窗。注意：这里不能再
-                // 拿 _isLoggedIn.value 当门控——401 时它本就是 true（正要
-                // 登出的过期会话），门控只能靠代次与 loggedOut。
-                if (shouldAutoShowLoginModal(restored, loggedOut, manualLoginEpoch.get() == epochBefore, loginDismissedByUser)) {
-                    if (manualLoginEpoch.get() == epochBefore && !loggedOut) {
-                        _isLoggedIn.value = false
-                        _showLoginModal.value = true
-                    }
+                if (!restored && !loggedOut && manualLoginEpoch.get() == epochBefore) {
+                    _isLoggedIn.value = false
+                    scheduleSilentRestoreRetry()
                 }
                 restored
             }
@@ -151,8 +139,7 @@ class AuthRepository @Inject constructor(
 
     /** 登录：成功写标记位 + 存凭据（供下次自动续期），失败返回原因。 */
     suspend fun login(username: String, password: String): Result<Unit> {
-        // B12-P2-1：DataStore 读失败即崩溃——这行原来在 try 块之外，上层
-        // AuthViewModel.login() 又是裸 launch 无 try/catch；同文件 logout() /
+        // B12-P2-1：DataStore 读失败即崩溃——这行原来在 try 块之外；同文件 logout() /
         // checkLoginStatus() / performRestore() 三处同类读都包了 runOrDefault，
         // 唯独这里漏了。读失败按“未配置服务器地址”返回，不崩溃。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
@@ -160,7 +147,6 @@ class AuthRepository @Inject constructor(
         // D8-P2-6：记下登录开始时的退出世代——登录在途时若用户点了退出，
         // 成功分支不再把会话写回去（见下面的互斥 + 世代复核）。
         val epochAtStart = logoutEpoch.get()
-        _loginError.value = null
         return try {
             when (val result = moonTvApi.login(baseUrl, username, password)) {
                 MoonTvApi.LoginResult.Success -> {
@@ -168,8 +154,7 @@ class AuthRepository @Inject constructor(
                     // 登录 POST 在途时用户点了退出，logout() 的 finally 已把
                     // 会话清干净，旧实现会在此把 _isLoggedIn 悄悄置回 true
                     // （还把刚清掉的凭据/标记重存一遍）；世代变了即不申请，
-                    // 返回失败（不设 _loginError：是用户自己的退出取消了
-                    // 本次登录，没什么要提示的；登录框已由退出关掉）。
+                    // 返回失败（是用户自己的退出取消了本次登录，没什么要提示的）。
                     // 互斥只串行化“落盘/收尾”两段临界区，不跨网络调用，
                     // 不会把登录 POST 堵在退出后面。
                     val applied = loginStateMutex.withLock {
@@ -208,13 +193,9 @@ class AuthRepository @Inject constructor(
                             // 在途旧恢复的世代复核仍以 logoutEpoch 为准，不被本标志误拦。
                             loggedOut = false
                             // B10-P1-1：手动登录成功推进代次——401 续期回调凭它判断
-                            // 恢复期间是否有人手动登进去了（是则不弹登录框）。
+                            // 恢复期间是否有人手动登进去了（是则不把新会话标成未登录）。
                             manualLoginEpoch.incrementAndGet()
-                            // D8-P2-1：登录成功后，之前的手动关闭记忆失效——
-                            // 新会话过期时自动弹框恢复。
-                            loginDismissedByUser = false
                             _isLoggedIn.value = true
-                            _showLoginModal.value = false
                             true
                         }
                     }
@@ -226,13 +207,11 @@ class AuthRepository @Inject constructor(
                 }
                 // B4-P1-2：只有 401（或 2xx 但 ok=false）才报“账号或密码错误”。
                 MoonTvApi.LoginResult.WrongCredentials -> {
-                    _loginError.value = "账号或密码错误"
                     Result.failure(IllegalStateException("账号或密码错误"))
                 }
                 // 5xx/超时/网络错：MoonTvApi 内已重试一次，仍失败则报网络类错误，不误导改密码。
                 is MoonTvApi.LoginResult.Transient -> {
                     val message = "登录失败：${result.cause.message ?: "网络错误"}，请检查网络后重试"
-                    _loginError.value = message
                     Result.failure(IllegalStateException(message, result.cause))
                 }
             }
@@ -240,7 +219,6 @@ class AuthRepository @Inject constructor(
             throw e
         } catch (e: Exception) {
             val message = "登录失败：${e.message ?: "网络错误"}"
-            _loginError.value = message
             Result.failure(IllegalStateException(message, e))
         }
     }
@@ -256,11 +234,11 @@ class AuthRepository @Inject constructor(
         // 否则 31 秒内退出会被冷启动配置重试悄悄复登，或被在途恢复置回 true。
         // D7-P1-1：先置已退出标志——退出后才启动的恢复（立即恢复 / 31 秒延迟
         // 重试 / 401 回调）采样到的世代已是退出后的，世代守卫拦不住，只能靠标志。
-        // D8-P2-1：退出登录即开启新会话周期，手动关闭记忆随之失效。
         loggedOut = true
-        loginDismissedByUser = false
         configRetryJob?.cancel()
         configRetryJob = null
+        silentRetryJob?.cancel()
+        silentRetryJob = null
         logoutEpoch.incrementAndGet()
         // B5-P2-3：DataStore 读失败按无地址处理，不让冷启动/登出崩溃。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
@@ -365,7 +343,6 @@ class AuthRepository @Inject constructor(
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
         if (baseUrl.isBlank()) {
             _isLoggedIn.value = false
-            _showLoginModal.value = false
             return
         }
         val config = runOrDefault(null) { settingsRepository.refreshServerConfig() }
@@ -382,21 +359,19 @@ class AuthRepository @Inject constructor(
             when (check) {
                 SessionCheck.VALID -> {
                     _isLoggedIn.value = true
-                    _showLoginModal.value = false
                     return
                 }
                 SessionCheck.UNREACHABLE -> {
                     // 服务端暂时不可达：无法判定会话，沿用标记位已登录，
-                    // 不因一次网络抖动弹登录框。
+                    // 不因一次网络抖动要求登录。
                     _isLoggedIn.value = true
-                    _showLoginModal.value = false
                     return
                 }
                 SessionCheck.EXPIRED_REFRESH_TRIED -> {
                     // D6-P2-5：401 回调里已试过一次静默重登且失败，不再重跑
-                    // 第二遍登录 POST，直接弹登录框。
+                    // 第二遍登录 POST；v2.0.17：不弹登录框，排一条静默重试链。
                     _isLoggedIn.value = false
-                    _showLoginModal.value = true
+                    scheduleSilentRestoreRetry()
                     return
                 }
                 SessionCheck.EXPIRED -> {
@@ -405,11 +380,11 @@ class AuthRepository @Inject constructor(
             }
         }
         val restored = restoreSession()
-        // D6-P2-4：恢复在途时用户点了退出登录：不再按恢复结果改登录态/弹窗。
+        // D6-P2-4：恢复在途时用户点了退出登录：不再按恢复结果改登录态。
         if (logoutEpoch.get() != epochAtStart) return
         if (!restored) {
             _isLoggedIn.value = false
-            _showLoginModal.value = true
+            scheduleSilentRestoreRetry()
         }
     }
 
@@ -430,8 +405,8 @@ class AuthRepository @Inject constructor(
             if (loggedOut) return@launch
             if (logoutEpoch.get() != epochAtSchedule) return@launch
             // B4-P2-17：31 秒后配置重拉成功时重跑登录恢复——否则冷启动时
-            // 配置未到、restoreSession 已失败，登录弹窗一直滞留；
-            // 重跑成功时 performRestore 会把弹窗关掉，失败则弹窗继续留着。
+            // 配置未到、restoreSession 已失败，会话一直未登录；
+            // 重跑成功时 performRestore 会把登录态置回 true。
             val refreshed = runCatching { settingsRepository.refreshServerConfig() }
                 // B17-P2-1：取消异常原样重抛，不当成配置重拉失败回落空。
                 .onFailure { if (it is CancellationException) throw it }
@@ -545,7 +520,7 @@ class AuthRepository @Inject constructor(
             }
             // B8-P1-1：写标记后、置位前再复核一次世代——登出若插在上面
             // 的检查与写态之间，旧实现会把已退出的会话悄悄复活（置
-            // _isLoggedIn=true、关登录弹窗）；世代变了即不碰登录态。
+            // _isLoggedIn=true）；世代变了即不碰登录态。
             // D8-P2-6：复核与置位放进 loginStateMutex，与 logout() 的收尾
             // 互斥——只复核不加锁仍留一个窗口（logout 的 finally 在复核通过
             // 后、置位前跑完，置位就把已退出的会话复活）；加锁后两段临界区
@@ -559,7 +534,6 @@ class AuthRepository @Inject constructor(
                     false
                 } else {
                     _isLoggedIn.value = true
-                    _showLoginModal.value = false
                     true
                 }
             }
@@ -592,7 +566,7 @@ class AuthRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            // 标记复位失败也不拦收尾：下次冷启动凭据已清，恢复仍会失败、弹登录框。
+            // 标记复位失败也不拦收尾：下次冷启动凭据已清，恢复仍会失败、后台静默重试。
         }
     }
 
@@ -613,35 +587,33 @@ class AuthRepository @Inject constructor(
     companion object {
         /** B-P1-8：冷启动配置延迟重试间隔（越过 SettingsRepository 的 30 秒失败缓存）。 */
         const val CONFIG_RETRY_DELAY_MS = 31_000L
+
+        /**
+         * v2.0.17：静默登录重试链的等待间隔（毫秒）——登录失败后在后台按
+         * 30 秒、1 分钟、2 分钟、5 分钟、5 分钟悄悄重试，链跑完仍失败就停下，
+         * 下次启动再走冷启动流程；期间登录成功或退出登录时链自行停止。
+         */
+        val SILENT_RETRY_DELAYS_MS = listOf(30_000L, 60_000L, 120_000L, 300_000L, 300_000L)
     }
 
-    fun showLogin() {
-        // D8-P2-1：用户主动进登录入口（设置页换地址、登录入口）——重新明确
-        // 要登录，之前的手动关闭记忆失效，自动弹框恢复。
-        loginDismissedByUser = false
-        _loginError.value = null
-        _showLoginModal.value = true
-    }
-
-    fun hideLogin() {
-        // D8-P2-1：用户手动关闭登录框——记下来，本会话内 401 回调不再
-        // 自动弹框（只在用户主动进登录入口时再弹）。
-        loginDismissedByUser = true
-        _showLoginModal.value = false
+    /**
+     * v2.0.17：静默登录重试链——登录失败后在后台悄悄重试，永不弹登录框。
+     * 只排一条链（已在跑时不再排）；每步先查已退出标志与登录态，登录成功
+     * 或退出登录即停；链跑完仍失败就停下，不无限重试。
+     */
+    private fun scheduleSilentRestoreRetry() {
+        if (loggedOut) return
+        if (silentRetryJob?.isActive == true) return
+        silentRetryJob = restoreScope.launch {
+            for (delayMs in silentRetryDelaysMs) {
+                delay(delayMs)
+                if (loggedOut) return@launch
+                if (_isLoggedIn.value) return@launch
+                if (restoreSession()) return@launch
+            }
+        }
     }
 }
-
-/**
- * 第 8 轮 D8-P2-1：401 续期失败后是否自动弹登录框（纯逻辑，可单测）——
- * 恢复成功 / 已退出 / 恢复期间有人手动登入 / 用户本会话已手动关过框，
- * 四种情况都不自动弹；只在“恢复失败且无人接管、用户也没明确拒绝”时弹。
- */
-internal fun shouldAutoShowLoginModal(
-    restored: Boolean,
-    loggedOut: Boolean,
-    epochUnchanged: Boolean,
-    dismissedByUser: Boolean,
-): Boolean = !restored && !loggedOut && epochUnchanged && !dismissedByUser
 
 /**
  * 第 76 轮 v2.0.15：内置凭据是否需要（重）种入（纯逻辑，可单测）。

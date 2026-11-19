@@ -33,7 +33,6 @@ import androidx.navigation.navDeepLink
 import androidx.navigation.navOptions
 import androidx.navigation.toRoute
 import com.oriontv.feature.auth.AuthViewModel
-import com.oriontv.feature.auth.LoginModal
 import com.oriontv.feature.detail.DetailScreen
 import com.oriontv.feature.detail.DetailViewModel
 import com.oriontv.feature.favorites.FavoritesScreen
@@ -113,15 +112,13 @@ fun OrionNavHost(
     // 全局弹窗关闭后的焦点归宿见下面的 focusRestoreTick（C4-P1-2）：各页
     // 监听 tick 回自己默认锚点，不再统一拉到导航轨首项（P1-2 原方案的前提
     // “各页没有统一恢复入口”已被 tick 机制取代，见本次 rebase 说明）。
-    val showLoginModal by authViewModel.showLoginModal.collectAsState()
-    val loginError by authViewModel.loginError.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
-    // C4-P1-2：登录与更新卡片互斥——登录开着时更新卡片不渲染（登录关后恢复显示）。
+    // v2.0.17：登录弹窗已删除，更新卡片是唯一的全局弹窗。
     val showUpdateCard = updateState.showUpdateCard &&
-        updateState.latestVersion != null && !showLoginModal
+        updateState.latestVersion != null
     val context = LocalContext.current
 
-    // 冷启动检查登录态：有标记直接进，无标记用保存凭据静默重登，失败才弹登录框。
+    // 冷启动检查登录态：登录完全内置、静默完成，失败在后台悄悄重试，永不弹登录框。
     LaunchedEffect(Unit) { authViewModel.checkLoginStatus() }
     // 冷启动 12 小时静默检查更新（plan §5.6/§6 M3）：有新版且未跳过才弹卡。
     LaunchedEffect(Unit) { updateViewModel.checkForUpdate(silent = true) }
@@ -134,8 +131,8 @@ fun OrionNavHost(
     // 搜索页，其他页不受影响。
     var navRailHasFocus by remember { mutableStateOf(false) }
     var anyModalWasOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(showLoginModal, showUpdateCard) {
-        if (showLoginModal || showUpdateCard) {
+    LaunchedEffect(showUpdateCard) {
+        if (showUpdateCard) {
             anyModalWasOpen = true
         } else if (anyModalWasOpen) {
             anyModalWasOpen = false
@@ -153,11 +150,9 @@ fun OrionNavHost(
             showExitHint = false
         }
     }
-    // 返回键优先级（同一时刻最多一个生效）：登录弹窗 > 更新卡片 > 首页双按确认。
+    // 返回键优先级（同一时刻最多一个生效）：更新卡片 > 首页双按确认。
     // 注册顺序：后注册的先触发，故按优先级倒序写。
-    // P2-5 的 NavHost 部分已被下面两处覆盖（同行为：卡片在上先关卡片，
-    // 否则关登录弹窗；卡片/登录互斥，不会同时生效）。
-    BackHandler(enabled = currentRoute is OrionRoute.Home && !showLoginModal && !showUpdateCard) {
+    BackHandler(enabled = currentRoute is OrionRoute.Home && !showUpdateCard) {
         val now = System.currentTimeMillis()
         if (now - lastHomeBackMs < 2000L) {
             (context as? Activity)?.finish()
@@ -168,9 +163,6 @@ fun OrionNavHost(
     }
     BackHandler(enabled = showUpdateCard) {
         updateViewModel.dismissCard()
-    }
-    BackHandler(enabled = showLoginModal) {
-        authViewModel.hideLogin()
     }
 
     // C7-P2-4：详情/播放页导航去重——各页 onNavigate 共用它：快速双按 OK 或
@@ -222,7 +214,7 @@ fun OrionNavHost(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                         // C11-P1-2：全局弹窗开着时行到达的焦点 effect 不抢焦。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                     )
                 }
                 composable<OrionRoute.Live> {
@@ -230,7 +222,7 @@ fun OrionNavHost(
                         onNavigate = navigateSingleTop,
                         onBack = { navController.popBackStack() },
                         focusRestoreTick = focusRestoreTick,
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                     )
                 }
                 // P2-4：深层链接（adb/语音助手/外部调用可直达详情/播放）。
@@ -267,7 +259,7 @@ fun OrionNavHost(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                         // 第 7 轮 P1-1：全局弹窗开着时详情数据/错误到达不抢焦点。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                         // 第 7 轮豆瓣透传：首页来源的评分（搜索/收藏/深链无评分，null）。
                         rate = route.rate,
                     )
@@ -308,7 +300,7 @@ fun OrionNavHost(
                         },
                         focusRestoreTick = focusRestoreTick,
                         // C11-P1-1：全局弹窗开着时自动隐藏与错误 effect 不抢焦点。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                     )
                 }
                 composable<OrionRoute.Search> {
@@ -317,7 +309,7 @@ fun OrionNavHost(
                         focusRestoreTick = focusRestoreTick,
                         // C11-P2-1/P2-2：全局弹窗开着时各焦点 effect 不抢焦，
                         // 扫码弹窗的返回处理让位给全局弹窗。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                         // Jewel 第 9 轮 P2-4：导航轨获焦时清结果区 latch。
                         navRailHasFocus = navRailHasFocus,
                     )
@@ -327,7 +319,7 @@ fun OrionNavHost(
                         onNavigate = navigateSingleTop,
                         focusRestoreTick = focusRestoreTick,
                         // C11-P2-1：全局弹窗开着时恢复 effect 不抢焦。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                         // 第 7 轮 P2-1：空态“去首页”回栈到已有的 Home，不压新 Home。
                         onGoHome = navigateHome,
                     )
@@ -342,19 +334,11 @@ fun OrionNavHost(
                         // C11-P2-2：全局弹窗开着时二维码弹窗的返回处理让位。
                         // Jewel 第 8 轮 P2-8：同一标志也门控设置页 tick 恢复——
                         // 登录框关闭后更新卡片重现时，卡片挂载抢焦赢，设置页不争。
-                        globalModalOpen = showLoginModal || showUpdateCard,
+                        globalModalOpen = showUpdateCard,
                     )
                 }
             }
         }
-        }
-        // 全局登录弹窗：会话过期才重弹（ui-design.md §5.8）。
-        if (showLoginModal) {
-            LoginModal(
-                onLogin = { username, password -> authViewModel.login(username, password) },
-                onDismiss = { authViewModel.hideLogin() },
-                error = loginError,
-            )
         }
         // 全局更新卡片：冷启动静默检查发现新版时弹，与设置页手动检查共用
         // NavHost 持有的同一个 Activity 级 UpdateViewModel 实例（P1-6）。
@@ -382,10 +366,10 @@ fun OrionNavHost(
             )
         }
         // C4-P1-1：首页双按退出的第一次提示。
-        // C42-P2-1：渲染与 BackHandler 同门控——只在首页且无登录弹窗/更新卡片时
+        // C42-P2-1：渲染与 BackHandler 同门控——只在首页且无更新卡片时
         // 才显示；否则 2 秒计时内切到详情/直播等页，提示会泄漏盖在新页面上
         // （新页按返回是回首页、不是退出，文案与行为矛盾），还可能盖住更新卡片。
-        if (showExitHint && currentRoute is OrionRoute.Home && !showLoginModal && !showUpdateCard) {
+        if (showExitHint && currentRoute is OrionRoute.Home && !showUpdateCard) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,

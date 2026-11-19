@@ -17,6 +17,7 @@ import com.oriontv.ui.components.nextToastEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -452,7 +454,7 @@ class SearchViewModel @Inject constructor(
      * 第 76 轮 v2.0.14：服务端 + agg 双路并行搜（搜全部已配源，不用手动切源）。
      * supervisorScope：两路互不影响，一路失败时用另一路的结果顶上去；
      * 两路都失败时抛服务端那边的错（与旧行为一致：搜索失败落错误态）。
-     * 取消必须原样抛出（runCatching 会吞 CancellationException，见内层检查）。
+     * 等待与合并见 [awaitSearchLegs]（纯协程逻辑，可单测）。
      */
     private suspend fun searchAllSources(
         query: String,
@@ -463,17 +465,7 @@ class SearchViewModel @Inject constructor(
             aggApi.searchVideos(query).list.orEmpty()
                 .map(DetailSearchLogic::mapAggItemToSearchResult)
         }
-        val serverOutcome = runCatching { serverDeferred.await() }
-        val aggOutcome = runCatching { aggDeferred.await() }
-        serverOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-        aggOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-        val serverResults = serverOutcome.getOrNull()
-        val aggResults = aggOutcome.getOrNull()
-        if (serverResults == null && aggResults == null) {
-            throw serverOutcome.exceptionOrNull() ?: aggOutcome.exceptionOrNull()
-                ?: IOException("搜索失败")
-        }
-        mergeSearchResults(serverResults.orEmpty(), aggResults.orEmpty(), query)
+        awaitSearchLegs(serverDeferred, aggDeferred, query, SERVER_SEARCH_WAIT_MS)
     }
 
     /** 联想 chips：历史里含当前输入的词（最多 5 条）。 */
@@ -566,6 +558,13 @@ class SearchViewModel @Inject constructor(
         /** 输入防抖 300ms（plan §3.2）。 */
         const val DEBOUNCE_MS = 300L
 
+        /**
+         * v2.0.17：服务端（MoonTV）搜索腿的最长等待（毫秒）——服务端腿单源
+         * 超时 5 秒 × 多源串行，最长可达 150 秒；agg 腿快得多，不能让搜索页
+         * 干等服务端。20 秒内服务端没回就先用 agg 结果出结果，服务端腿取消。
+         */
+        const val SERVER_SEARCH_WAIT_MS = 20_000L
+
         /** C4-P1-5：SavedStateHandle 键（搜索切走再回不丢结果）。 */
         const val SAVED_QUERY_KEY = "search_query"
         const val SAVED_SEARCHED_QUERY_KEY = "search_searched_query"
@@ -643,6 +642,47 @@ fun mergeSearchResults(
         if (seen.add(searchResultDedupeKey(result))) merged.add(result)
     }
     return merged
+}
+
+/**
+ * v2.0.17：服务端 + agg 双路搜索腿的等待与合并（纯协程逻辑，可单测）——
+ * 服务端腿最多等 serverWaitMs（agg 腿快得多，不能让搜索页干等服务端
+ * 单源超时 5 秒 × 多源串行、最长 150 秒）；超时即取消服务端腿、先用 agg
+ * 结果出结果。服务端腿自身的超时（[TimeoutCancellationException]）算
+ * 服务端失败、回落 agg；只有外层取消（普通 [CancellationException]）
+ * 才原样抛出。两路都失败时抛服务端那边的错。
+ * 取消必须原样抛出（runCatching 会吞 CancellationException，见内层检查）。
+ */
+internal suspend fun awaitSearchLegs(
+    serverDeferred: Deferred<List<SearchResult>>,
+    aggDeferred: Deferred<List<SearchResult>>,
+    query: String,
+    serverWaitMs: Long,
+): List<SearchResult> {
+    var serverError: Throwable? = null
+    val serverResults: List<SearchResult>? = try {
+        withTimeoutOrNull(serverWaitMs) { serverDeferred.await() } ?: run {
+            serverDeferred.cancel()
+            serverError = IOException("服务端搜索超时（${serverWaitMs}ms）")
+            null
+        }
+    } catch (e: TimeoutCancellationException) {
+        // 服务端腿自身的超时——算服务端失败，回落 agg。
+        serverError = e
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        serverError = e
+        null
+    }
+    val aggOutcome = runCatching { aggDeferred.await() }
+    aggOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+    val aggResults = aggOutcome.getOrNull()
+    if (serverResults == null && aggResults == null) {
+        throw serverError ?: aggOutcome.exceptionOrNull() ?: IOException("搜索失败")
+    }
+    return mergeSearchResults(serverResults.orEmpty(), aggResults.orEmpty(), query)
 }
 
 /** 搜索合并去重键（纯逻辑，可单测）：归一化标题 + 来源名。 */

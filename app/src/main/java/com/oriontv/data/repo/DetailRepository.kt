@@ -33,7 +33,8 @@ import kotlin.coroutines.cancellation.CancellationException
 @Singleton
 class DetailRepository @Inject constructor(
     private val moonTvApi: MoonTvApi,
-    private val settingsRepository: SettingsRepository,
+    /** 只用 currentApiBaseUrl()——用小接口 AuthSettings，单测可传假实现。 */
+    private val settingsRepository: AuthSettings,
     private val aggApi: AggApi,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
@@ -86,6 +87,9 @@ class DetailRepository @Inject constructor(
         // B5-P1-3：fullSearch 的 120 秒总超时是 TimeoutCancellationException
         //（CE 子类），不是用户取消——有首选源结果时保留并标记加载完成，
         // 无结果时转普通 IOException，让 DetailViewModel 落可重试的 error 态。
+        // v2.0.17：MoonTV 全量搜索失败（未登录 401、网络错、超时）时不再直接抛——
+        // 有首选源结果就发首选源结果；没有就回落 agg 直取（agg 不用登录）；
+        // agg 也没结果时才抛回原始错误（超时仍转“详情搜索超时”，不报成“没内容”）。
         val merged = try {
             fullSearch(baseUrl, q, preferredResults)
         } catch (e: TimeoutCancellationException) {
@@ -93,7 +97,25 @@ class DetailRepository @Inject constructor(
                 onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
                 return@withContext
             }
+            val aggResults = tryAggDetailFallback(q, id)
+            if (aggResults.isNotEmpty()) {
+                onUpdate(aggResults, true)
+                return@withContext
+            }
             throw IOException("详情搜索超时，请重试")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (preferredResults.isNotEmpty()) {
+                onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
+                return@withContext
+            }
+            val aggResults = tryAggDetailFallback(q, id)
+            if (aggResults.isNotEmpty()) {
+                onUpdate(aggResults, true)
+                return@withContext
+            }
+            throw e
         }
         if (merged.isNotEmpty()) {
             onUpdate(merged, true)
@@ -102,13 +124,7 @@ class DetailRepository @Inject constructor(
             // 本来就来自 agg（vod_id 是 `站点~编号`），MoonTV 的源里没有该标题
             // 时详情直接报“没有找到相关内容”，就是用户报的“很多点进去没有资源”。
             // agg 回落也失败/空时才按原样报错（网络错原样抛，不报成“没内容”）。
-            val aggResults = try {
-                fetchAggDetailResults(q, id)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                emptyList()
-            }
+            val aggResults = tryAggDetailFallback(q, id)
             if (aggResults.isNotEmpty()) {
                 onUpdate(aggResults, true)
             } else {
@@ -174,6 +190,20 @@ class DetailRepository @Inject constructor(
      * 返回空列表（由调用方决定是报“没有找到相关内容”还是用缓存兜底）。
      * 网络错原样抛（调用方落“加载失败，请检查网络后重试”）。
      */
+    /**
+     * v2.0.17：agg 详情回落（失败兜底，不抛错）——MoonTV 全量搜索失败/0 条时
+     * 走 agg 直取（agg 不用登录）；agg 本身失败或空结果时返回空列表，调用方
+     * 再决定报什么错。取消异常原样重抛。
+     */
+    private suspend fun tryAggDetailFallback(q: String, id: String?): List<SearchResult> =
+        try {
+            fetchAggDetailResults(q, id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+
     private suspend fun fetchAggDetailResults(
         q: String,
         id: String?,

@@ -65,7 +65,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** 设置左菜单（ui-design.md §5.7）：源地址 / 播放设置 / 远程输入 / 检查更新 / 关于 / 登录。 */
+/** 设置左菜单（ui-design.md §5.7）：源地址 / 播放设置 / 远程输入 / 检查更新 / 关于。
+ * v2.0.17：登录完全内置，登录/退出登录菜单项已删除。 */
 private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "检查更新", "关于")
 
 /**
@@ -73,12 +74,10 @@ private val SettingsMenu = listOf("源地址", "播放设置", "远程输入", "
  * 左菜单列表，右内容区随左菜单切换；焦点在左菜单，右键进右栏，左键回左菜单
  *（手工焦点机：只响应松键 KeyUp，菜单上下顺序移动由空间导航处理，
  * 左右切换由 FocusRequester 显式交接，焦点永不丢失）；
- * 源地址：API + M3U 两行输入，保存立即生效并清除登录态（保存按钮未改时不可点）；
+ * 源地址：API + M3U 两行输入，保存立即生效并清除登录态（保存按钮未改时不可点），
+ * 保存后用内置账号静默重登；
  * 播放设置：下集预告、跳过片头、倍速记忆、无痕模式开关 + 片头时长；
  * 远程输入：开关 + 服务状态 + 二维码 + 配对码；检查更新：当前版本 + 检查按钮 + 更新卡片。
- * 登录：B11-P1-1 手动登录/退出登录入口（之前全仓唯一的 showLogin()/logout()
- * 调用方是换源地址保存成功，登录弹窗点“取消”后进程内无手动再弹入口，
- * 已登录用户想退出/换账号也只能走改源地址的破坏性旁路）。
  */
 @Composable
 fun SettingsScreen(
@@ -90,7 +89,7 @@ fun SettingsScreen(
     /** C4-P1-2：NavHost 级弹窗关闭后 +1，各页重跑默认焦点恢复。 */
     focusRestoreTick: Int = 0,
     /**
-     * C11-P2-2：全局弹窗（登录/更新卡片）是否正开着——二维码弹窗的返回处理
+     * C11-P2-2：全局弹窗（更新卡片）是否正开着——二维码弹窗的返回处理
      * 开着时让位给全局弹窗（见 RemoteInputModal 的 BackHandler 门控）。
      * Jewel 第 8 轮 P2-8：同一标志也门控 tick 焦点恢复——全局弹窗开着时
      * tick 恢复让位，不与更新卡片挂载抢焦争胜负（Detail/Live 同款门控范式）。
@@ -100,9 +99,8 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val remoteState by viewModel.remoteInputState.collectAsState()
     val updateState by updateViewModel.uiState.collectAsState()
-    // B11-P1-1：登录态——左菜单末项按它切换“登录/退出登录”文案。
-    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
-    val settingsMenu = SettingsMenu + loginMenuLabel(isLoggedIn)
+    // v2.0.17：登录菜单项已删除，左菜单就是 SettingsMenu（登录完全内置）。
+    val settingsMenu = SettingsMenu
     // C5-P2-5：selectedMenu 原来是 remember——进程重建/切走再回后回到 0，
     // 与焦点恢复（focusRestoreTick 用 menuRequesters[selectedMenu]）对不上；
     // 改 rememberSaveable，首进焦点也落 menuRequesters[selectedMenu]。
@@ -125,12 +123,10 @@ fun SettingsScreen(
     // C4-P1-2：NavHost 级弹窗关闭后焦点回左菜单当前项（不重跑远程输入恢复）。
     // C12-P2-5：二维码弹窗开着时不抢——tick 恢复会把焦点从二维码弹窗里拉回
     // 左菜单；弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
-    // Jewel 第 8 轮 P2-8：全局弹窗开着时让位——登录框关闭后更新卡片重现的那一刻，
-    // 卡片挂载抢主按钮焦点、tick 恢复抢左菜单焦点，两路无确定胜负；卡片/登录框
-    // 是顶层弹窗，焦点归它，设置页 tick 这一轮跳过。卡片随后关闭时 tick 会再 +1，
-    // 那时全局弹窗已关、恢复正常跑，不丢焦点。
-    // 注：当前代码里登录关闭与卡片重现发生在同一帧（showLoginModal 与派生的
-    // showUpdateCard 同一次重组翻转），tick 本来就不会 +1，卡片已是确定胜者；
+    // Jewel 第 8 轮 P2-8：全局弹窗开着时让位——更新卡片挂载抢主按钮焦点、
+    // tick 恢复抢左菜单焦点，两路无确定胜负；卡片是顶层弹窗，焦点归它，
+    // 设置页 tick 这一轮跳过。卡片随后关闭时 tick 会再 +1，那时全局弹窗
+    // 已关、恢复正常跑，不丢焦点。
     // 这道门控是给帧拆分（两路 StateFlow 分开发射）与“tick 已触发、effect
     // 执行前又弹出全局弹窗”的窗口兜底，胜负从此有确定答案：全局弹窗赢。
     // 两道门控取合取：全局弹窗与二维码弹窗任一开着都不抢焦。
@@ -291,14 +287,6 @@ fun SettingsScreen(
                         firstRequester = rightRequester,
                     )
                     4 -> AboutSettings(firstRequester = rightRequester)
-                    // B11-P1-1：登录/退出登录入口——文案按登录态切换，样式与
-                    // 其他 section 一致（标题 + 说明 + 主按钮）。
-                    5 -> LoginSettings(
-                        isLoggedIn = isLoggedIn,
-                        onLogin = { viewModel.showLogin() },
-                        onLogout = { viewModel.logout() },
-                        firstRequester = rightRequester,
-                    )
                 }
             }
         }
@@ -579,7 +567,7 @@ internal fun shouldConsumeSettingsLeftKeyUp(cursorBeforeMove: Int, cursorNow: In
  * 两道门控取合取，任一弹窗开着都不抢：
  * C12-P2-5：二维码弹窗开着时不抢——焦点在弹窗内，拉回菜单后弹窗遥控不可达；
  * 弹窗关闭后由它自己的关闭 effect 把焦点还给触发按钮。
- * Jewel 第 8 轮 P2-8：全局弹窗（登录框/更新卡片）开着时让位，不与更新卡片
+ * Jewel 第 8 轮 P2-8：全局弹窗（更新卡片）开着时让位，不与更新卡片
  * 挂载抢焦争胜负；胜负确定：全局弹窗赢。弹窗关闭后 tick 会再 +1，那时再正常恢复。
  * （两边原先是同名两参谓词：C12 版第二参是 showQrModal，P2-8 版第二参是
  * globalModalOpen；rebase 时合为三参，否则同签名重复声明无法编译。）
@@ -822,37 +810,6 @@ private fun UpdateSettings(
     }
 }
 
-/** 登录/退出登录（B11-P1-1）：手动入口——之前登录弹窗点“取消”后进程内
- * 无手动再弹入口，已登录用户想退出/换账号也只能走改源地址的破坏性旁路。 */
-@Composable
-private fun LoginSettings(
-    isLoggedIn: Boolean,
-    onLogin: () -> Unit,
-    onLogout: () -> Unit,
-    firstRequester: FocusRequester,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(
-            text = if (isLoggedIn) "退出登录" else "登录",
-            style = OrionTextStyles.SectionTitle,
-        )
-        Text(
-            text = if (isLoggedIn) {
-                "当前已登录。退出后需重新登录才能使用账号功能。"
-            } else {
-                "登录你的账号。登录态过期时会自动弹出登录框。"
-            },
-            style = OrionTextStyles.Body,
-            color = OrionColors.TextSecondary,
-        )
-        PrimaryButton(
-            text = if (isLoggedIn) "退出登录" else "登录",
-            onClick = if (isLoggedIn) onLogout else onLogin,
-            modifier = Modifier.focusRequester(firstRequester),
-        )
-    }
-}
-
 /** 关于：版本与包名。 */
 @Composable
 private fun AboutSettings(firstRequester: FocusRequester) {
@@ -879,10 +836,6 @@ private fun AboutSettings(firstRequester: FocusRequester) {
         Text(text = "Kotlin + Compose for TV + Media3 原生重写。", style = OrionTextStyles.Body, color = OrionColors.TextSecondary)
     }
 }
-
-/** 登录菜单项文案（可单测，B11-P1-1）：按登录态切换“登录/退出登录”。 */
-internal fun loginMenuLabel(isLoggedIn: Boolean): String =
-    if (isLoggedIn) "退出登录" else "登录"
 
 /** 设置页返回键动作（第 7 轮 P2-2，纯决策，可单测）。 */
 internal enum class SettingsBackAction {

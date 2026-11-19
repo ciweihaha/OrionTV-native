@@ -67,30 +67,6 @@ class SettingsViewModel @Inject constructor(
     val remoteInputHandshakes: kotlinx.coroutines.flow.SharedFlow<Unit> =
         remoteInputManager.handshakes
 
-    /** 登录态（设置页“登录/退出登录”入口用，B11-P1-1）。 */
-    val isLoggedIn: StateFlow<Boolean> = authRepository.isLoggedIn
-
-    /** 手动登录：弹全局登录弹窗（B11-P1-1）。 */
-    fun showLogin() = authRepository.showLogin()
-
-    /**
-     * 手动退出登录（B11-P1-1）：远程登出失败只记日志，本地会话在
-     * AuthRepository.logout() 的 finally 里已清干净（与
-     * AuthViewModel.logout() 同款接法）；无论远程成败，本地都已退出。
-     */
-    fun logout() {
-        viewModelScope.launch {
-            try {
-                authRepository.logout()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLog.w("SettingsViewModel", "退出登录远程登出失败（本地会话已清理）：${e.message}")
-            }
-            _uiState.update { it.copy(toast = nextToastEvent("已退出登录")) }
-        }
-    }
-
     init {
         viewModelScope.launch {
             // B6-P2-9：combine/collect 加 try/catch——DataStore 流抛错时旧实现
@@ -331,11 +307,12 @@ class SettingsViewModel @Inject constructor(
                         ),
                     )
                 }
-                // B10-P1-1：换了 API 地址即已登出旧服务器，新地址上没有登录态——
-                // 旧实现只 Toast“登录状态已清除”，进程内再无登录入口；保存成功
-                // 且新地址非空时直接弹登录框（空地址 = 本地模式，不弹）。
+                // v2.0.17：换了 API 地址即已登出旧服务器，新地址上没有登录态——
+                // 登录完全内置，保存成功且新地址非空时在后台静默重登（内置账号
+                // 自动种入），永不弹登录框；失败时 AuthRepository 自行后台重试。
+                // 空地址 = 本地模式，不登。
                 if (apiChanged && state.apiUrl.trim().isNotBlank()) {
-                    authRepository.showLogin()
+                    authRepository.restoreSession()
                 }
             } catch (e: CancellationException) {
                 // B-P1-9 / D-P2-2：取消原样抛出，不把取消写成“保存失败”。
