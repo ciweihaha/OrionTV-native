@@ -98,6 +98,47 @@ class DetailRepositoryTest {
             }
         }.build()
 
+    /**
+     * 聚合假客户端（v2.0.19）：vod-api 腿上 id 直取回 0 集条目（vod_play_url 为空），
+     * 标题搜回两个同名候选（死掉的 45_53656 在前、可播的 46_777 在后）；agg 腿全空——
+     * 证明同一腿内的标题重试确实被走、可播结果不需要等第 2 腿。
+     */
+    private fun deadIdAggClient(): OkHttpClient =
+        OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val ac = request.url.queryParameter("ac")
+            val ids = request.url.queryParameter("ids")
+            val wd = request.url.queryParameter("wd")
+            when {
+                request.url.host == "live.ciweihaha.win" && ac == "detail" && ids == "45_53656" ->
+                    responseFor(request, 200, """{"code":1,"list":[{"vod_id":"45_53656","vod_name":"哪吒","vod_play_from":"lzm3u8","vod_play_url":""}]}""")
+                request.url.host == "live.ciweihaha.win" && ac == "videolist" && wd == "哪吒" ->
+                    responseFor(request, 200, """{"code":1,"list":[{"vod_id":"45_53656","vod_name":"哪吒"},{"vod_id":"46_777","vod_name":"哪吒"}]}""")
+                request.url.host == "live.ciweihaha.win" && ac == "detail" && ids == "46_777" ->
+                    responseFor(request, 200, """{"code":1,"list":[{"vod_id":"46_777","vod_name":"哪吒","vod_play_from":"厂长","vod_play_url":"第1集${'$'}https://b/1.m3u8"}]}""")
+                else -> responseFor(request, 200, """{"code":1,"list":[]}""")
+            }
+        }.build()
+
+    /**
+     * 聚合假客户端（v2.0.19）：vod-api 腿上 id 直取回 0 集条目，标题搜只回同一个死 id；
+     * agg 腿全空——重试跳过已试过的 id、不重复取、不死循环，最终报“没有找到相关内容”。
+     */
+    private fun deadIdOnlyAggClient(): OkHttpClient =
+        OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val ac = request.url.queryParameter("ac")
+            val ids = request.url.queryParameter("ids")
+            val wd = request.url.queryParameter("wd")
+            when {
+                request.url.host == "live.ciweihaha.win" && ac == "detail" && ids == "45_53656" ->
+                    responseFor(request, 200, """{"code":1,"list":[{"vod_id":"45_53656","vod_name":"哪吒","vod_play_from":"lzm3u8","vod_play_url":""}]}""")
+                request.url.host == "live.ciweihaha.win" && ac == "videolist" && wd == "哪吒" ->
+                    responseFor(request, 200, """{"code":1,"list":[{"vod_id":"45_53656","vod_name":"哪吒"}]}""")
+                else -> responseFor(request, 200, """{"code":1,"list":[]}""")
+            }
+        }.build()
+
     private fun repository(detailBody: String, aggCalls: AtomicInteger? = null): DetailRepository {
         val moonTvApi = MoonTvApi(moonTvClient(), json, Dispatchers.Unconfined, retryBackoffMs = 0L)
         val aggApi = AggApi(aggClient(detailBody, aggCalls), json, Dispatchers.Unconfined, retryBackoffMs = { 0L })
@@ -224,5 +265,38 @@ class DetailRepositoryTest {
                 repo.searchDetail(q = "哪吒", preferredSource = null, id = "s~1") { _, _ -> }
             }
         }
+    }
+
+    @Test
+    fun `agg id-direct zero-episode detail falls back to title search on same leg`() {
+        // v2.0.19：vod-api 腿上 id 直取的片 0 集时，同一腿内按标题再搜——
+        // 旧实现直接报空，标题搜根本不跑；可播的 46_777 在同一腿里，不能等第 2 腿救。
+        val repo = repositoryWith(moonTvClient(), deadIdAggClient())
+        val updates = mutableListOf<Pair<List<SearchResult>, Boolean>>()
+        runBlocking {
+            repo.searchDetail(q = "哪吒", preferredSource = null, id = "45_53656") { results, allLoaded ->
+                updates += results to allLoaded
+            }
+        }
+        assertTrue(updates.isNotEmpty())
+        val (results, allLoaded) = updates.last()
+        assertTrue(allLoaded)
+        assertTrue(results.all { it.episodes.isNotEmpty() })
+        assertEquals(listOf("哪吒"), results.map { it.title })
+        assertEquals("agg:厂长", results.first().source)
+    }
+
+    @Test
+    fun `agg id-direct zero-episode detail with only same dead id reports not found`() {
+        // v2.0.19：id 直取 0 集、标题搜只回同一个死 id 时跳过它、不重复取、
+        // 不死循环，最终报“没有找到相关内容”。
+        val repo = repositoryWith(moonTvClient(), deadIdOnlyAggClient())
+        val thrown = assertThrows(UnauthorizedException::class.java) {
+            runBlocking {
+                repo.searchDetail(q = "哪吒", preferredSource = null, id = "45_53656") { _, _ -> }
+            }
+        }
+        // 未配首选源时全量搜索的 401 是原始错误，按既有语义原样抛回（不是“没内容”）。
+        assertTrue(thrown.message!!.contains("登录已过期"))
     }
 }

@@ -240,6 +240,9 @@ class DetailRepository @Inject constructor(
      * 单个聚合上的详情拉取：① id 直取（`ac=detail`），② id 不是聚合形式时
      * 按标题在该聚合里搜、精确标题匹配才认。详情无可播集数时返回空列表
      *（不发 0 集结果）；标题搜 / 详情取的网络错原样抛（调用方按腿汇总）。
+     * v2.0.19：① 取到的片没有可播集数时同样按标题再搜一次——同一部片别的站
+     * 可能有可播地址，只认 id 会把这条路堵死（v2.0.18 只修了 MoonTV 全量那条
+     * 路，这里是聚合直取那条路的同款缺口）；标题搜回同一 id 时跳过、不重复取。
      */
     private suspend fun fetchAggregationDetailResults(
         q: String,
@@ -247,7 +250,9 @@ class DetailRepository @Inject constructor(
         baseUrl: String,
     ): List<SearchResult> {
         var detailItem: AggDetailItem? = null
+        var triedId: String? = null
         if (DetailSearchLogic.isAggregationId(id)) {
+            triedId = id
             detailItem = try {
                 aggApi.videoDetail(id!!, baseUrl).list?.firstOrNull()
             } catch (e: CancellationException) {
@@ -260,6 +265,7 @@ class DetailRepository @Inject constructor(
             val candidates = aggApi.searchVideos(q, baseUrl).list.orEmpty()
             val match = DetailSearchLogic.findAggTitleMatch(candidates, q)
             val matchId = match?.vod_id
+            triedId = matchId
             detailItem = if (!matchId.isNullOrBlank()) {
                 aggApi.videoDetail(matchId, baseUrl).list?.firstOrNull()
             } else {
@@ -268,10 +274,49 @@ class DetailRepository @Inject constructor(
         }
         val item = detailItem ?: return emptyList()
         val results = DetailSearchLogic.mapAggDetailToResults(item)
-        if (results.isEmpty() || results.all { it.episodes.isEmpty() }) {
+        if (results.isNotEmpty() && results.any { it.episodes.isNotEmpty() }) {
+            return results
+        }
+        val retryItem = fetchPlayableDetailByTitle(q, baseUrl, excludeId = triedId)
+            ?: return emptyList()
+        val retryResults = DetailSearchLogic.mapAggDetailToResults(retryItem)
+        if (retryResults.isEmpty() || retryResults.all { it.episodes.isEmpty() }) {
             return emptyList()
         }
-        return results
+        return retryResults
+    }
+
+    /**
+     * 按标题在聚合里找可播详情（v2.0.19）：精确标题匹配的候选逐个取详情，
+     * 跳过 [excludeId]（id 直取已试过它、不重复取），最多试 3 个；
+     * 都没有可播集数返回 null。标题搜 / 详情取的网络错原样抛（调用方按腿汇总）。
+     */
+    private suspend fun fetchPlayableDetailByTitle(
+        q: String,
+        baseUrl: String,
+        excludeId: String?,
+    ): AggDetailItem? {
+        val candidates = aggApi.searchVideos(q, baseUrl).list.orEmpty()
+        val matches = DetailSearchLogic.findAggTitleMatches(candidates, q)
+            .filter { it.vod_id != excludeId }
+            .take(3)
+        for (match in matches) {
+            val matchId = match.vod_id
+            if (matchId.isNullOrBlank()) continue
+            val item = try {
+                aggApi.videoDetail(matchId, baseUrl).list?.firstOrNull()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (item == null) continue
+            val results = DetailSearchLogic.mapAggDetailToResults(item)
+            if (results.isNotEmpty() && results.any { it.episodes.isNotEmpty() }) {
+                return item
+            }
+        }
+        return null
     }
 
     private suspend fun fullSearch(
@@ -547,10 +592,17 @@ object DetailSearchLogic {
      * agg 列表里精确标题匹配（可单测）：服务端 `wd` 是模糊搜（搜“阿龙2025”
      * 也会返回“阿龙”），归一化后相等才认，错片不认；无精确匹配返回 null。
      */
-    fun findAggTitleMatch(items: List<AggVideoItem>, query: String): AggVideoItem? {
+    fun findAggTitleMatch(items: List<AggVideoItem>, query: String): AggVideoItem? =
+        findAggTitleMatches(items, query).firstOrNull()
+
+    /**
+     * agg 列表里全部精确标题匹配（可单测，v2.0.19）：id 直取的片没有可播集数时，
+     * 按标题重试要逐个试候选（第一个可能就是那个死站的同一条目），只留第一条不够。
+     */
+    fun findAggTitleMatches(items: List<AggVideoItem>, query: String): List<AggVideoItem> {
         val normalized = MoonTvApi.normalizeTitle(query)
-        if (normalized.isBlank()) return null
-        return items.firstOrNull { MoonTvApi.normalizeTitle(it.vod_name) == normalized }
+        if (normalized.isBlank()) return emptyList()
+        return items.filter { MoonTvApi.normalizeTitle(it.vod_name) == normalized }
     }
 
     /**

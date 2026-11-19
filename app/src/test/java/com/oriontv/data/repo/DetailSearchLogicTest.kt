@@ -179,6 +179,23 @@ class DetailSearchLogicTest {
     }
 
     @Test
+    fun `findAggTitleMatches returns all exact matches in order`() {
+        // v2.0.19：id 直取的片 0 集时按标题重试要逐个试候选，只留第一条不够。
+        val items = listOf(
+            AggVideoItem(vod_id = "45_1", vod_name = "哪吒"),
+            AggVideoItem(vod_id = "s~2", vod_name = "阿龙2025"),
+            AggVideoItem(vod_id = "46_2", vod_name = "哪 吒"),
+            AggVideoItem(vod_id = "s~3", vod_name = "哪吒2"),
+        )
+        assertEquals(
+            listOf("45_1", "46_2"),
+            DetailSearchLogic.findAggTitleMatches(items, "哪吒").map { it.vod_id },
+        )
+        assertTrue(DetailSearchLogic.findAggTitleMatches(items, "").isEmpty())
+        assertTrue(DetailSearchLogic.findAggTitleMatches(items, "没有这片").isEmpty())
+    }
+
+    @Test
     fun `mapAggItemToSearchResult keeps agg vod id and source`() {
         val result = DetailSearchLogic.mapAggItemToSearchResult(
             AggVideoItem(vod_id = "s~1", vod_name = "阿龙2025", vod_pic = "https://p/1.jpg", type_name = "电影"),
