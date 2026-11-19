@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,6 +36,54 @@ import com.oriontv.ui.theme.OrionTextStyles
 
 /** 拼音候选行一次最多展示的字数（第 74 轮，RN PinyinKeyboard 同款 12 个，电视横屏取 10）。 */
 private const val MAX_CANDIDATES_SHOWN = 10
+
+/**
+ * 屏上键盘纵向排布度量（第 76 轮 v2.0.16）：
+ * v2.0.15 的键盘是固定行高——顶行 + 候选行 + 6 行字母 + 底行 + 切换行 +
+ * 搜索行 + 提示文案合计 545~632dp；但华为 MediaPad M3 横屏只有 533dp 高
+ * （1600px @480dpi），扣掉状态栏、页边距、搜索框后键盘只剩约 387dp，
+ * 底部的切换行、“搜索/收起键盘”行和提示文案全被切掉（用户照片：最后
+ * 可见行是 9 键/空格行）。
+ * 修法：字母/数字/符号行改 weight 均分剩余高度（再矮的屏也完整显示，
+ * 键只变矮不会消失），固定行收紧、提示文案删掉（候选行空态已有用法
+ * 提示）、“搜索”并进各档底行、切换行与收起键盘并成一行。
+ * 下面这组常量是布局与单测的唯一事实源，改布局先改这里；
+ * 单测按 387dp 预算验算每种模式的键行高，再加行、加高固定行会先失败。
+ */
+internal const val KEYBOARD_COLUMN_PADDING_DP = 12f
+internal const val KEYBOARD_ROW_SPACING_DP = 6f
+internal const val KEYBOARD_KEY_VERTICAL_PADDING_DP = 6f
+internal const val KEYBOARD_CANDIDATE_ROW_HEIGHT_DP = 48f
+/** 华为 MediaPad M3 横屏下键盘分到的高度（实测预算，见运行记录）。 */
+internal const val KEYBOARD_BUDGET_M3_DP = 387f
+/** 单行键行高下限（正文行高 + 最小边距，再矮字会被切）。 */
+internal const val KEYBOARD_MIN_KEY_ROW_HEIGHT_DP = 26f
+/** 9 键数字键是两行标签（数字 + 字母），行高下限 = 两行正文 + 上下边距。 */
+internal const val KEYBOARD_MIN_TWO_LINE_ROW_HEIGHT_DP = 48f
+
+/** 单键高度 = 上下边距 + 一行正文（与 KeyboardKey 的 padding + Body 一致）。 */
+internal fun keyboardKeyHeightDp(): Float =
+    KEYBOARD_KEY_VERTICAL_PADDING_DP * 2 + OrionTextStyles.Body.lineHeight.value
+
+/**
+ * 键盘固定部分高度（不含可压缩的键行），单位 dp：
+ * 顶行 + 底行 + 切换行（3 个单键行）+ 候选行（中文才有）+ 纵向 padding + 行间距。
+ */
+internal fun keyboardFixedHeightDp(keyRowCount: Int, zhMode: Boolean): Float {
+    val candidate = if (zhMode) KEYBOARD_CANDIDATE_ROW_HEIGHT_DP else 0f
+    val childCount = 3 + keyRowCount + if (zhMode) 1 else 0
+    return 3 * keyboardKeyHeightDp() + candidate +
+        2 * KEYBOARD_COLUMN_PADDING_DP +
+        (childCount - 1) * KEYBOARD_ROW_SPACING_DP
+}
+
+/** 可压缩键行（字母/数字/符号行）在给定可用高度下每行分到的高度，单位 dp。 */
+internal fun keyboardKeyRowHeightDp(
+    keyRowCount: Int,
+    zhMode: Boolean,
+    availableHeightDp: Float,
+): Float =
+    (availableHeightDp - keyboardFixedHeightDp(keyRowCount, zhMode)) / keyRowCount
 
 /**
  * 9 键多击输入纯逻辑（TV 应用同款思路，自写实现）：
@@ -293,8 +342,8 @@ fun OnScreenKeyboard(
         modifier = modifier
             .fillMaxWidth()
             .background(OrionColors.Surface, RoundedCornerShape(OrionDimens.PanelCornerRadius))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(KEYBOARD_COLUMN_PADDING_DP.dp),
+        verticalArrangement = Arrangement.spacedBy(KEYBOARD_ROW_SPACING_DP.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -340,13 +389,15 @@ fun OnScreenKeyboard(
                 onClick = { onBackspace() },
             )
         }
-        // 第 74 轮：中文拼音候选行（固定 56dp 高，没候选时留空行/提示，键盘不
+        // 第 74 轮：中文拼音候选行（固定 48dp 高，没候选时留空行/提示，键盘不
         // 上下跳；RN PinyinKeyboard 同款）。只在中文模式显示；英文不拼拼音。
+        // v2.0.16：56dp → 48dp（候选 chip 本身 34dp 高，留够边距即可），
+        // 给字母行多腾 8dp（见文件头纵向排布度量）。
         if (zhMode) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .height(KEYBOARD_CANDIDATE_ROW_HEIGHT_DP.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Row(
@@ -391,19 +442,25 @@ fun OnScreenKeyboard(
             }
         }
         if (nineKeyMode) {
+            // v2.0.16：数字行改 weight 均分剩余高度（见文件头纵向排布度量），
+            // 再矮的屏也完整显示，键只变矮不会消失；键拉满行高。
             val rows = listOf(
                 listOf("1" to ".,?!", "2" to "ABC", "3" to "DEF"),
                 listOf("4" to "GHI", "5" to "JKL", "6" to "MNO"),
                 listOf("7" to "PQRS", "8" to "TUV", "9" to "WXYZ"),
             )
             rows.forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) {
                     row.forEachIndexed { index, (digit, letters) ->
                         KeyboardKey(
                             label = "$digit\n$letters",
                             onClick = { onNineKeyDigit(digit) },
                             modifier = Modifier
                                 .weight(1f)
+                                .fillMaxHeight()
                                 .then(
                                     if (rows.indexOf(row) == 0 && index == 0) {
                                         Modifier.preferredFocus(firstKeyRequester)
@@ -434,6 +491,11 @@ fun OnScreenKeyboard(
                     onClick = { onBackspace() },
                     modifier = Modifier.weight(1f),
                 )
+                KeyboardKey(
+                    label = "搜索",
+                    onClick = { handleSearch() },
+                    modifier = Modifier.weight(1f),
+                )
             }
         } else if (symbolMode) {
             // Jewel 第 9 轮 P2-6：[123] 符号板——搜含 `_`、`-`、`@` 等符号的词
@@ -443,7 +505,11 @@ fun OnScreenKeyboard(
             // 随 QWERTY 一起撤了，数字放这里）。
             val rows = listOf("0123456789", "_-@#&*%+", ".,!?;:'\"", "()[]{}<>=")
             rows.forEachIndexed { rowIndex, row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // v2.0.16：符号行改 weight 均分剩余高度（见文件头纵向排布度量）。
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) {
                     // P2-10（第 5 轮）：各行键宽对齐——短行两侧补空白占位（权重
                     // 按 10 键行折算），不再让短行按键更宽、跨行空间导航跳格。
                     val sideWeight = (10 - row.length) / 2f
@@ -454,6 +520,7 @@ fun OnScreenKeyboard(
                             onClick = { emit(query + ch) },
                             modifier = Modifier
                                 .weight(1f)
+                                .fillMaxHeight()
                                 .then(
                                     if (rowIndex == 0 && index == 0) {
                                         Modifier.preferredFocus(firstKeyRequester)
@@ -485,21 +552,32 @@ fun OnScreenKeyboard(
                     onClick = { onBackspace() },
                     modifier = Modifier.weight(1f),
                 )
+                KeyboardKey(
+                    label = "搜索",
+                    onClick = { handleSearch() },
+                    modifier = Modifier.weight(1f),
+                )
             }
         } else {
             // 第 76 轮 v2.0.14：全键档改成影视 app（FongMi）搜索页的 A–Z 字母
             // 键盘（5 列：A–E、F–J、K–O、P–T、U–Y、Z）——QWERTY 在电视上遥控
             // 逐格找字母太慢，字母顺序排更顺手；数字行移到 123 板。
             // 末行只有 Z，其余 4 格补空白占位（键宽对齐，跨行空间导航不跳格）。
+            // v2.0.16：字母行改 weight 均分剩余高度（见文件头纵向排布度量），
+            // 再矮的屏也完整显示，键只变矮不会消失；键拉满行高。
             val rows = listOf("ABCDE", "FGHIJ", "KLMNO", "PQRST", "UVWXY", "Z")
             rows.forEachIndexed { rowIndex, row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) {
                     row.forEachIndexed { index, ch ->
                         KeyboardKey(
                             label = ch.toString(),
                             onClick = { onLetterKey(ch) },
                             modifier = Modifier
                                 .weight(1f)
+                                .fillMaxHeight()
                                 .then(
                                     if (rowIndex == 0 && index == 0) {
                                         Modifier.preferredFocus(firstKeyRequester)
@@ -524,17 +602,27 @@ fun OnScreenKeyboard(
                     },
                     modifier = Modifier.weight(1f),
                 )
-                // 123、退格已在顶行（第 76 轮），本行只留 9 键 + 宽空格（占 4 格）。
+                // 123、退格已在顶行（第 76 轮），本行只留 9 键 + 宽空格 + 搜索
+                // （v2.0.16：搜索从底下的独立搜索行并到这里，省出一行高度）。
                 KeyboardKey(
                     label = "空格",
                     onClick = { onSpace() },
-                    modifier = Modifier.weight(4f),
+                    modifier = Modifier.weight(2f),
+                )
+                KeyboardKey(
+                    label = "搜索",
+                    onClick = { handleSearch() },
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
-        // 第 76 轮 v2.0.14：左下角输入法切换（照影视 app 搜索页）——“全键盘”
-        // （绿点，当前：内置屏上键盘）/“系统输入法”（蓝点：收起屏上键盘，
-        // 回搜索框走系统输入法；触屏平板上会弹出系统键盘）。
+        // 第 76 轮 v2.0.16：底行三合一（输入法切换 + 收起键盘）——v2.0.15
+        // 这里是两行（切换行 + 搜索行），再加底下提示文案，键盘总高
+        // 545~632dp，超出平板横屏 387dp 预算，底部全被切掉；现把“搜索”
+        // 并进各档底行（上），本行只留切换 + 收起键盘，提示文案删掉
+        // （候选行空态已有用法提示：“中文模式：输入拼音，选字上屏…”）。
+        // “全键盘”（绿点，当前：内置屏上键盘）/“系统输入法”（蓝点：
+        // 收起屏上键盘，回搜索框走系统输入法；触屏平板上会弹出系统键盘）。
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             KeyboardKey(
                 label = "● 全键盘",
@@ -546,25 +634,12 @@ fun OnScreenKeyboard(
                 onClick = onDismiss,
                 modifier = Modifier.weight(1f),
             )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            KeyboardKey(
-                label = "搜索",
-                onClick = { handleSearch() },
-                modifier = Modifier.weight(1f),
-            )
             KeyboardKey(
                 label = "收起键盘",
                 onClick = onDismiss,
                 modifier = Modifier.weight(1f),
             )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "提示：中文模式敲拼音出候选（本地词典，不用联网），点选上屏，空格选首选字；9 键同键连续字母须停顿 1 秒再按；点“英文”直接输字母；搜含符号的词可切 123 板；搜中文词也可用“手机扫码输入”。",
-            style = OrionTextStyles.Small,
-            color = OrionColors.TextSecondary,
-        )
     }
 }
 
@@ -589,7 +664,10 @@ private fun KeyboardKey(
             ) { onClick() }
             .orionFocus(focused, RoundedCornerShape(OrionDimens.CardCornerRadius))
             .background(OrionColors.Background, RoundedCornerShape(OrionDimens.CardCornerRadius))
-            .padding(vertical = 10.dp),
+            // v2.0.16：上下边距 10dp → 6dp（见文件头纵向排布度量），单键
+            // 38.2dp → 30.2dp；字母行是 weight 行，键拉满行高，边距只影响
+            // 顶行/底行等固定行。
+            .padding(vertical = KEYBOARD_KEY_VERTICAL_PADDING_DP.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
