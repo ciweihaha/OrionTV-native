@@ -23,6 +23,8 @@ interface AuthSettings {
     suspend fun refreshServerConfig(): ServerConfig?
     /** server-config 是否从未成功拉取过（B-P1-8，冷启动重试门控用）。 */
     suspend fun isServerConfigUnknown(): Boolean
+    /** 第 75 轮：内置账号种入服务器地址（只在地址空白时调用，不覆盖用户改过的地址）。 */
+    suspend fun setApiBaseUrl(value: String)
 }
 
 /**
@@ -186,7 +188,7 @@ class SettingsRepository @Inject constructor(
             default
         }
     }
-    suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
+    override suspend fun setApiBaseUrl(value: String) = settingsDataStore.setApiBaseUrl(value)
     suspend fun setM3uUrl(value: String) = settingsDataStore.setM3uUrl(value)
 
     /**

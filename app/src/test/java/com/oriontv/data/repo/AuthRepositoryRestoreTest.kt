@@ -71,6 +71,9 @@ class AuthRepositoryRestoreTest {
         override suspend fun setAuthCookies(value: String) {
             marker = value
         }
+        override suspend fun setApiBaseUrl(value: String) {
+            baseUrl = value
+        }
 
         override suspend fun refreshServerConfig(): ServerConfig? {
             refreshCalls++

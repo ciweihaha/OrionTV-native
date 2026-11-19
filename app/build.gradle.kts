@@ -9,6 +9,9 @@ plugins {
     alias(libs.plugins.room)
 }
 
+import java.io.FileInputStream
+import java.util.Properties
+
 // Hilt 2.58 自带的 kotlin-metadata-jvm 2.2.20 最高只读 metadata 2.3.0，
 // Kotlin 2.4 编译器产出的 metadata 是 2.4.0，hiltJavaCompile 会炸
 //（"maximum supported version is 2.3.0"）。强制全配置用与 Kotlin 编译器
@@ -17,6 +20,46 @@ configurations.all {
     resolutionStrategy {
         force("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.21")
     }
+}
+
+// 第 75 轮：内置 MoonTV 账号密码——构建时注入，绝不进仓库。
+// 来源优先级：Gradle 属性 -PmoontvPassword > 环境变量 MOONTV_PASSWORD >
+// local.properties 的 moontv.password；都没有时为空串（内置登录关闭，编出的包与旧版行为一致）。
+// 注意：local.properties 已在 .gitignore 里；密码只进 BuildConfig，不进任何提交。
+// （build.gradle.kts 里不能写 java.util.Properties：java 会被解析成 Java
+// 插件扩展，改用 import 后的 Properties。）
+fun readMoontvPassword(): String {
+    val fromProperty = project.findProperty("moontvPassword") as? String
+    if (!fromProperty.isNullOrBlank()) return fromProperty
+    val fromEnv = System.getenv("MOONTV_PASSWORD")
+    if (!fromEnv.isNullOrBlank()) return fromEnv
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) {
+        val localProps = Properties()
+        FileInputStream(localFile).use { localProps.load(it) }
+        val fromLocal = localProps.getProperty("moontv.password")
+        if (!fromLocal.isNullOrBlank()) return fromLocal
+    }
+    return ""
+}
+
+val moontvBuiltinPassword = readMoontvPassword()
+
+/** 把任意字符串转成合法的 Java 字符串字面量（含引号），供 buildConfigField 用。 */
+fun javaStringLiteral(value: String): String {
+    val sb = StringBuilder("\"")
+    for (ch in value) {
+        when (ch) {
+            '\\' -> sb.append("\\\\")
+            '"' -> sb.append("\\\"")
+            '\n' -> sb.append("\\n")
+            '\r' -> sb.append("\\r")
+            '\t' -> sb.append("\\t")
+            else -> sb.append(ch)
+        }
+    }
+    sb.append('"')
+    return sb.toString()
 }
 
 android {
@@ -35,8 +78,12 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10715
-        versionName = "2.0.12"
+        versionCode = 10716
+        versionName = "2.0.13"
+
+        // 内置 MoonTV 账号密码（第 75 轮）：构建时注入；空串 = 未配置，内置登录关闭。
+        // 密码嵌进 APK 二进制（不在 git 里），这是内置账号固有的取舍，用户已确认要内置登录。
+        buildConfigField("String", "MOONTV_BUILTIN_PASSWORD", javaStringLiteral(moontvBuiltinPassword))
 
         // 只打包 arm64-v8a（用户电视是 arm64），目标 APK < 25MB
         ndk {

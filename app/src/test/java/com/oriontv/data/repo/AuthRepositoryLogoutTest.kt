@@ -76,6 +76,9 @@ class AuthRepositoryLogoutTest {
             }
             marker = value
         }
+        override suspend fun setApiBaseUrl(value: String) {
+            baseUrl = value
+        }
         override suspend fun refreshServerConfig(): ServerConfig? {
             refreshCalls++
             return null

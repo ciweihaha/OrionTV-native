@@ -40,6 +40,11 @@ class AuthRepository @Inject constructor(
     private val settingsRepository: AuthSettings,
     private val credentialsStore: CredentialStore,
     private val cookieJar: InMemoryCookieJar,
+    /**
+     * 第 75 轮：内置 MoonTV 账号（构建时注入，见 AppModule.provideBuiltinAccount）。
+     * 默认未配置（无密码构建 / 旧单测直接构造时），内置登录关闭、行为与旧版一致。
+     */
+    private val builtinAccount: BuiltinAccount = BuiltinAccount.unconfigured(),
 ) {
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
@@ -294,6 +299,49 @@ class AuthRepository @Inject constructor(
     }
 
     /**
+     * 第 75 轮：内置 MoonTV 账号种入——冷启动与静默恢复前，若未配服务器地址
+     * 且无保存凭据，种入内置账号（打开即已登录）。只补缺口：用户改过的地址
+     * 与用户自己的凭据一律不动；凭据只种给内置服务器（地址是内置地址且无
+     * 保存凭据时才种，用户自己的服务器不碰凭据，登录走手动）；本会话已明确
+     * 退出登录时不种（loggedOut），免得刚退出的会话立刻又登回去；进程重启
+     * 后 loggedOut 归 false，种入恢复。写失败只记日志，不推翻本次登录流程；
+     * 取消原样抛出。
+     */
+    private suspend fun ensureBuiltinAccount() {
+        if (!builtinAccount.isConfigured || loggedOut) return
+        var url = runOrDefault("") { settingsRepository.currentApiBaseUrl() }
+        if (url.isBlank()) {
+            try {
+                settingsRepository.setApiBaseUrl(builtinAccount.baseUrl)
+                url = builtinAccount.baseUrl
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("AuthRepository", "内置账号：服务器地址种入失败：${e.message}")
+            }
+        }
+        // 凭据只种给内置服务器：地址不是内置地址时（用户自己的服务器），
+        // 内置凭据不对路，不碰；地址种入失败时 url 仍为空串，同样不种。
+        if (url != builtinAccount.baseUrl) return
+        val saved = try {
+            credentialsStore.load()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (saved == null) {
+            try {
+                credentialsStore.save(builtinAccount.username, builtinAccount.password)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("AuthRepository", "内置账号：凭据种入失败：${e.message}")
+            }
+        }
+    }
+
+    /**
      * 冷启动检查：无地址 → 未登录；有登录标记 → 先轻量校验会话（B-P2-16），
      * 有效才算已登录，过期走静默重登；
      * 无标记 → 有保存凭据就静默重登（localstorage 无密码服务传空密码也算一次尝试），
@@ -303,6 +351,9 @@ class AuthRepository @Inject constructor(
      * 同步拉一次配置（30 秒失败缓存）+ 失败时 31 秒后延迟重试，不再双通道刷新。
      */
     suspend fun checkLoginStatus() {
+        // 第 75 轮：先种内置账号（地址/凭据缺失时补），再走下面的冷启动流程——
+        // 种入后 restoreSession 才能用内置凭据静默登录，首页豆瓣行才有地址可走。
+        ensureBuiltinAccount()
         // D6-P2-4：函数入口记一次退出世代，期间退出登录后不再碰登录态/弹窗。
         val epochAtStart = logoutEpoch.get()
         // B5-P2-3：DataStore 读失败按未配置/未拉取处理，冷启动不崩溃；
@@ -439,6 +490,9 @@ class AuthRepository @Inject constructor(
         // 世代复核恒通过；入口先查已退出标志，为 true 直接返回，连登录
         // POST 都不发（无密码服务上空登录本会成功）。
         if (loggedOut) return false
+        // 第 75 轮：401 续期也先种内置账号——冷启动的种入若因时序没跑到，
+        // 这里补上，续期用的就是内置凭据，不再走空登录。
+        ensureBuiltinAccount()
         val epochAtStart = logoutEpoch.get()
         // B5-P2-3：同 checkLoginStatus，DataStore 读失败按未恢复处理。
         val baseUrl = runOrDefault("") { settingsRepository.currentApiBaseUrl() }

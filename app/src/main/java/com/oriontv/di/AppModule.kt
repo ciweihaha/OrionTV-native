@@ -65,6 +65,20 @@ object AppModule {
     fun provideCredentialStore(store: com.oriontv.data.local.CredentialsStore): com.oriontv.data.local.CredentialStore = store
 
     /**
+     * 第 75 轮：内置 MoonTV 账号——密码由构建时注入（BuildConfig.MOONTV_BUILTIN_PASSWORD，
+     * 见 app/build.gradle.kts：-PmoontvPassword / MOONTV_PASSWORD 环境变量 /
+     * local.properties 的 moontv.password；都没有时为空串，内置登录关闭）。
+     * 用户名与地址是常量（见 BuiltinAccount）。密码只在这里读一次进内存，
+     * 不写进任何日志与文件。
+     */
+    @Provides
+    @Singleton
+    fun provideBuiltinAccount(): com.oriontv.data.repo.BuiltinAccount =
+        com.oriontv.data.repo.BuiltinAccount.fromBuildConfig(
+            com.oriontv.BuildConfig.MOONTV_BUILTIN_PASSWORD,
+        )
+
+    /**
      * 进程内 CookieJar：登录会话 cookie 存在这里（RN 的原生 jar 同款语义）。
      * 冷启动后会话失效时由 AuthRepository 用已保存凭据静默重登恢复。
      * 返回具体类型 [InMemoryCookieJar]（而非接口），以便 AuthRepository 退出登录时调 clear()。

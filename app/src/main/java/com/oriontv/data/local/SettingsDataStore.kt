@@ -39,6 +39,14 @@ class SettingsDataStore @Inject constructor(
     companion object {
         /** 内置默认直播源：https://live.ciweihaha.win/live.m3u（与 mytv / OrionTV-android 同源）。 */
         const val DEFAULT_M3U_URL = "https://live.ciweihaha.win/live.m3u"
+        /**
+         * 第 75 轮：内置默认服务器地址（MoonTV，https://movie.ciweihaha.win）——
+         * 与 DEFAULT_M3U_URL 同款：键从未写过时返回默认值，新装即带登录服务器；
+         * 用户改过地址后用用户的值；用户主动清空成空串时返回空串（键已存在，
+         * ?: 不触发）。已装过、地址已是空串的机器，由 AuthRepository 的内置
+         * 账号种入补上（见 ensureBuiltinAccount），这里只管新装。
+         */
+        const val DEFAULT_API_BASE_URL = "https://movie.ciweihaha.win"
     }
     private object Keys {
         val API_BASE_URL = stringPreferencesKey("apiBaseUrl")
@@ -72,7 +80,7 @@ class SettingsDataStore @Inject constructor(
         val RN_MIGRATION_DONE = booleanPreferencesKey("rnMigrationDone")
     }
 
-    val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL].orEmpty() }
+    val apiBaseUrl: Flow<String> = context.settingsDataStore.data.map { it[Keys.API_BASE_URL] ?: DEFAULT_API_BASE_URL }
     /**
      * 直播源地址：键从未写过时返回内置默认源（DEFAULT_M3U_URL），新装即能看直播；
      * 用户在设置里改过地址后用用户的值；用户主动清空成空串时返回空串——键已存在，

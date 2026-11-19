@@ -105,13 +105,27 @@ jobs:
           fi
           echo "keystore present: $(stat -c%s /tmp/oriontv-release.keystore) bytes"
 
+      # 第 75 轮：内置 MoonTV 账号密码必须进发版包——secret 为空即失败，
+      # 绝不放行一个“内置登录关闭”的 Release（本地/CI 推送构建不设此
+      # secret 时 BuildConfig 为空串，只影响非发版构建）。
+      - name: Verify MoonTV builtin password secret
+        env:
+          MOONTV_PASSWORD: ${{ secrets.MOONTV_PASSWORD }}
+        run: |
+          if [ -z "$MOONTV_PASSWORD" ]; then
+            echo "::error::MOONTV_PASSWORD secret is empty — built-in login would ship disabled"
+            exit 1
+          fi
+          echo "MOONTV_PASSWORD secret present"
+
       - name: Build release APK
         env:
           ORION_KEYSTORE_BASE64: ${{ secrets.ORION_KEYSTORE_BASE64 }}
           ORION_KEYSTORE_PASSWORD: ${{ secrets.ORION_KEYSTORE_PASSWORD }}
           ORION_KEY_ALIAS: ${{ secrets.ORION_KEY_ALIAS }}
           ORION_KEY_PASSWORD: ${{ secrets.ORION_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --stacktrace
+          MOONTV_PASSWORD: ${{ secrets.MOONTV_PASSWORD }}
+        run: ./gradlew assembleRelease -PmoontvPassword="$MOONTV_PASSWORD" --stacktrace
 
       # 验签：只有 v2/v3 签名通过才放行，避免未签名 APK 再次进 Release。
       - name: Verify APK signature
