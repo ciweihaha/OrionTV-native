@@ -191,6 +191,47 @@ class EpgRepository @Inject constructor(
         const val EPG_URL = "https://ysp.ciweihaha.win/epg.xml"
 
         /**
+         * 第 76 轮：EPG 缓存硬 TTL（6 小时）——[EpgParser.isCacheFresh]
+         * 的默认 TTL 在此具名，[loadEpg] 的时效上限取它与 [maxCacheAgeMs]
+         * 的较小者。
+         */
+        const val EPG_CACHE_TTL_MS = 6 * 60 * 60 * 1000L
+
+        /**
+         * 第 76 轮：EPG 定时刷新间隔（1 小时）——旧实现只在“缓存里无正在播
+         * 的节目”时才重拉，缓存一旦有节目就永不再拉：6 小时 TTL 只在
+         * [loadEpg] 内部查、而 [loadEpg] 只在 stale 时才被调到，TTL 等于
+         * 死代码；服务端每天出新文件也收不到，节目单停在上次拉取那天
+         * （2026-11-19 用户报：停在昨晚 20:04）。现在缓存超 1 小时即重拉，
+         * 哪怕仍有正在播的节目（由 [loadEpg] 默认取该值）。
+         */
+        const val EPG_REFRESH_INTERVAL_MS = 60 * 60 * 1000L
+
+        /**
+         * 第 76 轮：回前台时重拉的最小间隔（10 分钟）——onPageResumed 每次
+         * 都查，10 分钟内刚拉过的不再发请求；超过即拉（切走久了回来能拿到
+         * 新文件，短暂切走回来不浪费流量）。
+         */
+        const val EPG_RESUME_MIN_AGE_MS = 10 * 60 * 1000L
+
+        /**
+         * 第 76 轮：是否应重新拉取 EPG（纯函数，可单测）——无缓存、缓存超
+         * [maxCacheAgeMs]、或缓存里已无正在播的节目时都应重拉；否则用缓存。
+         * 时效上限取 min(6 小时硬 TTL, [maxCacheAgeMs])，经由
+         * [EpgParser.isCacheFresh] 的 ttlMs 参数实现（该函数本身还含
+         * “仍有正在播节目”判据）。
+         */
+        fun shouldRefreshEpg(cached: EpgCache?, nowMs: Long, maxCacheAgeMs: Long): Boolean {
+            if (cached == null) return true
+            return !EpgParser.isCacheFresh(
+                cached.data,
+                cached.ts,
+                nowMs,
+                ttlMs = minOf(EPG_CACHE_TTL_MS, maxCacheAgeMs),
+            )
+        }
+
+        /**
          * 空 EPG 不落盘：只有 programmes 非空时才保存（P1-5；M3U 早有同款守卫）。
          * 纯函数，可单测（MockK 已随依赖升级移出，仓库级测试不再用 mock）。
          * 第 9 轮 D9-P1-1：只判非空不够——实测 epg.xml 仍只覆盖昨天（2026-11-14），
@@ -240,15 +281,34 @@ class EpgRepository @Inject constructor(
     }
 
     /**
-     * 缓存优先加载：缓存新鲜（TTL 内且仍有正在播的节目）直接返回；
-     * 否则拉网，成功落盘，失败回落旧缓存（哪怕已过期，也比无节目单强）。
+     * 缓存优先加载：缓存新鲜直接返回；否则拉网，成功落盘，失败回落旧缓存
+     * （哪怕已过期，也比无节目单强）。
+     * 第 76 轮：[maxCacheAgeMs] 是缓存可用最长时长——超过即重拉（默认 1 小时
+     * 定时刷新；回前台传 10 分钟）。旧实现无此参数，缓存新鲜判据只看 6 小时
+     * TTL + 仍有正在播节目，而调用方只在 stale 时才调这里，于是缓存一旦有
+     * 节目就永不再拉（2026-11-19 节目单停在昨晚 20:04）。
      */
-    suspend fun loadEpg(nowMs: Long = System.currentTimeMillis()): EpgParser.EpgData? =
+    suspend fun loadEpg(
+        nowMs: Long = System.currentTimeMillis(),
+        maxCacheAgeMs: Long = EPG_REFRESH_INTERVAL_MS,
+    ): EpgParser.EpgData? =
         withContext(ioDispatcher) {
             val cached = cacheStore.readEpgCache()
-            if (cached != null && EpgParser.isCacheFresh(cached.data, cached.ts, nowMs)) {
+            if (cached != null && !shouldRefreshEpg(cached, nowMs, maxCacheAgeMs)) {
                 _loadFailed.value = false
                 return@withContext cached.data
+            }
+            // 第 76 轮：记下重拉原因——否则 logcat 里只看得到 fetchEpg 的成败、
+            // 看不到是谁触发的（定时超 1 小时 / 缓存无正在播节目 / 回前台超 10 分钟）。
+            if (cached != null) {
+                val ageMin = (nowMs - cached.ts) / 60_000
+                val capMin = minOf(EPG_CACHE_TTL_MS, maxCacheAgeMs) / 60_000
+                val reason = if (nowMs - cached.ts > minOf(EPG_CACHE_TTL_MS, maxCacheAgeMs)) {
+                    "缓存已 $ageMin 分钟，超 $capMin 分钟上限"
+                } else {
+                    "缓存无正在播的节目"
+                }
+                AppLog.i("EpgRepository", "EPG 重新拉取：$reason")
             }
             val fresh = fetchEpg()
             val decision = decideLoad(cached?.data, fresh, nowMs)

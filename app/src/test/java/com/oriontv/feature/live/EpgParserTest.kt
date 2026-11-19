@@ -83,6 +83,17 @@ class EpgParserTest {
     }
 
     @Test
+    fun `cache freshness honours a shorter ttl for hourly refresh`() {
+        // 第 76 轮：isCacheFresh 的 ttlMs 参数是定时刷新的实现口——
+        // 缓存 70 分钟前生成、仍有正在播的节目：6 小时 TTL 下新鲜，
+        // 1 小时上限下已过期（触发重拉）；30 分钟前生成则 1 小时上限下仍新鲜。
+        val data = EpgParser.parse(sample)
+        assertTrue(EpgParser.isCacheFresh(data, nowMs - 70 * 60_000L, nowMs, ttlMs = 6 * 60 * 60 * 1000L))
+        assertFalse(EpgParser.isCacheFresh(data, nowMs - 70 * 60_000L, nowMs, ttlMs = 60 * 60 * 1000L))
+        assertTrue(EpgParser.isCacheFresh(data, nowMs - 30 * 60_000L, nowMs, ttlMs = 60 * 60 * 1000L))
+    }
+
+    @Test
     fun `programmesFor returns full-day list sorted by start`() {
         val data = EpgParser.parse(sample)
         val list = EpgParser.programmesFor(data, "cctv1", "CCTV1")

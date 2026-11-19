@@ -136,4 +136,74 @@ class EpgRepositoryTest {
         assertNull(decision.data)
         assertTrue(decision.loadFailed)
     }
+
+    // ---- 第 76 轮：EPG 自动更新（shouldRefreshEpg）----
+
+    @Test
+    fun `refresh intervals are one hour periodic and ten minutes on resume`() {
+        // 定时刷新 1 小时、回前台节流 10 分钟——改了这两个数就是改了产品行为，
+        // 锁死在这里。
+        assertEquals(60 * 60 * 1000L, EpgRepository.EPG_REFRESH_INTERVAL_MS)
+        assertEquals(10 * 60 * 1000L, EpgRepository.EPG_RESUME_MIN_AGE_MS)
+        assertEquals(6 * 60 * 60 * 1000L, EpgRepository.EPG_CACHE_TTL_MS)
+    }
+
+    @Test
+    fun `shouldRefreshEpg with no cache returns true`() {
+        assertTrue(
+            EpgRepository.shouldRefreshEpg(null, nowMs, EpgRepository.EPG_REFRESH_INTERVAL_MS),
+        )
+    }
+
+    @Test
+    fun `shouldRefreshEpg with fresh cache within one hour returns false`() {
+        // 缓存 30 分钟前生成、仍有正在播的节目 → 不拉（1 小时内不重复请求）。
+        val cached = EpgCache(ts = nowMs - 30 * 60_000L, data = nonEmpty)
+        assertFalse(
+            EpgRepository.shouldRefreshEpg(cached, nowMs, EpgRepository.EPG_REFRESH_INTERVAL_MS),
+        )
+    }
+
+    @Test
+    fun `shouldRefreshEpg with cache older than one hour refreshes even with programmes playing`() {
+        // 第 76 轮核心回归：缓存 70 分钟前生成、仍有正在播的节目——旧实现
+        // 只看“有无正在播节目”，这种缓存永不再拉，节目单停在上次拉取那天
+        // （2026-11-19 用户报：停在昨晚 20:04）；现在超 1 小时即重拉。
+        val cached = EpgCache(ts = nowMs - 70 * 60_000L, data = nonEmpty)
+        assertTrue(
+            EpgRepository.shouldRefreshEpg(cached, nowMs, EpgRepository.EPG_REFRESH_INTERVAL_MS),
+        )
+    }
+
+    @Test
+    fun `shouldRefreshEpg with cache older than one hour but within six hour ttl does not refresh`() {
+        // 同一份 70 分钟旧缓存：6 小时硬 TTL 下仍可用（上限取 min(6 小时, maxAge)，
+        // 传 6 小时即恢复旧语义）。
+        val cached = EpgCache(ts = nowMs - 70 * 60_000L, data = nonEmpty)
+        assertFalse(
+            EpgRepository.shouldRefreshEpg(cached, nowMs, EpgRepository.EPG_CACHE_TTL_MS),
+        )
+    }
+
+    @Test
+    fun `shouldRefreshEpg with expired programmes refreshes regardless of age`() {
+        // 缓存 5 分钟前生成、但节目全部播完（午夜跨天）→ 立即重拉，不看时效。
+        val cached = EpgCache(ts = nowMs - 5 * 60_000L, data = expired)
+        assertTrue(
+            EpgRepository.shouldRefreshEpg(cached, nowMs, EpgRepository.EPG_REFRESH_INTERVAL_MS),
+        )
+    }
+
+    @Test
+    fun `shouldRefreshEpg resume throttle is ten minutes`() {
+        // 回前台节流：5 分钟前刚拉过 → 不拉；11 分钟前拉过 → 拉。
+        val fresh = EpgCache(ts = nowMs - 5 * 60_000L, data = nonEmpty)
+        assertFalse(
+            EpgRepository.shouldRefreshEpg(fresh, nowMs, EpgRepository.EPG_RESUME_MIN_AGE_MS),
+        )
+        val old = EpgCache(ts = nowMs - 11 * 60_000L, data = nonEmpty)
+        assertTrue(
+            EpgRepository.shouldRefreshEpg(old, nowMs, EpgRepository.EPG_RESUME_MIN_AGE_MS),
+        )
+    }
 }

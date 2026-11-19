@@ -327,14 +327,21 @@ class LiveViewModel @Inject constructor(
         }
     }
 
-    private suspend fun loadEpg() {
-        val epg = epgRepository.loadEpg(System.currentTimeMillis())
+    /**
+     * 第 76 轮：拉取 EPG 并写入 state（抓到新节目单后刷新显示）。
+     * [maxCacheAgeMs] 直传仓库：默认 1 小时定时刷新；回前台传 10 分钟。
+     */
+    private suspend fun loadEpg(maxCacheAgeMs: Long = EpgRepository.EPG_REFRESH_INTERVAL_MS) {
+        val epg = epgRepository.loadEpg(System.currentTimeMillis(), maxCacheAgeMs)
         if (epg != null) {
             _uiState.update { it.copy(epg = epg) }
         }
     }
 
-    /** 时钟 30 秒一跳（驱动面板右上角时钟与节目进度条刷新）；EPG 每 10 分钟后台刷新一次。 */
+    /**
+     * 时钟 30 秒一跳（驱动面板右上角时钟与节目进度条刷新）；EPG 每 10 分钟
+     * 检查一次，缓存超 1 小时或无正在播节目时重拉（第 76 轮）。
+     */
     private fun startTicker() {
         tickerJob?.cancel()
         tickerJob = viewModelScope.launch {
@@ -352,14 +359,20 @@ class LiveViewModel @Inject constructor(
                 // P2-9 前台门控：切后台时不拉 EPG；直播本身不靠这个循环推进，
                 // 只停 UI 时钟与后台刷新，与后台播放开关无关。
                 if (!shouldRunTicker(isForeground)) continue
-                val now = System.currentTimeMillis()
-                // 缓存里已无正在播的节目才值得重拉（天光 v2.2.20 教训的反向运用）。
-                if (isEpgStale(_uiState.value.epg, now)) {
-                    // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（读
-                    // epgRepository.loadFailed，与 M3U 刷新失败提示同款文案风格）；
-                    // loadEpg() 失败时回落旧缓存，state.epg 非空即仍在用旧节目单。
-                    // A16-P2-3：首启加载与 10 分钟 ticker 刷新都走这里；初始空态仍另有 loadError。
-                    loadEpg()
+                // 第 76 轮：每 10 分钟查一次，缓存超 1 小时或无正在播节目时重拉
+                // （loadEpg 内部按 EPG_REFRESH_INTERVAL_MS 判；缓存新鲜时直接
+                // 返回、不发请求）。旧实现只在 isEpgStale 时才调 loadEpg——
+                // 缓存一旦有节目就永不再拉，服务端出新文件也收不到
+                // （2026-11-19 节目单停在昨晚 20:04）。
+                // 第 7 轮跟进 D7-P2-2：EPG 后台刷新失败时轻提示（读
+                // epgRepository.loadFailed，与 M3U 刷新失败提示同款文案风格）；
+                // loadEpg() 失败时回落旧缓存，state.epg 非空即仍在用旧节目单。
+                // A16-P2-3：首启加载与 10 分钟 ticker 刷新都走这里；初始空态仍另有 loadError。
+                // 第 76 轮：提示只在节目单已 stale 时弹——定时重拉失败、但旧节目单
+                // 仍有正在播的节目时，界面正常显示、静默等下一跳重试，不每 10 分钟
+                // 弹一次“仍用旧节目单”（旧实现里提示本来就只在 isEpgStale 分支内）。
+                loadEpg()
+                if (isEpgStale(_uiState.value.epg, System.currentTimeMillis())) {
                     epgRefreshFailedMessage(
                         epgRepository.loadFailed.value,
                         _uiState.value.epg != null,
@@ -546,15 +559,17 @@ class LiveViewModel @Inject constructor(
             return
         }
         startTicker()
-        // A35-P2-1（后者修法）：回页时缓存已 stale 即直接拉一次——startTicker
-        // 只重算 10 分钟倒计时，10 分钟内反复切页会让刷新永不到点（尤其午夜
-        // 跨天后节目单过期，信息条与面板长时间显示“暂无节目单”）；只在 stale
-        // 时拉，不新鲜的回页不发请求（见 isEpgStale 的 KDoc）。失败提示与
-        // ticker 同款文案；放 shouldResumePlayback 判断之前——失败页不自动
-        // 重播时节目单仍要刷新，信息条/面板靠它显示。
-        if (isEpgStale(_uiState.value.epg, System.currentTimeMillis())) {
-            viewModelScope.launch {
-                loadEpg()
+        // 第 76 轮（A35-P2-1 的后继修法）：回页时重拉一次（10 分钟节流）——
+        // startTicker 只重算 10 分钟倒计时，10 分钟内反复切页会让刷新永不
+        // 到点（尤其午夜跨天后节目单过期，信息条与面板长时间显示“暂无节目单”）。
+        // loadEpg(EPG_RESUME_MIN_AGE_MS) 在缓存新鲜（10 分钟内刚拉过）时
+        // 直接返回、不发请求；超 10 分钟或缓存无正在播节目时才拉。失败提示
+        // 与 ticker 同款文案（只在 stale 时弹，旧节目单仍可用时不打扰）；
+        // 放 shouldResumePlayback 判断之前——失败页不自动重播时节目单仍要
+        // 刷新，信息条/面板靠它显示。
+        viewModelScope.launch {
+            loadEpg(EpgRepository.EPG_RESUME_MIN_AGE_MS)
+            if (isEpgStale(_uiState.value.epg, System.currentTimeMillis())) {
                 epgRefreshFailedMessage(
                     epgRepository.loadFailed.value,
                     _uiState.value.epg != null,
@@ -946,13 +961,15 @@ class LiveViewModel @Inject constructor(
         internal fun shouldRunTicker(isForeground: Boolean): Boolean = isForeground
 
         /**
-         * A35-P2-1：回页时 EPG 缓存是否已 stale（可单测）——缓存为空、或任一
-         * 频道都无正在播的节目（无 endAt > now 的节目）即 stale，与 10 分钟
-         * ticker 的判定同款（天光 v2.2.20 教训的反向运用）。只在 stale 时拉，
-         * 不会每次回页都发请求：EpgRepository.loadEpg 本身也是缓存优先，
-         * 缓存新鲜（TTL 内且仍有正在播节目）时直接返回、不拉网；拉取失败/
-         * 拉回过期文件时缓存仍 stale，下次回页再试一次（频率以用户切页为准，
-         * ticker 在同样状态下每 10 分钟也会重试一次）。
+         * A35-P2-1：EPG 缓存是否已 stale（可单测）——缓存为空、或任一
+         * 频道都无正在播的节目（无 endAt > now 的节目）即 stale
+         * （天光 v2.2.20 教训的反向运用）。
+         * 第 76 轮：生产路径的刷新判定已移到 [EpgRepository.shouldRefreshEpg]
+         * （同款 stale 谓词 + 缓存时效上限：超 1 小时/回前台超 10 分钟也拉，
+         * 不再只看 stale）；本函数仍由 ticker/回页用来决定“重拉失败时是否弹
+         * 提示”（只在 stale 时弹，旧节目单仍可用时静默重试）——只看 stale
+         * 决定“拉不拉”会让有节目的缓存永不再拉（2026-11-19 节目单停在昨晚
+         * 20:04 的根因）。
          */
         internal fun isEpgStale(epg: EpgParser.EpgData?, nowMs: Long): Boolean =
             epg == null ||
