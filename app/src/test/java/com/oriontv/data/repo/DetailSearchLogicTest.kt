@@ -4,7 +4,9 @@ import com.oriontv.data.api.AggDetailItem
 import com.oriontv.data.api.AggVideoItem
 import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DetailSearchLogicTest {
@@ -194,6 +196,50 @@ class DetailSearchLogicTest {
     }
 
     // 第 72 轮：agg 详情缓存（失败兜底）的键与有效期判定。
+
+    @Test
+    fun `isAggregationId accepts agg and vod-api id forms only`() {
+        // v2.0.18：agg `站点~编号`、vod-api `站号_编号` / `M_...` 都是聚合 id；
+        // 豆瓣卡片的 id 就是标题、MoonTV 服务端 id 是纯数字，都不是聚合 id。
+        assertTrue(DetailSearchLogic.isAggregationId("kanju~av_1IFcMOEBXV2"))
+        assertTrue(DetailSearchLogic.isAggregationId("45_53656"))
+        assertTrue(DetailSearchLogic.isAggregationId("M_W1siMl8yNDQ5OSIs"))
+        assertFalse(DetailSearchLogic.isAggregationId("阿龙2025"))
+        assertFalse(DetailSearchLogic.isAggregationId("35729"))
+        assertFalse(DetailSearchLogic.isAggregationId(null))
+        assertFalse(DetailSearchLogic.isAggregationId(""))
+        assertFalse(DetailSearchLogic.isAggregationId("   "))
+    }
+
+    @Test
+    fun `dedupeBySourcePreferPlayable keeps playable over zero-episode same source`() {
+        // v2.0.18：首选源 0 集结果不能把全量搜索里同源可播的结果挡掉。
+        val zero = result("r1", episodes = 0)
+        val playable = result("r1", episodes = 3)
+        val other = result("r2", episodes = 2)
+        assertEquals(
+            listOf(playable, other),
+            DetailSearchLogic.dedupeBySourcePreferPlayable(listOf(zero, playable, other)),
+        )
+        // 同源都可播时留第一条；同源全 0 集时留第一条。
+        assertEquals(
+            listOf(playable, other),
+            DetailSearchLogic.dedupeBySourcePreferPlayable(listOf(playable, result("r1", episodes = 9), other)),
+        )
+        assertEquals(
+            listOf(zero),
+            DetailSearchLogic.dedupeBySourcePreferPlayable(listOf(zero, result("r1", episodes = 0))),
+        )
+    }
+
+    @Test
+    fun `aggDetailCacheKey uses vod-api id form too`() {
+        // v2.0.18：vod-api 的 `站号_编号` / `M_...` 也按 id 区分缓存。
+        assertEquals(
+            "agg:id:45_53656",
+            DetailSearchLogic.aggDetailCacheKey("借枪", "45_53656"),
+        )
+    }
 
     @Test
     fun `aggDetailCacheKey uses composite id when present`() {

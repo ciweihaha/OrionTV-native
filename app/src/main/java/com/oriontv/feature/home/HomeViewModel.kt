@@ -23,7 +23,7 @@ import javax.inject.Inject
  * 首页 ViewModel（ui-design.md §5.1）：
  * 分类 chip 栏置顶，下方依次“最近播放”→“热门剧集”→各分类行；
  * 最近播放来自本地播放记录（断点续播）；热门/Top250 走豆瓣；
- * 电视剧/电影/动漫/综艺走 agg CMS，失败或首屏空列表时回落豆瓣；
+ * 电视剧/电影/动漫/综艺走 vod-api CMS（44站合一，v2.0.18 起；旧 agg 38 站已弃），失败或首屏空列表时回落豆瓣；
  * 缓存 5 分钟/10 分类/每类 40 条、真 LRU；切分类/刷新时代次校验丢弃迟到结果。
  */
 @HiltViewModel
@@ -119,7 +119,7 @@ class HomeViewModel @Inject constructor(
                 // 旧行保留不受影响（只清 error，不动 rows），行级 error 另有
                 // row.error，不在此处；失败分支会重写 error。
                 _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-                // 新装不配服务器也能直接加载首页点播：agg 接口是硬编码直连、
+                // 新装不配服务器也能直接加载首页点播：聚合接口是硬编码直连、
                 // 不需要服务器地址；豆瓣走用户 MoonTV 服务，未配时
                 // loadDouban 直接返回空列表、相关行不展示（不算失败）。
                 // 服务器地址只用于服务端存储/登录与搜索，不是浏览点播必需的，

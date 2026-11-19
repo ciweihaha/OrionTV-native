@@ -74,9 +74,39 @@ class DetailRepositoryTest {
             }
         }.build()
 
+    /** MoonTV 假客户端：资源列表正常，单源搜索回给定的 body。 */
+    private fun moonTvClientOk(searchBody: String): OkHttpClient =
+        OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            when (request.url.encodedPath) {
+                "/api/search/resources" -> responseFor(request, 200, """[{"key":"r1","name":"源1"}]""")
+                "/api/search/one" -> responseFor(request, 200, searchBody)
+                else -> responseFor(request, 404, "")
+            }
+        }.build()
+
+    /** 聚合两腿假客户端：vod-api 腿回空，agg 腿回可播详情——证明第 2 腿确实被走。 */
+    private fun twoLegAggClient(detailBody: String): OkHttpClient =
+        OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            when {
+                request.url.host == "live.ciweihaha.win" ->
+                    responseFor(request, 200, """{"code":1,"list":[]}""")
+                request.url.host == "ysp.ciweihaha.win" && request.url.queryParameter("ac") == "detail" ->
+                    responseFor(request, 200, detailBody)
+                else -> responseFor(request, 200, """{"code":1,"list":[]}""")
+            }
+        }.build()
+
     private fun repository(detailBody: String, aggCalls: AtomicInteger? = null): DetailRepository {
         val moonTvApi = MoonTvApi(moonTvClient(), json, Dispatchers.Unconfined, retryBackoffMs = 0L)
         val aggApi = AggApi(aggClient(detailBody, aggCalls), json, Dispatchers.Unconfined, retryBackoffMs = { 0L })
+        return DetailRepository(moonTvApi, FakeDetailSettings("https://example.com"), aggApi, Dispatchers.Unconfined)
+    }
+
+    private fun repositoryWith(moonTv: OkHttpClient, agg: OkHttpClient): DetailRepository {
+        val moonTvApi = MoonTvApi(moonTv, json, Dispatchers.Unconfined, retryBackoffMs = 0L)
+        val aggApi = AggApi(agg, json, Dispatchers.Unconfined, retryBackoffMs = { 0L })
         return DetailRepository(moonTvApi, FakeDetailSettings("https://example.com"), aggApi, Dispatchers.Unconfined)
     }
 
@@ -100,21 +130,90 @@ class DetailRepositoryTest {
     }
 
     @Test
-    fun `moontv full search 401 with preferred results keeps preferred results`() {
+    fun `moontv 401 with zero-episode preferred results and empty agg reports not found`() {
+        // v2.0.18：首选源结果全是 0 集时不再直接发——全量失败 + 聚合也空时
+        // 报“没有找到相关内容”，详情页不展示 0 集；聚合腿确实被走了（fake 计了数）。
         val aggCalls = AtomicInteger(0)
         val repo = repository("""{"code":1,"list":[]}""", aggCalls)
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                repo.searchDetail(q = "哪吒", preferredSource = "r1", id = null) { _, _ -> }
+            }
+        }
+        assertTrue(thrown.message!!.contains("没有找到相关内容"))
+        assertTrue(aggCalls.get() > 0)
+    }
+
+    @Test
+    fun `moontv preferred zero-episode results fall back to playable agg results`() {
+        // v2.0.18：首选源只有 0 集结果时，聚合回落的可播结果要发出来——
+        // 发出的结果里不能有 0 集的，更不能把 0 集结果当当前源。
+        val detailBody = """{"code":1,"list":[{"vod_id":"s~1","vod_name":"哪吒","vod_play_from":"lzm3u8","vod_play_url":"国语中字${'$'}https://a/1.m3u8"}]}"""
+        val repo = repository(detailBody)
         val updates = mutableListOf<Pair<List<SearchResult>, Boolean>>()
         runBlocking {
-            repo.searchDetail(q = "哪吒", preferredSource = "r1", id = null) { results, allLoaded ->
+            repo.searchDetail(q = "哪吒", preferredSource = "r1", id = "s~1") { results, allLoaded ->
                 updates += results to allLoaded
             }
         }
-        // 首选源结果先发出（allLoaded=false），全量失败后仍以它收尾（allLoaded=true），
-        // 不走 agg、不抛错。
-        assertEquals(2, updates.size)
-        assertEquals(listOf("m1"), updates.last().first.map { it.id })
-        assertTrue(updates.last().second)
-        assertEquals(0, aggCalls.get())
+        assertTrue(updates.isNotEmpty())
+        val (results, allLoaded) = updates.last()
+        assertTrue(allLoaded)
+        assertTrue(results.all { it.episodes.isNotEmpty() })
+        assertEquals(listOf("哪吒"), results.map { it.title })
+        assertEquals("agg:lzm3u8", results.first().source)
+    }
+
+    @Test
+    fun `moontv merged all zero-episode results fall back to playable agg results`() {
+        // v2.0.18：全量搜索只搜到 0 集结果时（merged 非空但无可播），同样走聚合回落；
+        // 旧实现直接发 merged，详情页就停在 0 集源上、聚合回落根本不触发。
+        val detailBody = """{"code":1,"list":[{"vod_id":"s~1","vod_name":"哪吒","vod_play_from":"lzm3u8","vod_play_url":"国语中字${'$'}https://a/1.m3u8"}]}"""
+        val moonTv = moonTvClientOk("""{"results":[{"id":"m1","title":"哪吒","source":"r1","source_name":"源1"}]}""")
+        val repo = repositoryWith(moonTv, aggClient(detailBody))
+        val updates = mutableListOf<Pair<List<SearchResult>, Boolean>>()
+        runBlocking {
+            repo.searchDetail(q = "哪吒", preferredSource = null, id = "s~1") { results, allLoaded ->
+                updates += results to allLoaded
+            }
+        }
+        assertTrue(updates.isNotEmpty())
+        val (results, allLoaded) = updates.last()
+        assertTrue(allLoaded)
+        assertTrue(results.all { it.episodes.isNotEmpty() })
+        assertEquals("agg:lzm3u8", results.first().source)
+    }
+
+    @Test
+    fun `agg fallback tries vod-api first then agg second leg`() {
+        // v2.0.18：vod-api 腿空时走 agg 第 2 腿（vod-api 里没有的片 agg 可能有，如《土豆屋：开始》）。
+        val detailBody = """{"code":1,"list":[{"vod_id":"kanju~x","vod_name":"土豆屋:开始","vod_play_from":"看剧AI","vod_play_url":"正片${'$'}https://ysp.ciweihaha.win/agg?ac=play&token=t"}]}"""
+        val repo = repositoryWith(moonTvClient(), twoLegAggClient(detailBody))
+        val updates = mutableListOf<Pair<List<SearchResult>, Boolean>>()
+        runBlocking {
+            repo.searchDetail(q = "土豆屋:开始", preferredSource = null, id = "kanju~x") { results, allLoaded ->
+                updates += results to allLoaded
+            }
+        }
+        assertTrue(updates.isNotEmpty())
+        val (results, allLoaded) = updates.last()
+        assertTrue(allLoaded)
+        assertEquals(listOf("土豆屋:开始"), results.map { it.title })
+        assertEquals("agg:看剧AI", results.first().source)
+        assertTrue(results.first().episodes.isNotEmpty())
+    }
+
+    @Test
+    fun `no playable source anywhere reports not found`() {
+        // v2.0.18：MoonTV 全是 0 集、聚合也空时，报“没有找到相关内容”，不发 0 集结果。
+        val moonTv = moonTvClientOk("""{"results":[]}""")
+        val repo = repositoryWith(moonTv, aggClient("""{"code":1,"list":[]}"""))
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                repo.searchDetail(q = "哪吒", preferredSource = null, id = null) { _, _ -> }
+            }
+        }
+        assertTrue(thrown.message!!.contains("没有找到相关内容"))
     }
 
     @Test

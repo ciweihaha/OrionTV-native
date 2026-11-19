@@ -27,7 +27,11 @@ import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * agg 接口（点播分类 + 版本检查）：https://ysp.ciweihaha.win/agg，硬编码直连，无登录。
+ * 点播聚合接口（CMS `videolist` / `detail`，硬编码直连，无登录）：
+ * 主聚合是 vod.json 那个“聚合万能源（44站合一）”——`https://live.ciweihaha.win/vod-api/`，
+ * v2.0.18 起首页/搜索/详情默认走它（用户 2026-11-19 10:28 定：重写版点播内置 vod.json；
+ * 旧 agg 38 站内容杂、常列出无资源的外国片）。agg（`https://ysp.ciweihaha.win/agg`）
+ * 只作详情第二回落腿与版本检查（版本端点只在 agg Worker 上有）。
  * 超时/重试照抄 plan §5.1：单次 15 秒；超时/网络错/5xx/429 最多 3 次，退避 1s/2s/3s 递增；
  * 其余 4xx、结构异常、JSON 损坏、体超时熔断开启时不重试。
  *
@@ -54,7 +58,19 @@ class AggApi @Inject constructor(
     private val totalVersionTimeoutMs: Long = TOTAL_VERSION_TIMEOUT_MS,
 ) {
     companion object {
-        const val BASE_URL = "https://ysp.ciweihaha.win/agg"
+        /**
+         * v2.0.18：点播主聚合——vod.json 的“聚合万能源（44站合一·支持4K）”，
+         * 与 agg 同为 CMS 接口（`ac=videolist/detail`，`$$$` 分组 / `#` 分集 /
+         * `名称$地址`），现有解析不用改；列表同样不带播放地址（两家皆然），
+         * 首页无法按“有无资源”预过滤，靠详情页可播优先 + 无资源不展示兜底。
+         */
+        const val VOD_BASE_URL = "https://live.ciweihaha.win/vod-api/"
+
+        /** 旧 agg 聚合（38 站）：详情第二回落腿 + 版本检查专用。 */
+        const val AGG_BASE_URL = "https://ysp.ciweihaha.win/agg"
+
+        /** 历史别名：版本检查仍走 agg，见 [AggApi.version]。 */
+        const val BASE_URL = AGG_BASE_URL
 
         /** 是否体超时：OkHttp 读/连接超时抛 SocketTimeoutException，才记熔断（第 6 轮 fa348ad）。 */
         internal fun isBodyTimeout(e: IOException): Boolean =
@@ -78,9 +94,15 @@ class AggApi @Inject constructor(
      * 翻页坑：pagecount 筛选后恒为 100，不可作为“还有多少页”的依据，终止条件是“本页空列表”。
      * 单条脏数据不拖垮整页：整表解码失败时逐条容错，保留可解析条目并记日志（P1-8）。
      */
-    suspend fun videoList(type: Int, page: Int, area: String? = null, year: String? = null): AggListResponse =
+    suspend fun videoList(
+        type: Int,
+        page: Int,
+        area: String? = null,
+        year: String? = null,
+        baseUrl: String = VOD_BASE_URL,
+    ): AggListResponse =
         withContext(ioDispatcher) {
-            val url = BASE_URL.toHttpUrl().newBuilder()
+            val url = baseUrl.toHttpUrl().newBuilder()
                 .addQueryParameter("ac", "videolist")
                 .addQueryParameter("t", type.toString())
                 .addQueryParameter("pg", page.toString())
@@ -96,9 +118,9 @@ class AggApi @Inject constructor(
      * 按关键词搜（未配服务器时详情/搜索的回落源）：CMS `videolist` 的 `wd` 参数，
      * 服务端是模糊搜，调用方须再按精确标题过滤（见 DetailSearchLogic.findAggTitleMatch）。
      */
-    suspend fun searchVideos(query: String): AggListResponse =
+    suspend fun searchVideos(query: String, baseUrl: String = VOD_BASE_URL): AggListResponse =
         withContext(ioDispatcher) {
-            val url = BASE_URL.toHttpUrl().newBuilder()
+            val url = baseUrl.toHttpUrl().newBuilder()
                 .addQueryParameter("ac", "videolist")
                 .addQueryParameter("wd", query)
                 .addQueryParameter("pg", "1")
@@ -108,11 +130,12 @@ class AggApi @Inject constructor(
 
     /**
      * 详情（含播放地址，未配服务器时详情页的回落源）：`ac=detail&ids=<vod_id>`，
-     * vod_id 是聚合侧的 `站点~编号`（如 `yingshigongchang~111482`）。
+     * vod_id 是聚合侧的 id——agg 是 `站点~编号`（如 `yingshigongchang~111482`），
+     * vod-api 是 `站号_编号`（如 `45_53656`）或多站合并的 `M_...`。
      */
-    suspend fun videoDetail(ids: String): AggDetailResponse =
+    suspend fun videoDetail(ids: String, baseUrl: String = VOD_BASE_URL): AggDetailResponse =
         withContext(ioDispatcher) {
-            val url = BASE_URL.toHttpUrl().newBuilder()
+            val url = baseUrl.toHttpUrl().newBuilder()
                 .addQueryParameter("ac", "detail")
                 .addQueryParameter("ids", ids)
                 .build()
@@ -174,6 +197,7 @@ class AggApi @Inject constructor(
 
     /**
      * 版本检查：只取 {version} 一个字段；版本号先过正则。
+     * 注意：版本端点只在 agg Worker 上有，固定走 [AGG_BASE_URL]，不跟点播主聚合走。
      * 主端点 `agg?ac=oriontv-version` 失败后调备用端点 `agg/oriontv-version.json`，
      * 备用版本同样过 [VersionUtils.isValidVersion]，两者都失败才报错（P1-2）。
      * 解码/校验异常包成 [AggInvalidResponseException]，与 videoList 一致（P1-7）。
@@ -183,10 +207,10 @@ class AggApi @Inject constructor(
         // B4-P2-14：总超时 60 秒——主备两端点各最多重试 3 次、单次 20 秒，
         // 最坏 ~3 分钟；无取消入口时调用方（更新检查）会被钉死。
         withTimeout(totalVersionTimeoutMs) {
-            val primaryUrl = BASE_URL.toHttpUrl().newBuilder()
+            val primaryUrl = AGG_BASE_URL.toHttpUrl().newBuilder()
                 .addQueryParameter("ac", "oriontv-version")
                 .build()
-            val fallbackUrl = "$BASE_URL/oriontv-version.json".toHttpUrl()
+            val fallbackUrl = "$AGG_BASE_URL/oriontv-version.json".toHttpUrl()
             val primary = try {
                 withTimeout(primaryVersionTimeoutMs) { fetchVersion(primaryUrl) }
             } catch (e: TimeoutCancellationException) {

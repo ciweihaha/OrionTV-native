@@ -57,6 +57,43 @@ class AggApiTest {
     }
 
     @Test
+    fun `videoList defaults to vod-api base url`() {
+        // v2.0.18：点播主聚合是 vod.json 的 vod-api（44站合一），不再是 agg。
+        val seenHosts = mutableListOf<String>()
+        val (client, _) = countingClient { request, _ ->
+            seenHosts += request.url.host
+            responseFor(request, 200, """{"code":1,"list":[]}""")
+        }
+        runBlocking { api(client).videoList(1, 1) }
+        assertEquals(listOf("live.ciweihaha.win"), seenHosts)
+    }
+
+    @Test
+    fun `videoDetail with explicit agg base url uses agg host`() {
+        // v2.0.18：详情第 2 腿显式走 agg（38 站备用）。
+        val seenHosts = mutableListOf<String>()
+        val (client, _) = countingClient { request, _ ->
+            seenHosts += request.url.host
+            responseFor(request, 200, """{"code":1,"list":[]}""")
+        }
+        runBlocking { api(client).videoDetail("s~1", AggApi.AGG_BASE_URL) }
+        assertEquals(listOf("ysp.ciweihaha.win"), seenHosts)
+    }
+
+    @Test
+    fun `version still uses agg base url`() {
+        // v2.0.18：版本端点只在 agg Worker 上有，不跟点播主聚合走。
+        val seenHosts = mutableListOf<String>()
+        val (client, _) = countingClient { request, _ ->
+            seenHosts += request.url.host
+            responseFor(request, 200, """{"version":"2.0.18"}""")
+        }
+        val version = runBlocking { api(client).version() }
+        assertEquals("2.0.18", version)
+        assertEquals(listOf("ysp.ciweihaha.win"), seenHosts)
+    }
+
+    @Test
     fun `4xx is not retried and throws IOException`() {
         val (client, calls) = countingClient { request, _ ->
             responseFor(request, 404, "")

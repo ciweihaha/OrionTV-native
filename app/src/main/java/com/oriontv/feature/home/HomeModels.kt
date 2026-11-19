@@ -53,7 +53,7 @@ data class HomeRow(
 /** 首页 7 个点播分类（ui-design.md §5.1；CMS 类型对照 plan 附录 B）。 */
 enum class HomeCategory(
     val title: String,
-    /** agg 的 t：1 电影、2 电视剧、3 动漫、4 综艺；null = 豆瓣/本地模式。 */
+    /** 聚合 CMS 的 t：1 电影、2 电视剧、3 动漫、4 综艺；null = 豆瓣/本地模式。 */
     val cmsType: Int?,
     /** 豆瓣模式的 type：movie | tv。 */
     val doubanType: String?,
@@ -71,7 +71,7 @@ enum class HomeCategory(
     TOP250("豆瓣 Top250", null, "movie", "top250", null),
 }
 
-/** agg 项 → 首页卡片（plan 附录 B：source 保留 "agg"，进详情走标题搜索）。 */
+/** 聚合项 → 首页卡片（plan 附录 B：source 保留 "agg"，进详情走标题搜索）。 */
 fun mapAggItem(item: AggVideoItem): HomeRowItem = HomeRowItem(
     id = item.vod_id.orEmpty(),
     source = "agg",

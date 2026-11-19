@@ -62,7 +62,7 @@ class DetailRepository @Inject constructor(
     ) = withContext(ioDispatcher) {
         val baseUrl = settingsRepository.currentApiBaseUrl()
         if (baseUrl.isBlank()) {
-            // 未配服务器：点播走硬编码 agg 直连（用户已核对：聚合地址 37 个站），
+            // 未配服务器：点播走硬编码聚合直连（用户已核对：聚合地址 44 个站），
             // 不再报“未配置服务器地址”挡详情；登录/收藏仍走 MoonTV（见 AuthRepository），不在此处改。
             searchDetailViaAgg(q, id, onUpdate)
             return@withContext
@@ -80,24 +80,30 @@ class DetailRepository @Inject constructor(
                 preferredError = e
             }
         }
-        if (preferredResults.isNotEmpty()) {
-            onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), false)
+        // v2.0.18：详情页绝不能出现 0 集——首选源结果里只有带集数的才先发；
+        // 全是 0 集时不先发（等全量/聚合回落找可播的），免得 ViewModel 把 0 集
+        // 结果钉死为当前源（见 DetailViewModel.resolveCurrentOnUpdate）。
+        val preferredPlayable = preferredResults.filter { it.episodes.isNotEmpty() }
+        if (preferredPlayable.isNotEmpty()) {
+            onUpdate(DetailSearchLogic.dedupeBySource(preferredPlayable), false)
         }
         // 全量搜索：资源列表 → 逐源单搜（并发 5）→ 精确标题匹配 → 按源去重 → 合并。
         // B5-P1-3：fullSearch 的 120 秒总超时是 TimeoutCancellationException
         //（CE 子类），不是用户取消——有首选源结果时保留并标记加载完成，
         // 无结果时转普通 IOException，让 DetailViewModel 落可重试的 error 态。
         // v2.0.17：MoonTV 全量搜索失败（未登录 401、网络错、超时）时不再直接抛——
-        // 有首选源结果就发首选源结果；没有就回落 agg 直取（agg 不用登录）；
-        // agg 也没结果时才抛回原始错误（超时仍转“详情搜索超时”，不报成“没内容”）。
+        // 有首选源可播结果就发它；没有就回落聚合直取（聚合不用登录）；
+        // 聚合也没结果时才抛回原始错误（超时仍转“详情搜索超时”，不报成“没内容”）。
+        // v2.0.18：首选源结果全是 0 集时同样不直接发——走聚合回落找可播的，
+        // 聚合也没有才报原始错误 / “没有找到相关内容”，详情页不展示 0 集。
         val merged = try {
             fullSearch(baseUrl, q, preferredResults)
         } catch (e: TimeoutCancellationException) {
-            if (preferredResults.isNotEmpty()) {
-                onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
+            if (preferredPlayable.isNotEmpty()) {
+                onUpdate(DetailSearchLogic.dedupeBySource(preferredPlayable), true)
                 return@withContext
             }
-            val aggResults = tryAggDetailFallback(q, id)
+            val aggResults = tryAggregationDetailFallback(q, id)
             if (aggResults.isNotEmpty()) {
                 onUpdate(aggResults, true)
                 return@withContext
@@ -106,41 +112,37 @@ class DetailRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (preferredResults.isNotEmpty()) {
-                onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
+            if (preferredPlayable.isNotEmpty()) {
+                onUpdate(DetailSearchLogic.dedupeBySource(preferredPlayable), true)
                 return@withContext
             }
-            val aggResults = tryAggDetailFallback(q, id)
+            val aggResults = tryAggregationDetailFallback(q, id)
             if (aggResults.isNotEmpty()) {
                 onUpdate(aggResults, true)
                 return@withContext
             }
             throw e
         }
-        if (merged.isNotEmpty()) {
-            onUpdate(merged, true)
-        } else if (preferredResults.isEmpty()) {
-            // 第 76 轮 v2.0.14：MoonTV 全量搜索 0 条时回落 agg 直取——首页卡片
-            // 本来就来自 agg（vod_id 是 `站点~编号`），MoonTV 的源里没有该标题
-            // 时详情直接报“没有找到相关内容”，就是用户报的“很多点进去没有资源”。
-            // agg 回落也失败/空时才按原样报错（网络错原样抛，不报成“没内容”）。
-            val aggResults = tryAggDetailFallback(q, id)
-            if (aggResults.isNotEmpty()) {
-                onUpdate(aggResults, true)
-            } else {
-                throw preferredError ?: IllegalStateException("没有找到相关内容")
-            }
+        // v2.0.18：全量结果里只有带集数的才发——merged 非空但全是 0 集时
+        // 同样走聚合回落（旧实现直接发 merged，详情页就停在 0 集源上，
+        // 聚合回落根本不会触发）；聚合也没有可播的才报错。
+        val mergedPlayable = merged.filter { it.episodes.isNotEmpty() }
+        if (mergedPlayable.isNotEmpty()) {
+            onUpdate(mergedPlayable, true)
+            return@withContext
         }
-        // 首选源已有结果但全量搜索 0 条：保持首选源结果，标记加载完成。
-        if (preferredResults.isNotEmpty() && merged.isEmpty()) {
-            onUpdate(DetailSearchLogic.dedupeBySource(preferredResults), true)
+        val aggResults = tryAggregationDetailFallback(q, id)
+        if (aggResults.isNotEmpty()) {
+            onUpdate(aggResults, true)
+            return@withContext
         }
+        throw preferredError ?: IllegalStateException("没有找到相关内容")
     }
 
     /**
-     * 未配服务器时的详情回落：agg 直连（`ac=detail`，见 AggApi）。
-     * ① id 直取：agg 卡片的 vod_id 是 `站点~编号`；② id 不是 agg 形式
-     *（豆瓣卡片的 id 就是标题、收藏/记录里的服务端 id）时按标题在 agg 里搜，
+     * 未配服务器时的详情回落：聚合直连（`ac=detail`，见 AggApi）。
+     * ① id 直取：聚合卡片的 vod_id（agg 是 `站点~编号`，vod-api 是 `站号_编号` / `M_...`）；
+     * ② id 不是聚合形式时（豆瓣卡片的 id 就是标题、收藏/记录里的服务端 id）按标题在聚合里搜，
      * 精确标题匹配才认；两路都空或网络失败时先用进程内缓存兜底（第 72 轮，
      * 见类头注释），缓存也没有才报“没有找到相关内容”（网络错原样抛，
      * 由 DetailViewModel 落“加载失败，请检查网络后重试”）。
@@ -185,17 +187,21 @@ class DetailRepository @Inject constructor(
     }
 
     /**
-     * agg 详情拉取（searchDetailViaAgg 的网络部分）：① id 直取（`ac=detail`），
-     * ② id 不是 agg 形式时按标题在 agg 里搜、精确标题匹配才认；两路都空
+     * 聚合详情拉取（searchDetailViaAgg 的网络部分）：① id 直取（`ac=detail`），
+     * ② id 不是聚合形式时按标题在聚合里搜、精确标题匹配才认；两路都空
      * 返回空列表（由调用方决定是报“没有找到相关内容”还是用缓存兜底）。
      * 网络错原样抛（调用方落“加载失败，请检查网络后重试”）。
      */
     /**
-     * v2.0.17：agg 详情回落（失败兜底，不抛错）——MoonTV 全量搜索失败/0 条时
-     * 走 agg 直取（agg 不用登录）；agg 本身失败或空结果时返回空列表，调用方
+     * v2.0.17：聚合详情回落（失败兜底，不抛错）——MoonTV 全量搜索失败/0 条时
+     * 走聚合直取（聚合不用登录）；聚合本身失败或空结果时返回空列表，调用方
      * 再决定报什么错。取消异常原样重抛。
+     * v2.0.18：两腿——第 1 腿 vod-api（44站合一，用户要的聚合），第 2 腿 agg
+     *（38 站，备用；vod-api 里没有的片 agg 可能有，如《土豆屋：开始》）。
+     * 任一腿网络失败不拦另一腿；只有两腿都失败才抛错（调用方据此区分
+     * “网络错”与“没有找到相关内容”）。
      */
-    private suspend fun tryAggDetailFallback(q: String, id: String?): List<SearchResult> =
+    private suspend fun tryAggregationDetailFallback(q: String, id: String?): List<SearchResult> =
         try {
             fetchAggDetailResults(q, id)
         } catch (e: CancellationException) {
@@ -204,14 +210,46 @@ class DetailRepository @Inject constructor(
             emptyList()
         }
 
+    /**
+     * 聚合详情拉取（两腿：vod-api → agg，见 [tryAggregationDetailFallback]）：
+     * 任一腿有可播结果即返回；两腿都空返回空列表；只有两腿都网络失败才抛错
+     *（调用方据此区分“网络错”与“没有找到相关内容”）；取消原样重抛。
+     */
     private suspend fun fetchAggDetailResults(
         q: String,
         id: String?,
     ): List<SearchResult> {
+        var lastError: Exception? = null
+        var anyLegSucceeded = false
+        for (baseUrl in listOf(AggApi.VOD_BASE_URL, AggApi.AGG_BASE_URL)) {
+            val results = try {
+                fetchAggregationDetailResults(q, id, baseUrl).also { anyLegSucceeded = true }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (lastError == null) lastError = e
+                emptyList()
+            }
+            if (results.isNotEmpty()) return results
+        }
+        if (!anyLegSucceeded && lastError != null) throw lastError
+        return emptyList()
+    }
+
+    /**
+     * 单个聚合上的详情拉取：① id 直取（`ac=detail`），② id 不是聚合形式时
+     * 按标题在该聚合里搜、精确标题匹配才认。详情无可播集数时返回空列表
+     *（不发 0 集结果）；标题搜 / 详情取的网络错原样抛（调用方按腿汇总）。
+     */
+    private suspend fun fetchAggregationDetailResults(
+        q: String,
+        id: String?,
+        baseUrl: String,
+    ): List<SearchResult> {
         var detailItem: AggDetailItem? = null
-        if (!id.isNullOrBlank() && id.contains("~")) {
+        if (DetailSearchLogic.isAggregationId(id)) {
             detailItem = try {
-                aggApi.videoDetail(id).list?.firstOrNull()
+                aggApi.videoDetail(id!!, baseUrl).list?.firstOrNull()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -219,11 +257,11 @@ class DetailRepository @Inject constructor(
             }
         }
         if (detailItem == null) {
-            val candidates = aggApi.searchVideos(q).list.orEmpty()
+            val candidates = aggApi.searchVideos(q, baseUrl).list.orEmpty()
             val match = DetailSearchLogic.findAggTitleMatch(candidates, q)
             val matchId = match?.vod_id
             detailItem = if (!matchId.isNullOrBlank()) {
-                aggApi.videoDetail(matchId).list?.firstOrNull()
+                aggApi.videoDetail(matchId, baseUrl).list?.firstOrNull()
             } else {
                 null
             }
@@ -265,7 +303,7 @@ class DetailRepository @Inject constructor(
             // B14-P2-3：资源列表拉取失败时直接返回首选源结果——其余三条路
             // 都走了 dedupeBySource，这里漏了：searchDetail 随后
             // onUpdate(merged, true) 原样发出，同源 chip 会重复出现。
-            return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults)
+            return@coroutineScope DetailSearchLogic.dedupeBySourcePreferPlayable(preferredResults)
         }
         val semaphore = Semaphore(DetailSearchLogic.SEARCH_CONCURRENCY_LIMIT)
         // B25-P2-1：逐源失败只记首个异常（区分“返回空列表”与“抛错”）——
@@ -281,7 +319,7 @@ class DetailRepository @Inject constructor(
         // 降级返回（首选源已搜到结果时资源列表理论上非空，纯防御）。
         if (sites.isEmpty()) {
             if (preferredResults.isNotEmpty()) {
-                return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults)
+                return@coroutineScope DetailSearchLogic.dedupeBySourcePreferPlayable(preferredResults)
             }
             throw IllegalStateException("服务器未配置视频源")
         }
@@ -310,8 +348,9 @@ class DetailRepository @Inject constructor(
         }
         // 全量路径只留精确标题匹配的结果（RN 同款：搜“庆余年”不带回“庆余年第二季”）。
         val exact = DetailSearchLogic.filterExactTitle(all, q)
-        // 合并：首选源结果在前，其余源按全量搜索顺序补；按源去重。
-        return@coroutineScope DetailSearchLogic.dedupeBySource(preferredResults + exact)
+        // 合并：首选源结果在前，其余源按全量搜索顺序补；按源去重，
+        // 同源多条时优先留可播的（v2.0.18：0 集首选结果不能挡掉同源可播结果）。
+        return@coroutineScope DetailSearchLogic.dedupeBySourcePreferPlayable(preferredResults + exact)
     }
 }
 
@@ -328,12 +367,21 @@ object DetailSearchLogic {
     const val AGG_DETAIL_CACHE_TTL_MS = 30 * 60 * 1000L
 
     /**
-     * agg 详情缓存的键（可单测，第 72 轮）：agg 复合 id（`站点~编号`）直接
-     * 按 id 区分——同一部片换站点的 id 不同，各自缓存；非 agg 形式 id
+     * 聚合 id 判断（可单测，v2.0.18）：agg 是 `站点~编号`，vod-api 是
+     * `站号_编号`（如 `45_53656`）或多站合并的 `M_...`；豆瓣卡片的 id
+     * 就是标题、MoonTV 服务端 id 一般是纯数字，都不含 `~` 与 `_`。
+     * 含 `_` 的 MoonTV id 误判也无害——聚合详情取不到即落到标题搜索。
+     */
+    fun isAggregationId(id: String?): Boolean =
+        !id.isNullOrBlank() && (id.contains("~") || id.contains("_"))
+
+    /**
+     * agg 详情缓存的键（可单测，第 72 轮）：聚合 id（`站点~编号` / `站号_编号` /
+     * `M_...`）直接按 id 区分——同一部片换站点的 id 不同，各自缓存；非聚合形式 id
      *（豆瓣卡片的 id 就是标题）按归一化标题区分。
      */
     fun aggDetailCacheKey(q: String, id: String?): String =
-        if (!id.isNullOrBlank() && id.contains("~")) "agg:id:$id"
+        if (isAggregationId(id)) "agg:id:$id"
         else "agg:q:${MoonTvApi.normalizeTitle(q)}"
 
     /**
@@ -385,6 +433,24 @@ object DetailSearchLogic {
     fun dedupeBySource(results: List<SearchResult>): List<SearchResult> {
         val seen = LinkedHashSet<String>()
         return results.filter { seen.add(it.source) }
+    }
+
+    /**
+     * 按源去重（可播优先，可单测，v2.0.18）：同一源多条结果优先留带集数的那条——
+     * 首选源 0 集结果不能把全量搜索里同源可播的结果挡掉，否则详情页只剩 0 集源可选。
+     * 同源全是 0 集时留第一条；顺序按首次出现的源排。
+     */
+    fun dedupeBySourcePreferPlayable(results: List<SearchResult>): List<SearchResult> {
+        val best = LinkedHashMap<String, SearchResult>()
+        for (result in results) {
+            val current = best[result.source]
+            if (current == null) {
+                best[result.source] = result
+            } else if (current.episodes.isEmpty() && result.episodes.isNotEmpty()) {
+                best[result.source] = result
+            }
+        }
+        return best.values.toList()
     }
 
     /**

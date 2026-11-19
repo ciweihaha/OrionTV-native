@@ -166,6 +166,24 @@ class DetailViewModel @Inject constructor(
         ): Boolean = toggleKey == currentKey && toggleGeneration == currentGeneration
 
         /**
+         * v2.0.18：新一批搜索结果到达时的当前源选择（可单测）——已有可播当前源
+         * 就保留（换源不丢集数、用户手动切的源不动）；当前源 0 集（或还没有）
+         * 时切到新结果里第一个可播的；全网都没可播的才保留原当前源 / 第一位
+         *（这时仓库侧会走“没有找到相关内容”报错，不会长期停在 0 集页）。
+         */
+        internal fun resolveCurrentOnUpdate(
+            current: SearchResult?,
+            results: List<SearchResult>,
+        ): SearchResult? =
+            if (current != null && current.episodes.isNotEmpty()) {
+                current
+            } else {
+                results.firstOrNull { it.episodes.isNotEmpty() }
+                    ?: current
+                    ?: results.firstOrNull()
+            }
+
+        /**
          * B31-P2-1：播放页回传的失败源并入详情页标灰集（可单测）——只并入
          * 本次详情页已知源（state.sources），handle 里万一残留跨片旧值
          * （Detail→Detail 原位替换时 ViewModel 与 SavedStateHandle 同存活，
@@ -229,9 +247,14 @@ class DetailViewModel @Inject constructor(
                     // B4-P2-2：回调里复核代次——旧搜索迟到返回时不再覆盖新搜索的状态。
                     if (gen != generation) return@searchDetail
                     val state = _uiState.value
-                    val current = state.current
-                        ?: results.firstOrNull()
-                        ?: state.current
+                    // v2.0.18：新一批结果到达时，若当前源 0 集但新结果里有可播的，
+                    // 自动切到第一个可播源——详情页绝不能停在“共0集”上（用户报的
+                    // 《土豆屋：开始》就是首批 0 集结果先占住 current，后到的可播源
+                    // 没能把它顶掉；仓库侧已只发可播结果，这里是 UI 层最后一道防线）。
+                    val current = resolveCurrentOnUpdate(
+                        state.current,
+                        results,
+                    ) ?: state.current
                     // B7-P2-6 / 第 6 轮 P2-1：断点集号按当前源集数钳制——记录里的集号可能超出
                     // 当前源（换源/源更新后集数变少），不钳制时点“播放”进错误页。
                     // 只有真正钳动时才重算分组：用户可能正在浏览别的分组视图，别拉回去。

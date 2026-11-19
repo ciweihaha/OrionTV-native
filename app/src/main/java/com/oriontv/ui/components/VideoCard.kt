@@ -14,7 +14,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -81,8 +84,8 @@ fun VideoCard(
                     .matchParentSize()
                     .background(OrionColors.Surface),
             ) {
-                AsyncImage(
-                    model = posterImageRequest(posterUrl),
+                PosterAsyncImage(
+                    posterUrl = posterUrl,
                     contentDescription = title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.matchParentSize(),
@@ -162,4 +165,62 @@ fun posterImageRequest(url: String): ImageRequest {
             }
         }
         .build()
+}
+
+/** 豆瓣图床机子 host（img1/img2/img3/img9…），换机子时只换 host、路径不动。 */
+private val DOUBAN_IMG_HOST_REGEX = Regex("""https?://(img\d+\.doubanio\.com)/""")
+
+/**
+ * 海报加载候选地址（可单测，v2.0.18）：原地址先重试一次（瞬时超时/抖动常一次就好），
+ * 再换豆瓣同图的不同 img 机子（img1/img2/img9 与原 imgN 是同一批 CDN 镜像，
+ * 同一 `/view/photo/.../pXXX.jpg` 在哪台上都是一张图）；非豆瓣地址只重试原地址一次；
+ * 空地址返回空列表（调用方直接显示占位）。
+ */
+fun posterLoadAttempts(url: String): List<String> {
+    if (url.isBlank()) return emptyList()
+    val host = DOUBAN_IMG_HOST_REGEX.find(url)?.groupValues?.getOrNull(1)
+        ?: return listOf(url, url)
+    val alternates = listOf("img1.doubanio.com", "img2.doubanio.com", "img9.doubanio.com")
+        .filter { it != host }
+    return listOf(url, url) + alternates.take(2).map { alt -> url.replaceFirst(host, alt) }
+}
+
+/**
+ * 带重试 + 换图床的海报加载（v2.0.18）：
+ * 豆瓣图床某台 CDN 机子偶发不可达/超时时（如 2026-11-19 热门行 4 张 img3 全灰、img2 全有），
+ * 旧 AsyncImage 只试一次、失败就永久灰框。现按 [posterLoadAttempts] 的候选顺序逐个试，
+ * 全部失败才显示“暂无海报”占位，不再是光秃秃的灰框；url 变化时重试状态复位。
+ */
+@Composable
+fun PosterAsyncImage(
+    posterUrl: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    val attempts = remember(posterUrl) { posterLoadAttempts(posterUrl) }
+    var attemptIndex by remember(posterUrl) { mutableIntStateOf(0) }
+    var loadFailed by remember(posterUrl) { mutableStateOf(false) }
+    if (attempts.isEmpty() || loadFailed) {
+        Box(
+            modifier = modifier.background(OrionColors.Surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "暂无海报",
+                style = OrionTextStyles.Small,
+                color = OrionColors.TextSecondary,
+            )
+        }
+    } else {
+        AsyncImage(
+            model = posterImageRequest(attempts[attemptIndex]),
+            contentDescription = contentDescription,
+            contentScale = contentScale,
+            onError = {
+                if (attemptIndex + 1 < attempts.size) attemptIndex++ else loadFailed = true
+            },
+            modifier = modifier,
+        )
+    }
 }

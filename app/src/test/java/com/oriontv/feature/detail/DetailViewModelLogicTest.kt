@@ -1,9 +1,45 @@
 package com.oriontv.feature.detail
 
+import com.oriontv.data.api.SearchResult
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class DetailViewModelLogicTest {
+
+    private fun result(source: String, episodes: Int) = SearchResult(
+        id = source,
+        title = "片名",
+        poster = "",
+        episodes = (1..episodes).map { "http://x/$it.m3u8" },
+        source = source,
+        source_name = "源$source",
+    )
+
+    @Test
+    fun `resolveCurrentOnUpdate switches away from zero-episode current to playable`() {
+        // v2.0.18：当前源 0 集时，有可播的就自动切过去，详情页不留“共0集”。
+        val zero = result("r1", 0)
+        val playable = result("r2", 3)
+        assertEquals(playable, DetailViewModel.resolveCurrentOnUpdate(zero, listOf(zero, playable)))
+        // 还没有当前源时取第一个可播的（0 集排前面也不认）。
+        assertEquals(playable, DetailViewModel.resolveCurrentOnUpdate(null, listOf(zero, playable)))
+    }
+
+    @Test
+    fun `resolveCurrentOnUpdate keeps playable current`() {
+        // v2.0.18：已有可播当前源就保留——用户手动切的源、断点集都不动。
+        val current = result("r1", 2)
+        val other = result("r2", 5)
+        assertEquals(current, DetailViewModel.resolveCurrentOnUpdate(current, listOf(other, current)))
+    }
+
+    @Test
+    fun `resolveCurrentOnUpdate falls back when nothing is playable`() {
+        // 全网都没可播的：保留原当前源（仓库侧会报“没有找到相关内容”，不长期停在 0 集页）。
+        val zero = result("r1", 0)
+        assertEquals(zero, DetailViewModel.resolveCurrentOnUpdate(zero, listOf(zero)))
+        assertEquals(zero, DetailViewModel.resolveCurrentOnUpdate(null, listOf(zero)))
+    }
 
     @Test
     fun `not found maps to keyword hint not network error`() {

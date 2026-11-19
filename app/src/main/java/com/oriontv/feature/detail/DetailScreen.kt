@@ -38,7 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.delay
 import androidx.tv.material3.Text
-import coil3.compose.AsyncImage
+import com.oriontv.ui.components.PosterAsyncImage
 import com.oriontv.core.focus.preferredFocus
 import com.oriontv.core.focus.requestFocusWithRetry
 import com.oriontv.data.repo.DetailSearchLogic
@@ -48,7 +48,6 @@ import com.oriontv.ui.components.LoadingAnimation
 import com.oriontv.ui.components.OrionToast
 import com.oriontv.ui.components.PrimaryButton
 import com.oriontv.ui.components.SecondaryButton
-import com.oriontv.ui.components.posterImageRequest
 import com.oriontv.ui.theme.OrionColors
 import com.oriontv.ui.theme.OrionDimens
 import com.oriontv.ui.theme.OrionTextStyles
@@ -220,8 +219,8 @@ private fun DetailScreenContent(
                                 .aspectRatio(2f / 3f)
                                 .clip(RoundedCornerShape(OrionDimens.PanelCornerRadius)),
                         ) {
-                            AsyncImage(
-                                model = posterImageRequest(current.poster),
+                            PosterAsyncImage(
+                                posterUrl = current.poster,
                                 contentDescription = current.title,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.matchParentSize(),
