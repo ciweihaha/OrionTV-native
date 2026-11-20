@@ -64,7 +64,7 @@ fun javaStringLiteral(value: String): String {
 
 android {
     namespace = "com.oriontv"
-    // compileSdk 37.2（2026.09.00 BOM 起的 Compose 1.12.1 / Coil 3.6.3 /
+    // compileSdk 37.2（2026.11.01 BOM 起的 Compose 1.13.0 / Coil 3.6.3 /
     // core-ktx 1.19.1 等库的 aar-metadata 要求 minCompileSdk=37；取最新
     // 小版本 37.2。targetSdk 仍是 35，不引入新版运行时行为变更）。
     // AGP 9 新 DSL：compileSdk 用 release(37) { minorApiLevel = 2 } 写法。
@@ -78,8 +78,8 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10722
-        versionName = "2.0.19"
+        versionCode = 10723
+        versionName = "2.0.20"
 
         // 内置 MoonTV 账号密码（第 75 轮）：构建时注入；空串 = 未配置，内置登录关闭。
         // 密码嵌进 APK 二进制（不在 git 里），这是内置账号固有的取舍，用户已确认要内置登录。
