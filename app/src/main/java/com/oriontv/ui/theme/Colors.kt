@@ -44,4 +44,10 @@ object OrionColors {
 
     /** 旧 Error。 */
     val Error = Color(0xFFE57373)
+
+    /** 百度输入法电视版首选候选蓝底（v2.0.21 第 80 轮百度样式键盘）。 */
+    val BaiduBlue = Color(0xFF306EFF)
+
+    /** 百度样式键盘面板灰（深色主题下的灰色面板，比 Surface 略亮一档）。 */
+    val KeyboardPanel = Color(0xFF262B34)
 }

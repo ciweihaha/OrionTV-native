@@ -273,3 +273,146 @@ class PinyinNineKeyComposer(
         cycleIndex = 0
     }
 }
+
+// ---------------------------------------------------------------------------
+// 百度输入法电视版样式（v2.0.21 第 80 轮）：九键 T9 数字码 + 分词 + 英文 T9。
+// 只新增纯函数，不改上面任何现有逻辑与词典：
+// - 全键中文仍走 appendLetter/displayCandidates/selectCandidateStep；
+// - 九键中文不再走多击（PinyinNineKeyComposer 保留、只供旧单测）：数字键直接
+//   攒数字码，[segmentDigitCodeAlternatives] 切音节，再走同一套 displayCandidates；
+// - 九键英文走 T9 词表（2288 -> CCTV），不用多击逐字母敲；
+// - 分词键在两种切分间轮换：全键是字母切分歧义（如 xian -> xian / xi+an），
+//   九键是数字码切分歧义（如 626 -> man / mao / nao）。
+// ---------------------------------------------------------------------------
+
+/** 分词返回的切分种数上限（再多用户也翻不过来）。 */
+private const val MAX_SEGMENTATION_ALTERNATIVES = 8
+
+/**
+ * 字母串的全部合法切分（分词用）：DFS 按最长音节优先枚举；
+ * 首个即贪心 [segmentPinyin] 的结果（全是完整音节时），其后是其他切法。
+ * 拼不成完整音节时返回空列表。
+ */
+fun segmentPinyinAlternatives(input: String, limit: Int = MAX_SEGMENTATION_ALTERNATIVES): List<List<String>> {
+    if (input.isEmpty()) return emptyList()
+    val out = mutableListOf<List<String>>()
+    fun dfs(pos: Int, acc: List<String>) {
+        if (out.size >= limit) return
+        if (pos == input.length) {
+            out.add(acc)
+            return
+        }
+        for (len in minOf(6, input.length - pos) downTo 1) {
+            val piece = input.substring(pos, pos + len)
+            if (isValidSyllable(piece)) dfs(pos + len, acc + piece)
+        }
+    }
+    dfs(0, emptyList())
+    return out
+}
+
+/**
+ * 九键中文 T9 常用词（按音节列出）：数字码切分歧义时，组成常用词的切分优先。
+ * 数字码只看每音节首字母的键位，常用度优先的单音节排序常切错词——如
+ * 887484826 按单字常用度是 tu-qiu-huan（qiu/huan 单字更常用），但用户要的是
+ * tu-shu-guan（图书馆）。有常用词兜底时默认切分即该词；旧的常用度切分仍留在
+ * 候选切分里，分词键可轮换回去。只影响九键数字码的默认切分，不动全键行为。
+ */
+val T9_COMMON_WORDS: List<List<String>> = listOf(
+    listOf("tu", "shu", "guan"),
+    listOf("tu", "shu", "guan", "yuan"),
+    listOf("zhong", "guo"),
+    listOf("dian", "ying"),
+    listOf("dian", "shi"),
+    listOf("dian", "shi", "ju"),
+    listOf("yin", "yue"),
+    listOf("xin", "wen"),
+    listOf("ti", "yu"),
+    listOf("dong", "hua"),
+    listOf("dong", "hua", "pian"),
+    listOf("zong", "yi"),
+    listOf("xi", "ju"),
+    listOf("ai", "qing"),
+    listOf("dong", "zuo"),
+    listOf("ke", "huan"),
+    listOf("ju", "qing"),
+    listOf("li", "shi"),
+    listOf("ji", "lu", "pian"),
+    listOf("shao", "nian"),
+    listOf("er", "tong"),
+    listOf("gao", "xiao"),
+    listOf("mei", "shi"),
+    listOf("jian", "kang"),
+    listOf("cai", "jing"),
+    listOf("jun", "shi"),
+    listOf("xiao", "shuo"),
+    listOf("ming", "xing"),
+    listOf("ge", "qu"),
+    listOf("lan", "qiu"),
+    listOf("zu", "qiu"),
+    listOf("xiao", "cheng", "liang", "fang"),
+)
+
+/**
+ * 九键数字码的全部合法切分（九键中文 T9 + 分词用）：
+ * 每段数字按 [PinyinTable.forDigits] 取音节（常用度优先），DFS 最长优先枚举；
+ * 排序：常用词切分（[T9_COMMON_WORDS]，如 887484826 -> tu-shu-guan）在先，
+ * 其后是 [PinyinTable.segment] 的默认切分（常用度优先、音节数最少），再后是
+ * 其他切法。数字含 0/1 或切不全时返回空列表。
+ * 例：887484826 -> [tu, shu, guan]（图书馆），626 -> man / mao / nao。
+ */
+fun segmentDigitCodeAlternatives(digits: String, limit: Int = MAX_SEGMENTATION_ALTERNATIVES): List<List<String>> {
+    if (digits.isEmpty() || digits.any { it !in '2'..'9' }) return emptyList()
+    val out = mutableListOf<List<String>>()
+    fun dfs(pos: Int, acc: List<String>) {
+        if (out.size >= limit) return
+        if (pos == digits.length) {
+            out.add(acc)
+            return
+        }
+        for (len in minOf(6, digits.length - pos) downTo 1) {
+            val cands = PinyinTable.forDigits(digits.substring(pos, pos + len))
+            for (s in cands) {
+                dfs(pos + len, acc + s)
+                if (out.size >= limit) return
+            }
+        }
+    }
+    dfs(0, emptyList())
+    if (out.isEmpty()) return emptyList()
+    // 常用词优先：该数字码拼得出常用词时，词的切分排首位。
+    val wordFirst = T9_COMMON_WORDS.filter { PinyinTable.encode(it.joinToString("")) == digits }
+    val def = PinyinTable.segment(digits).let {
+        if (it.covered == digits.length) it.syllables else null
+    }
+    val ordered = (wordFirst + listOfNotNull(def) + out).distinct()
+    return ordered.take(limit)
+}
+
+/**
+ * 九键英文 T9 词表（常用词 + 电视搜索高频词，显示用原大小写）：
+ * 按 [PinyinTable.encode] 的数字码查词；九键英文按数字出词，不用多击逐字母敲。
+ * 2288 -> CCTV 是必保项（CCTV 在表首位）；词不在表里时无候选，不编造。
+ */
+val T9_ENGLISH_WORDS: List<String> = listOf(
+    "CCTV", "TV",
+    "movie", "music", "news", "sports", "sport", "live", "love", "good",
+    "home", "world", "china", "film", "show", "star", "song", "kids", "drama",
+    "comedy", "action", "cartoon", "games", "game", "food", "travel", "health",
+    "science", "history", "nature", "animal", "baby", "funny", "dance", "play",
+    "book", "cook", "car", "dog", "cat", "sun", "moon", "sea", "city", "school",
+    "family", "friend", "happy", "night", "day", "water", "fire", "girl", "boy",
+    "man", "woman", "year", "time", "life",
+)
+
+private val T9_ENGLISH_BY_DIGITS: Map<String, List<String>> by lazy {
+    // PinyinTable.encode 只认小写字母（大写会落到 else -> 9），先转小写再编码；
+    // 显示仍用词表原大小写（CCTV / TV）。
+    T9_ENGLISH_WORDS.groupBy { PinyinTable.encode(it.lowercase()) }
+}
+
+/** 九键英文 T9 候选词：数字码对应的全部词（按词表顺序）；无匹配或含 0/1 时空列表。 */
+fun t9EnglishCandidates(digits: String): List<String> {
+    if (digits.isEmpty() || digits.any { it !in '2'..'9' }) return emptyList()
+    return T9_ENGLISH_BY_DIGITS[digits] ?: emptyList()
+}

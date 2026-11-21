@@ -78,7 +78,7 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10724
+        versionCode = 10725
         versionName = "2.0.21"
 
         // 内置 MoonTV 账号密码（第 75 轮）：构建时注入；空串 = 未配置，内置登录关闭。

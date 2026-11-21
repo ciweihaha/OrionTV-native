@@ -405,7 +405,7 @@ fun SearchScreen(
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
-                // 左栏：屏上键盘（A–Z 字母键盘，见 OnScreenKeyboard）。
+                // 左栏：屏上键盘（百度电视版样式：QWERTY 全键 / 9 键 T9，见 OnScreenKeyboard）。
                 if (showKeyboard) {
                     // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
                     // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
