@@ -69,11 +69,118 @@ class PinyinInputTest {
     }
 
     @Test
-    fun `连续拼词旧音节合法时新字母一来先把首选字上屏`() {
-        // 打 zhong 再打 g：g 不能接在 zhong 后面，先把“中”上屏，再用 g 开新音节
-        assertEquals(AppendLetterResult("g", "中"), appendLetter("zhong", 'g'))
-        // 打 ai 再打 r：同理，先把“爱”上屏
-        assertEquals(AppendLetterResult("r", "爱"), appendLetter("ai", 'r'))
+    fun `连续拼词不再自动上屏半路的首选字`() {
+        // 第 79 轮改：打 zhong 再打 g，g 开新音节，“中”不再自动上屏，等打完一起选
+        assertEquals(AppendLetterResult("zhongg", null), appendLetter("zhong", 'g'))
+        assertEquals(AppendLetterResult("air", null), appendLetter("ai", 'r'))
+        // 一整串 zhongguo 一路攒下来，全程不提交
+        var buffer = ""
+        for (ch in "zhongguo") {
+            val r = appendLetter(buffer, ch)
+            assertNull(r.commit)
+            buffer = r.buffer
+        }
+        assertEquals("zhongguo", buffer)
+    }
+
+    @Test
+    fun `拼音串贪心切音节`() {
+        assertEquals(listOf("zhong", "guo"), segmentPinyin("zhongguo"))
+        assertEquals(listOf("xian"), segmentPinyin("xian"))
+        assertEquals(listOf("xiao", "cheng", "liang", "fang"), segmentPinyin("xiaochengliangfang"))
+        assertEquals(listOf("zhong", "g"), segmentPinyin("zhongg"))
+        assertEquals(listOf("zx"), segmentPinyin("zx"))
+        assertEquals(emptyList<String>(), segmentPinyin(""))
+    }
+
+    @Test
+    fun `多音节首选词`() {
+        assertEquals("中国", phraseFirstCandidate("zhongguo"))
+        // 注意：首选字拼出的不是“小城良方”——cheng 首选是橙（城排第 4），
+        // liang 的 20 个候选里根本没有“良”（词典缺字，见下一测试）；所以
+        // 整词预览只是“首选拼法”，用户要靠逐音节选字才能拼出想要的词。
+        assertEquals("小橙两方", phraseFirstCandidate("xiaochengliangfang"))
+        assertEquals("中", phraseFirstCandidate("zhong"))
+        assertNull(phraseFirstCandidate("zhongg"))
+        assertNull(phraseFirstCandidate("zh"))
+        assertNull(phraseFirstCandidate(""))
+    }
+
+    @Test
+    fun `候选行整词在首位其后是当前待选音节的字`() {
+        val shown = displayCandidates("zhongguo", emptyList())
+        assertEquals("中国", shown[0])
+        // 还没给 zhong 选字，当前待选音节是 zhong，第二个是“中”
+        assertEquals("中", shown[1])
+        assertTrue(shown.contains("重"))
+        // 单音节时没有整词位，与旧行为一致
+        assertEquals("接", displayCandidates("jie", emptyList())[0])
+        assertEquals(emptyList<String>(), displayCandidates("", emptyList()))
+        // 末段还没拼完时不给前面音节出字，先等用户打完
+        assertEquals(emptyList<String>(), displayCandidates("zhongg", emptyList()))
+    }
+
+    @Test
+    fun `点选整词与逐音节选字`() {
+        // 整词位：直接上屏
+        assertEquals("中国" to emptyList<String>(), selectCandidateStep("zhongguo", emptyList(), 0))
+        // 字位：给 zhong 选“中”，还没选完，继续选 guo
+        assertEquals(null to listOf("中"), selectCandidateStep("zhongguo", emptyList(), 1))
+        // 选完 zhong 后整词位仍可点，直接上屏整词
+        assertEquals("中国" to emptyList<String>(), selectCandidateStep("zhongguo", listOf("中"), 0))
+        // 选完 guo 的“过”，整词拼好上屏
+        assertEquals("中过" to emptyList<String>(), selectCandidateStep("zhongguo", listOf("中"), 2))
+        // 单音节：点字直接上屏
+        assertEquals("中" to emptyList<String>(), selectCandidateStep("zhong", emptyList(), 0))
+        assertEquals("重" to emptyList<String>(), selectCandidateStep("zhong", emptyList(), 1))
+        assertEquals(null to emptyList<String>(), selectCandidateStep("zhongg", emptyList(), 0))
+        assertEquals(null to emptyList<String>(), selectCandidateStep("", emptyList(), 0))
+    }
+
+    @Test
+    fun `逐音节选字拼小城良方受词典缺字限制`() {
+        // xiao 选“小”（展示位 1）
+        assertEquals(null to listOf("小"), selectCandidateStep("xiaochengliangfang", emptyList(), 1))
+        // cheng 选“城”（展示位 4：整词位 0，橙 1，成 2，程 3，城 4）
+        assertEquals(
+            null to listOf("小", "城"),
+            selectCandidateStep("xiaochengliangfang", listOf("小"), 4),
+        )
+        // liang 的候选里没有“良”——词典缺字，逐音节也拼不出“小城良方”，
+        // 只能搜“小城”再从结果里找；词典补字是后续工作（见记录）。
+        assertFalse(currentSyllableCandidates("xiaochengliangfang", listOf("小", "城")).contains("良"))
+        assertEquals("小城两方", phrasePreview("xiaochengliangfang", listOf("小", "城")))
+    }
+
+    @Test
+    fun `改拼音字母时保留前面没变的已选字`() {
+        assertEquals(listOf("中"), retainPicked("zhongguo", "zhonggu", listOf("中")))
+        assertEquals(listOf("中"), retainPicked("zhongguo", "zhongguo", listOf("中")))
+        assertEquals(listOf("中", "国"), retainPicked("zhongguo", "zhongguo", listOf("中", "国")))
+        // 只删掉末尾音节、首音节没变，已选字保留
+        assertEquals(listOf("中"), retainPicked("zhongguo", "zhong", listOf("中")))
+        // 前面音节真变了，已选字全丢
+        assertEquals(emptyList<String>(), retainPicked("zhong", "zho", listOf("中")))
+        assertEquals(emptyList<String>(), retainPicked("zhongguo", "chongguo", listOf("中")))
+    }
+
+    @Test
+    fun `空格提交按已选字拼整词`() {
+        assertEquals("中国", commitPickedPhrase("zhongguo", emptyList()))
+        assertEquals("中国", commitPickedPhrase("zhongguo", listOf("中")))
+        assertEquals("中", commitPickedPhrase("zhong", emptyList()))
+        assertNull(commitPickedPhrase("zhongg", emptyList()))
+        assertNull(commitPickedPhrase("zh", emptyList()))
+        assertNull(commitPickedPhrase("", emptyList()))
+    }
+
+    @Test
+    fun `空格语义多音节返回整词否则返回 null`() {
+        assertEquals("中国", commitFirstCandidate("zhongguo"))
+        assertEquals("接", commitFirstCandidate("jie"))
+        assertNull(commitFirstCandidate("zhongg"))
+        assertNull(commitFirstCandidate("zh"))
+        assertNull(commitFirstCandidate(""))
     }
 
     @Test
@@ -102,7 +209,7 @@ class PinyinInputTest {
     }
 
     @Test
-    fun `九键拼音拼出 zhong 再按新键旧音节首选字上屏`() {
+    fun `九键拼音拼出 zhong 空格选首选字上屏`() {
         val composer = PinyinNineKeyComposer()
         // z(9 四下) h(4 两下) o(6 三下)，每步内连按间隔 300ms；
         // o、n 同在 6 键，o 落定须停顿 1 秒以上再按 6。

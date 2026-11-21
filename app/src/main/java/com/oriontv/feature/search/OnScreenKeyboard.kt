@@ -190,6 +190,10 @@ fun OnScreenKeyboard(
     //（多击待定字母落定后才进缓冲，见 PinyinInput.kt）。
     var zhMode by remember { mutableStateOf(true) }
     var pinyinBuffer by remember { mutableStateOf("") }
+    // 第 79 轮：多音节一起选——pickedChars 是已为前面音节选好的字（按音节顺序），
+    // 候选行先给当前待选音节出字，选完最后一个音节整词上屏；改拼音字母时按
+    // retainPicked 保留前面没变的音节的已选字。
+    var pickedChars by remember { mutableStateOf<List<String>>(emptyList()) }
     val nineKeyComposer = remember { PinyinNineKeyComposer() }
     // 第 76 轮 v2.0.14：拼写器是 remember 里的普通对象（非 State）——中文 9 键
     // 按数字只改拼写器内部状态，大多不触发 emit（只有旧音节落定上屏时才 emit），
@@ -206,6 +210,7 @@ fun OnScreenKeyboard(
     LaunchedEffect(query) {
         if (query != lastEmittedQuery) {
             pinyinBuffer = ""
+            pickedChars = emptyList()
             nineKeyComposer.reset()
             bumpComposingTick()
             nineKey.reset()
@@ -221,31 +226,38 @@ fun OnScreenKeyboard(
     @Suppress("UNUSED_EXPRESSION")
     composingTick
     val composingText = if (nineKeyMode) nineKeyComposer.composingText else pinyinBuffer
-    val candidates = if (zhMode) getCandidates(composingText) else emptyList()
+    // 第 79 轮：多音节一起选——展示顺序：整词预览在首位（仅多音节时），其后是当前待选音节的字。
+    val candidates = if (zhMode) displayCandidates(composingText, pickedChars) else emptyList()
 
-    /** 候选行点选：第 index 个字上屏，清缓冲。 */
+    /** 候选行点选：整词位直接上屏；字位记下该字，未选完继续选下一音节，选完整词上屏；清缓冲与已选字。 */
     fun commitCandidate(index: Int) {
-        val ch = selectCandidate(composingText, index) ?: return
-        if (nineKeyMode) {
-            nineKeyComposer.reset()
-            bumpComposingTick()
+        val (text, nextPicked) = selectCandidateStep(composingText, pickedChars, index)
+        if (text != null) {
+            if (nineKeyMode) {
+                nineKeyComposer.reset()
+                bumpComposingTick()
+            } else {
+                pinyinBuffer = ""
+            }
+            pickedChars = emptyList()
+            nineKey.reset()
+            emit(query + text)
         } else {
-            pinyinBuffer = ""
+            pickedChars = nextPicked
         }
-        nineKey.reset()
-        emit(query + ch)
     }
 
-    /** 全键档字母键：中文走拼音缓冲，英文直接上屏（小写，与旧行为一致）。 */
+    /** 全键档字母键：中文走拼音缓冲（只攒字母、不自动上屏），英文直接上屏（小写，与旧行为一致）。 */
     fun onLetterKey(ch: Char) {
         val letter = ch.lowercaseChar()
         if (!zhMode) {
             emit(query + letter)
             return
         }
-        val r = appendLetter(pinyinBuffer, letter)
-        r.commit?.let { emit(query + it) }
-        pinyinBuffer = r.buffer
+        val old = pinyinBuffer
+        val next = appendLetter(pinyinBuffer, letter).buffer
+        pickedChars = retainPicked(old, next, pickedChars)
+        pinyinBuffer = next
     }
 
     /** 9 键档数字键：中文走拼音拼写器，英文走多击直出（旧行为）。 */
@@ -254,7 +266,9 @@ fun OnScreenKeyboard(
             emit(nineKey.press(digit, query, System.currentTimeMillis()))
             return
         }
+        val old = nineKeyComposer.composingText
         nineKeyComposer.press(digit, System.currentTimeMillis())?.let { emit(query + it) }
+        pickedChars = retainPicked(old, nineKeyComposer.composingText, pickedChars)
         bumpComposingTick()
     }
 
@@ -262,12 +276,16 @@ fun OnScreenKeyboard(
     fun onBackspace() {
         if (zhMode) {
             if (nineKeyMode) {
+                val old = nineKeyComposer.composingText
                 if (nineKeyComposer.backspace()) {
+                    pickedChars = retainPicked(old, nineKeyComposer.composingText, pickedChars)
                     bumpComposingTick()
                     return
                 }
             } else if (pinyinBuffer.isNotEmpty()) {
+                val old = pinyinBuffer
                 pinyinBuffer = pinyinBuffer.dropLast(1)
+                pickedChars = retainPicked(old, pinyinBuffer, pickedChars)
                 return
             }
         }
@@ -275,23 +293,25 @@ fun OnScreenKeyboard(
         if (query.isNotEmpty()) emit(query.dropLast(1))
     }
 
-    /** 空格：中文模式有合法音节时选首选字上屏，否则加空格。 */
+    /** 空格：中文模式有完整音节时按已选字 + 剩余音节首选字拼整词上屏，否则加空格。 */
     fun onSpace() {
         if (zhMode) {
             if (nineKeyMode) {
                 nineKeyComposer.settle()?.let { emit(query + it) }
                 bumpComposingTick()
-                val first = commitFirstCandidate(nineKeyComposer.buffer)
+                val first = commitPickedPhrase(nineKeyComposer.buffer, pickedChars)
                 if (first != null) {
                     nineKeyComposer.reset()
                     bumpComposingTick()
+                    pickedChars = emptyList()
                     emit(query + first)
                     return
                 }
             } else {
-                val first = commitFirstCandidate(pinyinBuffer)
+                val first = commitPickedPhrase(pinyinBuffer, pickedChars)
                 if (first != null) {
                     pinyinBuffer = ""
+                    pickedChars = emptyList()
                     emit(query + first)
                     return
                 }
@@ -300,22 +320,24 @@ fun OnScreenKeyboard(
         emit(query + " ")
     }
 
-    /** 搜索键：中文缓冲有合法音节时先把首选字上屏，再用完整关键词搜。 */
+    /** 搜索键：中文缓冲有完整音节时先把已选字 + 剩余音节首选字拼成的整词上屏，再用完整关键词搜。 */
     fun handleSearch() {
         var finalQuery = query
         if (zhMode) {
             if (nineKeyMode) {
                 nineKeyComposer.settle()?.let { finalQuery += it }
                 bumpComposingTick()
-                commitFirstCandidate(nineKeyComposer.buffer)?.let {
+                commitPickedPhrase(nineKeyComposer.buffer, pickedChars)?.let {
                     finalQuery += it
                     nineKeyComposer.reset()
                     bumpComposingTick()
                 }
+                pickedChars = emptyList()
             } else {
-                commitFirstCandidate(pinyinBuffer)?.let {
+                commitPickedPhrase(pinyinBuffer, pickedChars)?.let {
                     finalQuery += it
                     pinyinBuffer = ""
+                    pickedChars = emptyList()
                 }
             }
         }
@@ -326,6 +348,7 @@ fun OnScreenKeyboard(
     /** 切拼音档/切中英文时清掉未落定的拼音缓冲与多击状态。 */
     fun clearPinyinState() {
         pinyinBuffer = ""
+        pickedChars = emptyList()
         nineKeyComposer.reset()
         bumpComposingTick()
         nineKey.reset()
@@ -423,7 +446,7 @@ fun OnScreenKeyboard(
                         }
                     } else if (composingText.isNotEmpty()) {
                         Text(
-                            text = if (isSyllablePrefix(composingText)) {
+                            text = if (isLastSegmentPrefix(composingText)) {
                                 "继续拼…"
                             } else {
                                 "无此拼音候选，按删除修改（ü 用 v 代替，如 nv=女）"
@@ -433,7 +456,7 @@ fun OnScreenKeyboard(
                         )
                     } else {
                         Text(
-                            text = "中文模式：输入拼音，选字上屏；空格选首选字",
+                            text = "中文模式：连续输入拼音，打完一起选字；空格选首选词",
                             style = OrionTextStyles.Small,
                             color = OrionColors.TextSecondary,
                         )

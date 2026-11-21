@@ -21,9 +21,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalContext
+import android.util.Log
+import kotlinx.coroutines.delay
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import coil3.network.NetworkHeaders
@@ -185,11 +187,20 @@ fun posterLoadAttempts(url: String): List<String> {
     return listOf(url, url) + alternates.take(2).map { alt -> url.replaceFirst(host, alt) }
 }
 
+/** 单次海报尝试的最长等待（毫秒）。豆瓣某台 CDN 机子故障时请求可能挂起
+ *（建连后无数据、也不报错），只靠 onError 永远等不到推进；超时即换下个候选。
+ * 4 次尝试最坏约 24 秒出占位，不再无限灰框。 */
+private const val POSTER_ATTEMPT_TIMEOUT_MS = 6000L
+
 /**
- * 带重试 + 换图床的海报加载（v2.0.18）：
- * 豆瓣图床某台 CDN 机子偶发不可达/超时时（如 2026-11-19 热门行 4 张 img3 全灰、img2 全有），
+ * 带重试 + 换图床的海报加载（v2.0.18；v2.0.21 补超时兜底与日志）：
+ * 豆瓣图床某台 CDN 机子偶发不可达/超时时（如 2026-11-19 热门行 4 张 img3 全灰、img2 全有，
+ * 2026-11-21 同一幕重演：img3 的 6 张全灰、img2 的 1 张正常），
  * 旧 AsyncImage 只试一次、失败就永久灰框。现按 [posterLoadAttempts] 的候选顺序逐个试，
  * 全部失败才显示“暂无海报”占位，不再是光秃秃的灰框；url 变化时重试状态复位。
+ * v2.0.21 教训：onError 只在请求明确失败时来，挂起的请求（建连后无数据）永远等不到它，
+ * 之前就是这么一直灰下去的——现每轮尝试加 6 秒超时，超时也推进；每次尝试的成败都打
+ * Log（tag PosterImage），下次再灰直接看 logcat 就知道卡在哪一步。
  */
 @Composable
 fun PosterAsyncImage(
@@ -201,6 +212,23 @@ fun PosterAsyncImage(
     val attempts = remember(posterUrl) { posterLoadAttempts(posterUrl) }
     var attemptIndex by remember(posterUrl) { mutableIntStateOf(0) }
     var loadFailed by remember(posterUrl) { mutableStateOf(false) }
+    var loaded by remember(posterUrl) { mutableStateOf(false) }
+    // 超时兜底：只认自己启动时的那轮尝试，与 onError 同时触发时不重复推进；
+    // 成功后 loaded 置真，计时器到点也不推进。
+    LaunchedEffect(posterUrl, attemptIndex) {
+        if (attempts.isEmpty() || loadFailed || loaded) return@LaunchedEffect
+        val myAttempt = attemptIndex
+        delay(POSTER_ATTEMPT_TIMEOUT_MS)
+        if (!loaded && attemptIndex == myAttempt) {
+            Log.d("PosterImage", "poster timeout, attempt=$myAttempt url=${attempts[myAttempt]}")
+            if (myAttempt + 1 < attempts.size) {
+                attemptIndex = myAttempt + 1
+            } else {
+                Log.d("PosterImage", "poster all attempts failed (timeout): $posterUrl")
+                loadFailed = true
+            }
+        }
+    }
     if (attempts.isEmpty() || loadFailed) {
         Box(
             modifier = modifier.background(OrionColors.Surface),
@@ -217,8 +245,17 @@ fun PosterAsyncImage(
             model = posterImageRequest(attempts[attemptIndex]),
             contentDescription = contentDescription,
             contentScale = contentScale,
-            onError = {
-                if (attemptIndex + 1 < attempts.size) attemptIndex++ else loadFailed = true
+            onSuccess = { loaded = true },
+            onError = { error ->
+                Log.d(
+                    "PosterImage",
+                    "poster error, attempt=$attemptIndex url=${attempts[attemptIndex]} " +
+                        "error=${error.result.throwable}",
+                )
+                if (attemptIndex + 1 < attempts.size) attemptIndex++ else {
+                    Log.d("PosterImage", "poster all attempts failed: $posterUrl")
+                    loadFailed = true
+                }
             },
             modifier = modifier,
         )
