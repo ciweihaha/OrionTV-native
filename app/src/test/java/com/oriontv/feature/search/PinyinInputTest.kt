@@ -96,10 +96,10 @@ class PinyinInputTest {
     @Test
     fun `多音节首选词`() {
         assertEquals("中国", phraseFirstCandidate("zhongguo"))
-        // 注意：首选字拼出的不是“小城良方”——cheng 首选是橙（城排第 4），
-        // liang 的 20 个候选里根本没有“良”（词典缺字，见下一测试）；所以
-        // 整词预览只是“首选拼法”，用户要靠逐音节选字才能拼出想要的词。
-        assertEquals("小橙两方", phraseFirstCandidate("xiaochengliangfang"))
+        // 注意：首选字拼出的不是“小城良方”——cheng 首选是成（城排第 2），
+        // liang 首选是两；所以整词预览只是“首选拼法”，用户要靠逐音节选字
+        // 才能拼出想要的词（见下一测试）。
+        assertEquals("小成两方", phraseFirstCandidate("xiaochengliangfang"))
         assertEquals("中", phraseFirstCandidate("zhong"))
         assertNull(phraseFirstCandidate("zhongg"))
         assertNull(phraseFirstCandidate("zh"))
@@ -130,26 +130,37 @@ class PinyinInputTest {
         assertEquals("中国" to emptyList<String>(), selectCandidateStep("zhongguo", listOf("中"), 0))
         // 选完 guo 的“过”，整词拼好上屏
         assertEquals("中过" to emptyList<String>(), selectCandidateStep("zhongguo", listOf("中"), 2))
-        // 单音节：点字直接上屏
+        // 单音节：点字直接上屏（新词典按字频排：zhong 是中、种、重）
         assertEquals("中" to emptyList<String>(), selectCandidateStep("zhong", emptyList(), 0))
-        assertEquals("重" to emptyList<String>(), selectCandidateStep("zhong", emptyList(), 1))
+        assertEquals("种" to emptyList<String>(), selectCandidateStep("zhong", emptyList(), 1))
         assertEquals(null to emptyList<String>(), selectCandidateStep("zhongg", emptyList(), 0))
         assertEquals(null to emptyList<String>(), selectCandidateStep("", emptyList(), 0))
     }
 
     @Test
-    fun `逐音节选字拼小城良方受词典缺字限制`() {
+    fun `逐音节选字拼出小城良方`() {
+        // 词典补全后：liang 候选第 4 位是良（两、量、亮、良），逐音节选字能拼出“小城良方”。
         // xiao 选“小”（展示位 1）
         assertEquals(null to listOf("小"), selectCandidateStep("xiaochengliangfang", emptyList(), 1))
-        // cheng 选“城”（展示位 4：整词位 0，橙 1，成 2，程 3，城 4）
+        // cheng 选“城”（展示位 2：整词位 0，成 1，城 2）
         assertEquals(
             null to listOf("小", "城"),
-            selectCandidateStep("xiaochengliangfang", listOf("小"), 4),
+            selectCandidateStep("xiaochengliangfang", listOf("小"), 2),
         )
-        // liang 的候选里没有“良”——词典缺字，逐音节也拼不出“小城良方”，
-        // 只能搜“小城”再从结果里找；词典补字是后续工作（见记录）。
-        assertFalse(currentSyllableCandidates("xiaochengliangfang", listOf("小", "城")).contains("良"))
+        // liang 选“良”（展示位 4：整词位 0，两 1，量 2，亮 3，良 4），还没选完 fang
+        assertEquals(
+            null to listOf("小", "城", "良"),
+            selectCandidateStep("xiaochengliangfang", listOf("小", "城"), 4),
+        )
+        // fang 选“方”（展示位 1：整词位 0，方 1），最后一音节选完直接上屏
+        assertEquals(
+            "小城良方" to emptyList<String>(),
+            selectCandidateStep("xiaochengliangfang", listOf("小", "城", "良"), 1),
+        )
+        // 词典里 liang 候选第 4 位就是良；中途整词预览也跟随已选字变化
+        assertEquals(3, getCandidates("liang").indexOf("良"))
         assertEquals("小城两方", phrasePreview("xiaochengliangfang", listOf("小", "城")))
+        assertEquals("小城良方", phrasePreview("xiaochengliangfang", listOf("小", "城", "良")))
     }
 
     @Test
@@ -196,7 +207,7 @@ class PinyinInputTest {
     @Test
     fun `按下标取候选字越界返回 null`() {
         assertEquals("接", selectCandidate("jie", 0))
-        assertEquals("街", selectCandidate("jie", 1))
+        assertEquals("解", selectCandidate("jie", 1)) // 新词典按字频排：jie 是接、解、姐……（旧版是接、街）
         assertNull(selectCandidate("jie", 999))
         assertNull(selectCandidate("zx", 0))
     }
