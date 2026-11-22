@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,13 +61,21 @@ fun VideoCard(
     // InteractionSource 驱动（collectIsFocusedAsState）；获焦回调也改由该
     // 状态驱动，不再用 clickable 之后的 onFocusChanged（v2.0.5 真机上它
     // 没把 focused 状态带进组合）。
+    // v2.0.23 加固：InteractionSource 内部是计数（Focus +1 / Unfocus -1），
+    // LazyList 项重建时 source 换新、计数归零，节点仍持有焦点、回调却不再
+    // 来，高亮闪一下就灭、且不再恢复；再并一路 clickable 之前的
+    // onFocusChanged（hasFocus 含子孙焦点，与导航轨同款），任一为真即高亮——
+    // 节点态直接取自焦点节点，重建后自愈；本组件无可聚焦子孙，不会误报。
     val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
+    val focusedFromSource by interactionSource.collectIsFocusedAsState()
+    var nodeHasFocus by remember { mutableStateOf(false) }
+    val focused = focusedFromSource || nodeHasFocus
     LaunchedEffect(focused) {
         if (focused) onFocused?.invoke()
     }
     Column(
         modifier = modifier
+            .onFocusChanged { nodeHasFocus = it.hasFocus }
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。

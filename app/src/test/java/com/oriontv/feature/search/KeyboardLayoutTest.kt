@@ -1,5 +1,6 @@
 package com.oriontv.feature.search
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,6 +84,58 @@ class KeyboardLayoutTest {
         assertTrue(
             "固定部分 $fixed dp 超过预算六成 ${KEYBOARD_BUDGET_M3_DP * 0.6f}",
             fixed <= KEYBOARD_BUDGET_M3_DP * 0.6f,
+        )
+    }
+
+    // v2.0.23 贴底通栏：总高由内容定（固定部分 + 键行 × 64dp），不再由父级
+    // fillMaxHeight 撑满；键行 weight 均分后正好是 64dp，且九键总高不超过
+    // M3 平板 387dp 预算（贴底后上半区还剩空间放结果）。
+
+    @Test
+    fun `docked fullKey zh rows are exactly docked row height`() {
+        val total = keyboardDockedHeightDp(keyRowCount = 3, showCandidateRow = true)
+        val rowHeight = keyboardKeyRowHeightDp(
+            keyRowCount = 3, showCandidateRow = true, availableHeightDp = total,
+        )
+        assertEquals(KEYBOARD_DOCKED_KEY_ROW_HEIGHT_DP, rowHeight, 0.001f)
+    }
+
+    @Test
+    fun `docked nineKey zh rows meet two-line minimum`() {
+        // 9 键数字键是两行标签（数字 + 字母），行高下限 48dp。
+        val total = keyboardDockedHeightDp(keyRowCount = 4, showCandidateRow = true)
+        val rowHeight = keyboardKeyRowHeightDp(
+            keyRowCount = 4, showCandidateRow = true, availableHeightDp = total,
+        )
+        assertTrue(
+            "贴底 9 键行高 $rowHeight dp 小于两行下限 $KEYBOARD_MIN_TWO_LINE_ROW_HEIGHT_DP",
+            rowHeight >= KEYBOARD_MIN_TWO_LINE_ROW_HEIGHT_DP,
+        )
+    }
+
+    @Test
+    fun `docked tallest nineKey height fits M3 budget`() {
+        // 九键 4 行是最高的贴底模式，总高不应超过 M3 平板 387dp 预算。
+        val total = keyboardDockedHeightDp(keyRowCount = 4, showCandidateRow = true)
+        assertTrue(
+            "贴底 9 键总高 $total dp 超过 M3 预算 $KEYBOARD_BUDGET_M3_DP",
+            total <= KEYBOARD_BUDGET_M3_DP,
+        )
+    }
+
+    @Test
+    fun `docked symbol rows meet minimum`() {
+        // 符号板：3 行权重行 + 1 行固定底行（走 extraFixedRows）。
+        val total = keyboardDockedHeightDp(
+            keyRowCount = 3, showCandidateRow = false, extraFixedRows = 1,
+        )
+        val rowHeight = keyboardKeyRowHeightDp(
+            keyRowCount = 3, showCandidateRow = false,
+            availableHeightDp = total, extraFixedRows = 1,
+        )
+        assertTrue(
+            "贴底符号行高 $rowHeight dp 小于下限 $KEYBOARD_MIN_KEY_ROW_HEIGHT_DP",
+            rowHeight >= KEYBOARD_MIN_KEY_ROW_HEIGHT_DP,
         )
     }
 }

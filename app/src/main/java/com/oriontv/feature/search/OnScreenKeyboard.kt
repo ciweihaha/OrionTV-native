@@ -92,6 +92,24 @@ internal fun keyboardKeyRowHeightDp(
 ): Float =
     (availableHeightDp - keyboardFixedHeightDp(keyRowCount, showCandidateRow, extraFixedRows)) / keyRowCount
 
+/** 贴底通栏时单键行高（电视遥控操作，64dp 够大、又不至于把结果区挤没）。 */
+internal const val KEYBOARD_DOCKED_KEY_ROW_HEIGHT_DP = 64f
+
+/**
+ * 贴底通栏键盘总高（v2.0.23）：固定部分 + 键行 × 64dp；九键 4 行最高
+ * （约 376dp），与 M3 平板 387dp 预算同量级；键行 weight 均分，模式切换
+ * 时总高跟着变（全键中文 312dp / 九键中文 376dp / 全键英文无候选 258dp），
+ * 上半区 weight(1f) 自动让出空间。符号档 keyRowCount 只计 3 行权重行，
+ * 固定底行走 extraFixedRows。
+ */
+internal fun keyboardDockedHeightDp(
+    keyRowCount: Int,
+    showCandidateRow: Boolean,
+    extraFixedRows: Int = 0,
+): Float =
+    keyboardFixedHeightDp(keyRowCount, showCandidateRow, extraFixedRows) +
+        keyRowCount * KEYBOARD_DOCKED_KEY_ROW_HEIGHT_DP
+
 /**
  * 9 键多击输入纯逻辑（TV 应用同款思路，自写实现）：
  * 同一键 1 秒内连按循环切字母（2:abc、3:def、4:ghi、5:jkl、6:mno、7:pqrs、8:tuv、9:wxyz，
@@ -431,10 +449,26 @@ fun OnScreenKeyboard(
     // Jewel 第 9 轮 P2-6：符号板切档同款——三档任一切换都回新模式首键。
     LaunchedEffect(nineKeyMode, symbolMode) { firstKeyRequester.requestFocus() }
 
+    // v2.0.23 贴底通栏：总高由内容定（固定部分 + 键行 × 64dp），不再由父级
+    // fillMaxHeight 撑满半屏；符号档 3 行权重行 + 1 行固定底行。
+    val dockedHeightDp = keyboardDockedHeightDp(
+        keyRowCount = if (symbolMode) 3 else if (nineKeyMode) 4 else 3,
+        showCandidateRow = showCandidateBar,
+        extraFixedRows = if (symbolMode) 1 else 0,
+    )
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(OrionColors.KeyboardPanel, RoundedCornerShape(OrionDimens.PanelCornerRadius))
+            .height(dockedHeightDp.dp)
+            // 贴底：顶角圆角、底角直角，面板底边与屏幕底边齐平、无圆角缝。
+            .background(
+                OrionColors.KeyboardPanel,
+                RoundedCornerShape(
+                    topStart = OrionDimens.PanelCornerRadius,
+                    topEnd = OrionDimens.PanelCornerRadius,
+                ),
+            )
             .padding(KEYBOARD_COLUMN_PADDING_DP.dp),
         verticalArrangement = Arrangement.spacedBy(KEYBOARD_ROW_SPACING_DP.dp),
     ) {

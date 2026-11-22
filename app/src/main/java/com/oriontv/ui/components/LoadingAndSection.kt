@@ -56,6 +56,15 @@ fun LoadingAnimation(
                     .size(48.dp)
                     .rotate(rotation),
             ) {
+                // v2.0.23：270° 圆弧自带 90° 缺口，缺口转到顶部时像“上面
+                // 五分之一被遮住”；先画一圈淡色整圆底环，圆圈任何角度都完整。
+                drawArc(
+                    color = OrionColors.Brand.copy(alpha = 0.2f),
+                    startAngle = 0f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round),
+                )
                 drawArc(
                     color = OrionColors.Brand,
                     startAngle = 0f,

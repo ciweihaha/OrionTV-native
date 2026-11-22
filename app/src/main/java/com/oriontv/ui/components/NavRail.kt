@@ -114,14 +114,19 @@ private fun NavRailEntry(
     focusRequester: FocusRequester,
 ) {
     // v2.0.6 焦点修复：同 CategoryChip，聚焦态改由 InteractionSource 驱动。
+    // v2.0.23 加固（同 VideoCard）：再并一路 clickable 之前的
+    // onFocusChanged（hasFocus），任一为真即高亮。
     val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
+    val focusedFromSource by interactionSource.collectIsFocusedAsState()
+    var nodeHasFocus by remember { mutableStateOf(false) }
+    val focused = focusedFromSource || nodeHasFocus
     Box(
         modifier = Modifier
             .width(72.dp)
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
+            .onFocusChanged { nodeHasFocus = it.hasFocus }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹

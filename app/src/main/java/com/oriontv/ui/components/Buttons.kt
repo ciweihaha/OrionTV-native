@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
@@ -43,10 +46,16 @@ fun PrimaryButton(
     // 状态带进组合（dump 显示 focused=true，界面却无任何聚焦态），
     // onFocusChanged 的挂接位置决定了它观测哪个焦点目标，换 InteractionSource
     // 后不再依赖这一顺序。
+    // v2.0.23 加固（同 VideoCard）：InteractionSource 是计数，重建失同步
+    // 时高亮闪灭；再并一路 clickable 之前的 onFocusChanged（hasFocus），
+    // 任一为真即高亮，节点态重建后自愈。
     val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
+    val focusedFromSource by interactionSource.collectIsFocusedAsState()
+    var nodeHasFocus by remember { mutableStateOf(false) }
+    val focused = focusedFromSource || nodeHasFocus
     Box(
         modifier = modifier
+            .onFocusChanged { nodeHasFocus = it.hasFocus }
             // 触摸修复：clickable 本身可聚焦，并同时处理触摸点按与遥控器
             // 中心/回车键（松键触发，与旧 onKeyUp 同款）；旧的 onKeyUp 分支已删，
             // 不留两处按键处理（否则遥控器按一次会触发两次 onClick）。
@@ -74,10 +83,15 @@ fun SecondaryButton(
     enabled: Boolean = true,
 ) {
     // v2.0.6 焦点修复：同 PrimaryButton，聚焦态改由 InteractionSource 驱动。
+    // v2.0.23 加固（同 PrimaryButton）：再并一路 clickable 之前的
+    // onFocusChanged（hasFocus），任一为真即高亮。
     val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
+    val focusedFromSource by interactionSource.collectIsFocusedAsState()
+    var nodeHasFocus by remember { mutableStateOf(false) }
+    val focused = focusedFromSource || nodeHasFocus
     Box(
         modifier = modifier
+            .onFocusChanged { nodeHasFocus = it.hasFocus }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹
@@ -120,11 +134,16 @@ fun CategoryChip(
     // 旧的 onFocusChanged 在 clickable 之后接，v2.0.5 真机上焦点明明在 chip
     // 上（dump focused=true），focused 状态却始终为 false，30% 橙底、描边、
     // 放大一个都没渲染出来。
+    // v2.0.23 加固（同 PrimaryButton）：再并一路 clickable 之前的
+    // onFocusChanged（hasFocus），任一为真即高亮。
     val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
+    val focusedFromSource by interactionSource.collectIsFocusedAsState()
+    var nodeHasFocus by remember { mutableStateOf(false) }
+    val focused = focusedFromSource || nodeHasFocus
     val colors = categoryChipColors(selected, focused)
     Box(
         modifier = modifier
+            .onFocusChanged { nodeHasFocus = it.hasFocus }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null, // v2.0.6：电视上焦点高亮即提示，不用水波纹

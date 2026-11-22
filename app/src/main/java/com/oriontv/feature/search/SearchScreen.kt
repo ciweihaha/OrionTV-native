@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -304,325 +303,322 @@ fun SearchScreen(
     // 被量到 0 高、无声消失；移出 Column 后弹窗不再参与流式量测。
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(OrionDimens.ContentPadding),
+            modifier = Modifier.fillMaxSize(),
         ) {
-            // 顶部搜索框 + 屏上键盘 + 扫码输入入口。
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(OrionDimens.CapsuleRadius))
-                        .background(OrionColors.Surface)
-                        // C6-P1-1：获焦时 2dp 品牌色描边（设计稿焦点三件套：描边），
-                        // 未获焦 1dp 分隔线——搜索框是首进默认落点，必须看得见焦点。
-                        .border(
-                            width = if (searchBoxFocused) 2.dp else 1.dp,
-                            color = if (searchBoxFocused) OrionColors.Brand else OrionColors.Divider,
-                            shape = RoundedCornerShape(OrionDimens.CapsuleRadius),
-                        )
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
-                ) {
-                    BasicTextField(
-                        value = searchTextFieldValue,
-                        onValueChange = {
-                            searchTextFieldValue = it
-                            viewModel.onQueryChange(it.text)
-                        },
-                        textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .preferredFocus(searchRequester)
-                            .onFocusChanged {
-                                searchBoxFocused = it.isFocused
-                                // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
-                                // 后续加载不再重复收回。
-                                if (it.isFocused) resultsAreaHadFocus = false
-                            }
-                            .onPreviewKeyEvent { event ->
-                                // 第 73 轮：焦点移动必须发生在 KeyDown 预览阶段——
-                                // BasicTextField 在 KeyDown 就吃掉方向键做光标移动，
-                                // 等 KeyUp 再处理时焦点移动已无从发生（第 72 轮实测：
-                                // 搜索框里按 下/右 焦点出不去，提示词也点不动）。
-                                // 判定见 shouldMoveSearchFocusOnKeyDown（可单测）。
-                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                                if (
-                                    shouldMoveSearchFocusOnKeyDown(
-                                        key = event.key,
-                                        cursorStart = searchTextFieldValue.selection.start,
-                                        cursorEnd = searchTextFieldValue.selection.end,
-                                        textLength = searchTextFieldValue.text.length,
-                                    )
-                                ) {
-                                    focusManager.moveFocus(
-                                        when (event.key) {
-                                            Key.DirectionLeft -> FocusDirection.Left
-                                            Key.DirectionRight -> FocusDirection.Right
-                                            Key.DirectionUp -> FocusDirection.Up
-                                            else -> FocusDirection.Down
-                                        },
-                                    )
-                                } else {
-                                    false
-                                }
-                            },
-                        decorationBox = { innerTextField ->
-                            if (uiState.query.isEmpty()) {
-                                Text(text = "输入关键词搜索", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
-                            }
-                            innerTextField()
-                        },
-                    )
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                // Jewel 第 9 轮 P2-4：顶栏按钮行获焦即清结果区 latch（与键盘容器
-                // 同款）——焦点已移到“屏上键盘/手机扫码输入”按钮上时，下一次搜索
-                // 启动不再把焦点从按钮上拉回搜索框。Row 整体 hasFocus 含子孙，
-                // 按钮间移动不重复触发；搜索框不在本 Row 内，不受影响。
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = false },
-                ) {
-                    SecondaryButton(
-                        text = if (showKeyboard) "收起键盘" else "屏上键盘",
-                        onClick = { showKeyboard = !showKeyboard },
-                    )
-                    SecondaryButton(
-                        text = "手机扫码输入",
-                        onClick = { showRemoteInputModal = true },
-                        modifier = Modifier.preferredFocus(scanButtonRequester),
-                    )
-                }
-            }
-            // 第 76 轮 v2.0.14：搜索页改成影视 app（FongMi）搜索页的两栏布局——
-            // 键盘在左半边、结果/热搜在右半边（左右并排、各占一半），不再是悬浮
-            // 在底部的面板盖住结果区（键盘打开后结果区被压到 ~0、底部被遮挡，
-            // 用户 2026-11-19 10:22 模板照片）。键盘关着时右栏占满全宽。
-            Row(
+            // v2.0.23：键盘贴底通栏——根 Column 不再统一加左右/底部内边距；
+            // 上半区（搜索框 + 结果）自己带 48dp 左右、32dp 顶部内边距
+            // （与 ContentPadding 同值），键盘是根 Column 的末尾直系子项、
+            // 全宽、贴着屏幕底边。
+            Column(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .padding(
+                        start = 48.dp,
+                        end = 48.dp,
+                        top = 32.dp,
+                        bottom = if (showKeyboard) 16.dp else 32.dp,
+                    ),
             ) {
-                // 左栏：屏上键盘（百度电视版样式：QWERTY 全键 / 9 键 T9，见 OnScreenKeyboard）。
-                if (showKeyboard) {
-                    // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
-                    // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
+                // 顶部搜索框 + 屏上键盘 + 扫码输入入口。
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight()
-                            .padding(top = 16.dp, end = 16.dp)
-                            .onFocusChanged {
-                                keyboardHasFocus = it.hasFocus
-                                if (it.hasFocus) resultsAreaHadFocus = false
-                            },
+                            .clip(RoundedCornerShape(OrionDimens.CapsuleRadius))
+                            .background(OrionColors.Surface)
+                            // C6-P1-1：获焦时 2dp 品牌色描边（设计稿焦点三件套：描边），
+                            // 未获焦 1dp 分隔线——搜索框是首进默认落点，必须看得见焦点。
+                            .border(
+                                width = if (searchBoxFocused) 2.dp else 1.dp,
+                                color = if (searchBoxFocused) OrionColors.Brand else OrionColors.Divider,
+                                shape = RoundedCornerShape(OrionDimens.CapsuleRadius),
+                            )
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
                     ) {
-                        OnScreenKeyboard(
-                            query = uiState.query,
-                            onQueryChange = { viewModel.onQueryChange(it) },
-                            // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
-                            // 直接用它搜，不再读可能还没更新的 uiState.query。
-                            onSearch = { finalQuery ->
-                                showKeyboard = false
-                                viewModel.searchNow(finalQuery)
+                        BasicTextField(
+                            value = searchTextFieldValue,
+                            onValueChange = {
+                                searchTextFieldValue = it
+                                viewModel.onQueryChange(it.text)
                             },
-                            onDismiss = { showKeyboard = false },
-                            modifier = Modifier.fillMaxHeight(),
+                            textStyle = OrionTextStyles.Body.copy(color = OrionColors.Text),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .preferredFocus(searchRequester)
+                                .onFocusChanged {
+                                    searchBoxFocused = it.isFocused
+                                    // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
+                                    // 后续加载不再重复收回。
+                                    if (it.isFocused) resultsAreaHadFocus = false
+                                }
+                                .onPreviewKeyEvent { event ->
+                                    // 第 73 轮：焦点移动必须发生在 KeyDown 预览阶段——
+                                    // BasicTextField 在 KeyDown 就吃掉方向键做光标移动，
+                                    // 等 KeyUp 再处理时焦点移动已无从发生（第 72 轮实测：
+                                    // 搜索框里按 下/右 焦点出不去，提示词也点不动）。
+                                    // 判定见 shouldMoveSearchFocusOnKeyDown（可单测）。
+                                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                    if (
+                                        shouldMoveSearchFocusOnKeyDown(
+                                            key = event.key,
+                                            cursorStart = searchTextFieldValue.selection.start,
+                                            cursorEnd = searchTextFieldValue.selection.end,
+                                            textLength = searchTextFieldValue.text.length,
+                                        )
+                                    ) {
+                                        focusManager.moveFocus(
+                                            when (event.key) {
+                                                Key.DirectionLeft -> FocusDirection.Left
+                                                Key.DirectionRight -> FocusDirection.Right
+                                                Key.DirectionUp -> FocusDirection.Up
+                                                else -> FocusDirection.Down
+                                            },
+                                        )
+                                    } else {
+                                        false
+                                    }
+                                },
+                            decorationBox = { innerTextField ->
+                                if (uiState.query.isEmpty()) {
+                                    Text(text = "输入关键词搜索", style = OrionTextStyles.Body, color = OrionColors.TextWeak)
+                                }
+                                innerTextField()
+                            },
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    // Jewel 第 9 轮 P2-4：顶栏按钮行获焦即清结果区 latch（与键盘容器
+                    // 同款）——焦点已移到“屏上键盘/手机扫码输入”按钮上时，下一次搜索
+                    // 启动不再把焦点从按钮上拉回搜索框。Row 整体 hasFocus 含子孙，
+                    // 按钮间移动不重复触发；搜索框不在本 Row 内，不受影响。
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = false },
+                    ) {
+                        SecondaryButton(
+                            text = if (showKeyboard) "收起键盘" else "屏上键盘",
+                            onClick = { showKeyboard = !showKeyboard },
+                        )
+                        SecondaryButton(
+                            text = "手机扫码输入",
+                            onClick = { showRemoteInputModal = true },
+                            modifier = Modifier.preferredFocus(scanButtonRequester),
                         )
                     }
                 }
-                // 右栏：联想/历史 chip + 结果区。
+                // v2.0.23：两栏布局取消——结果区占满全宽（联想/历史 chip + 结果
+                // 网格都在上半区），键盘移到根 Column 末尾、贴底通栏（见下）。
+                // 第 73 轮：联想 chip + 历史 chip 移到键盘上方（输入时内容，理应在
+                // 输入框旁边）——原先在结果区顶部，键盘打开后结果区被压到 ~0，
+                // chip 被顶出屏幕、点不到（第 72 轮遗留 1a/1b）。
+                // 焦点 latch 与结果区同款：chip 获焦即置位，加载开始时 chip 卸载、
+                // 焦点丢失，effect 凭 latch 把焦点收回搜索框。
+                // 第 76 轮：两栏布局后 chip 在右栏顶部（与结果区同栏）。
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
+                ) {
+                    // 联想 chip（输入时出现，点按直接搜）。
+                    if (uiState.suggestions.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                            items(uiState.suggestions) { suggestion ->
+                                CategoryChip(
+                                    text = suggestion,
+                                    selected = false,
+                                    onClick = {
+                                        showKeyboard = false
+                                        viewModel.searchNow(suggestion)
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    // 第 74 轮：搜索历史 chip 常驻——输字后也不卸载（原来 query 非空
+                    // 即不渲染，历史一输字就消失、下方内容全往上跳）；每词旁的“删除”
+                    // 去掉，标题旁一个“清除”按钮，一点清空全部。
+                    if (uiState.history.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = "搜索历史",
+                                style = OrionTextStyles.SectionTitle,
+                                modifier = Modifier.weight(1f),
+                            )
+                            SecondaryButton(
+                                text = "清除",
+                                onClick = {
+                                    viewModel.clearHistory()
+                                    // 清空后整行被卸载，焦点回搜索框，不留在已卸载的按钮上。
+                                    searchRequester.requestFocus()
+                                },
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
+                            items(uiState.history) { keyword ->
+                                CategoryChip(
+                                    text = keyword,
+                                    selected = false,
+                                    onClick = {
+                                        showKeyboard = false
+                                        viewModel.searchHistory(keyword)
+                                        // C6-P1-3：点历史 chip 后搜新词，焦点回搜索框——
+                                        // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
+                                        searchRequester.requestFocus()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
+                // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
+                // 都是“搜完”，都收起，不再盖住下方结果区）。
+                // 第 76 轮：键盘已移到左栏（见上），这里不再重复渲染。
+
+                // Jewel 第 8 轮 P1-1：结果区容器（结果/错误区）——
+                // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
+                // effect 凭 latch（而非卸载后的现读焦点态）决定收回搜索框。
+                // 第 73 轮：联想 chip + 历史 chip 已移到键盘上方（本文件上部），
+                // 不再属于结果区。
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
+                        .fillMaxWidth()
+                        .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
                 ) {
-            // 第 73 轮：联想 chip + 历史 chip 移到键盘上方（输入时内容，理应在
-            // 输入框旁边）——原先在结果区顶部，键盘打开后结果区被压到 ~0，
-            // chip 被顶出屏幕、点不到（第 72 轮遗留 1a/1b）。
-            // 焦点 latch 与结果区同款：chip 获焦即置位，加载开始时 chip 卸载、
-            // 焦点丢失，effect 凭 latch 把焦点收回搜索框。
-            // 第 76 轮：两栏布局后 chip 在右栏顶部（与结果区同栏）。
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
-            ) {
-                // 联想 chip（输入时出现，点按直接搜）。
-                if (uiState.suggestions.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                        items(uiState.suggestions) { suggestion ->
-                            CategoryChip(
-                                text = suggestion,
-                                selected = false,
-                                onClick = {
-                                    showKeyboard = false
-                                    viewModel.searchNow(suggestion)
-                                },
-                            )
-                        }
-                    }
-                }
-
-                // 第 74 轮：搜索历史 chip 常驻——输字后也不卸载（原来 query 非空
-                // 即不渲染，历史一输字就消失、下方内容全往上跳）；每词旁的“删除”
-                // 去掉，标题旁一个“清除”按钮，一点清空全部。
-                if (uiState.history.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
+                Spacer(modifier = Modifier.height(24.dp))
+                when {
+                    uiState.isLoading -> {
                         Text(
-                            text = "搜索历史",
-                            style = OrionTextStyles.SectionTitle,
-                            modifier = Modifier.weight(1f),
-                        )
-                        SecondaryButton(
-                            text = "清除",
-                            onClick = {
-                                viewModel.clearHistory()
-                                // 清空后整行被卸载，焦点回搜索框，不留在已卸载的按钮上。
-                                searchRequester.requestFocus()
-                            },
+                            text = "正在搜索…",
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.TextSecondary,
                         )
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(OrionDimens.ChipSpacing)) {
-                        items(uiState.history) { keyword ->
-                            CategoryChip(
-                                text = keyword,
-                                selected = false,
-                                onClick = {
-                                    showKeyboard = false
-                                    viewModel.searchHistory(keyword)
-                                    // C6-P1-3：点历史 chip 后搜新词，焦点回搜索框——
-                                    // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
-                                    searchRequester.requestFocus()
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
-            // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
-            // 都是“搜完”，都收起，不再盖住下方结果区）。
-            // 第 76 轮：键盘已移到左栏（见上），这里不再重复渲染。
-
-            // Jewel 第 8 轮 P1-1：结果区容器（结果/错误区）——
-            // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
-            // effect 凭 latch（而非卸载后的现读焦点态）决定收回搜索框。
-            // 第 73 轮：联想 chip + 历史 chip 已移到键盘上方（本文件上部），
-            // 不再属于结果区。
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = true },
-            ) {
-            Spacer(modifier = Modifier.height(24.dp))
-            when {
-                uiState.isLoading -> {
-                    Text(
-                        text = "正在搜索…",
-                        style = OrionTextStyles.Body,
-                        color = OrionColors.TextSecondary,
-                    )
-                }
-                uiState.error != null -> {
-                    val error = uiState.error
-                    // 无结果提示 + “换个关键词”；其他错误也给分型文案 + 重试。
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        Text(text = error?.message ?: "", style = OrionTextStyles.Body)
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            PrimaryButton(
-                                text = "换个关键词",
-                                onClick = {
-                                    viewModel.clearQuery()
-                                    // C9-P1-2：error 置 null 后错误态 Column 卸载，焦点随
-                                    // “换个关键词”按钮一起丢；回搜索框（与删历史 chip、
-                                    // 点联想 chip 的现有做法一致）。
-                                    searchRequester.requestFocus()
-                                },
-                                modifier = Modifier.preferredFocus(changeKeywordRequester),
-                            )
-                            if (error !is SearchError.Empty) {
-                                SecondaryButton(
-                                    text = "重试",
-                                    onClick = { viewModel.searchNow(uiState.searchedQuery) },
-                                    modifier = Modifier.preferredFocus(retryRequester),
+                    uiState.error != null -> {
+                        val error = uiState.error
+                        // 无结果提示 + “换个关键词”；其他错误也给分型文案 + 重试。
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            Text(text = error?.message ?: "", style = OrionTextStyles.Body)
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                PrimaryButton(
+                                    text = "换个关键词",
+                                    onClick = {
+                                        viewModel.clearQuery()
+                                        // C9-P1-2：error 置 null 后错误态 Column 卸载，焦点随
+                                        // “换个关键词”按钮一起丢；回搜索框（与删历史 chip、
+                                        // 点联想 chip 的现有做法一致）。
+                                        searchRequester.requestFocus()
+                                    },
+                                    modifier = Modifier.preferredFocus(changeKeywordRequester),
                                 )
-                            }
-                            if (error is SearchError.NotConfigured) {
-                                SecondaryButton(
-                                    text = "去设置",
-                                    onClick = { onNavigate(OrionRoute.Settings) },
-                                )
-                            }
-                        }
-                    }
-                }
-                uiState.results.isNotEmpty() -> {
-                    LazyVerticalGrid(
-                        state = gridState,
-                        // 第 76 轮：两栏布局时右栏只剩一半宽，6 列卡太窄，改 3 列；
-                        // 键盘关着时右栏占满全宽，仍是 6 列（旧行为不变）。
-                        columns = GridCells.Fixed(if (showKeyboard) 3 else 6),
-                        horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
-                        verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(uiState.results) { index, result ->
-                            // B60-P2-1：FocusRequester() 带 @RememberInComposition，只能在
-                            // remember 里创建；裸放在组合里每次重组都会新建（新版 lint 报
-                            // error 阻断构建）。仍经 resultRequesters 共享表取，恢复逻辑不变。
-                            val resultRequester = remember(index) {
-                                resultRequesters.getOrPut(index) { FocusRequester() }
-                            }
-                            VideoCard(
-                                title = result.title,
-                                posterUrl = result.poster,
-                                meta = listOfNotNull(
-                                    result.year?.takeIf { it.isNotBlank() },
-                                    result.source_name,
-                                ).joinToString(" · ").ifBlank { null },
-                                onClick = {
-                                    onNavigate(
-                                        OrionRoute.Detail(
-                                            source = result.source,
-                                            id = result.id.orEmpty(),
-                                            title = result.title,
-                                        ),
+                                if (error !is SearchError.Empty) {
+                                    SecondaryButton(
+                                        text = "重试",
+                                        onClick = { viewModel.searchNow(uiState.searchedQuery) },
+                                        modifier = Modifier.preferredFocus(retryRequester),
                                     )
-                                },
-                                onFocused = { viewModel.savedResultKey = searchResultKey(result) },
-                                modifier = Modifier.preferredFocus(resultRequester),
-                            )
+                                }
+                                if (error is SearchError.NotConfigured) {
+                                    SecondaryButton(
+                                        text = "去设置",
+                                        onClick = { onNavigate(OrionRoute.Settings) },
+                                    )
+                                }
+                            }
                         }
                     }
+                    uiState.results.isNotEmpty() -> {
+                        LazyVerticalGrid(
+                            state = gridState,
+                            // v2.0.23：结果区恒占满全宽（键盘贴底、不占左右），恒 6 列。
+                            // （第 76 轮两栏 3 列已作废。）
+                            columns = GridCells.Fixed(6),
+                            horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
+                            verticalArrangement = Arrangement.spacedBy(OrionDimens.RowSpacing),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            itemsIndexed(uiState.results) { index, result ->
+                                // B60-P2-1：FocusRequester() 带 @RememberInComposition，只能在
+                                // remember 里创建；裸放在组合里每次重组都会新建（新版 lint 报
+                                // error 阻断构建）。仍经 resultRequesters 共享表取，恢复逻辑不变。
+                                val resultRequester = remember(index) {
+                                    resultRequesters.getOrPut(index) { FocusRequester() }
+                                }
+                                VideoCard(
+                                    title = result.title,
+                                    posterUrl = result.poster,
+                                    meta = listOfNotNull(
+                                        result.year?.takeIf { it.isNotBlank() },
+                                        result.source_name,
+                                    ).joinToString(" · ").ifBlank { null },
+                                    onClick = {
+                                        onNavigate(
+                                            OrionRoute.Detail(
+                                                source = result.source,
+                                                id = result.id.orEmpty(),
+                                                title = result.title,
+                                            ),
+                                        )
+                                    },
+                                    onFocused = { viewModel.savedResultKey = searchResultKey(result) },
+                                    modifier = Modifier.preferredFocus(resultRequester),
+                                )
+                            }
+                        }
+                    }
+                    // P2-12：初始空白态给引导，不留空白内容区。
+                    uiState.query.isBlank() && uiState.history.isEmpty() -> {
+                        Text(
+                            text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字，也可以打开屏上键盘输入。",
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.TextSecondary,
+                        )
+                    }
                 }
-                // P2-12：初始空白态给引导，不留空白内容区。
-                uiState.query.isBlank() && uiState.history.isEmpty() -> {
-                    Text(
-                        text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字，也可以打开屏上键盘输入。",
-                        style = OrionTextStyles.Body,
-                        color = OrionColors.TextSecondary,
+                } // Jewel 第 8 轮 P1-1：结果区容器结束。
+            } // v2.0.23：上半区（搜索框 + 结果）结束。
+            // v2.0.23：键盘贴底通栏——根 Column 的末尾直系子项、全宽、
+            // 底边与屏幕底边齐平；总高由键盘内容定（全键 312dp / 九键 376dp）。
+            if (showKeyboard) {
+                // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
+                // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged {
+                            keyboardHasFocus = it.hasFocus
+                            if (it.hasFocus) resultsAreaHadFocus = false
+                        },
+                ) {
+                    OnScreenKeyboard(
+                        query = uiState.query,
+                        onQueryChange = { viewModel.onQueryChange(it) },
+                        // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
+                        // 直接用它搜，不再读可能还没更新的 uiState.query。
+                        onSearch = { finalQuery ->
+                            showKeyboard = false
+                            viewModel.searchNow(finalQuery)
+                        },
+                        onDismiss = { showKeyboard = false },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
-            } // Jewel 第 8 轮 P1-1：结果区容器结束。
-                } // 第 76 轮：右栏（联想/历史 chip + 结果区）结束。
-            } // 第 76 轮：两栏 Row 结束。
-
         }
 
         // B30-P2-1：扫码弹窗挂根 Box 末尾（与设置页同款），不参与 Column
