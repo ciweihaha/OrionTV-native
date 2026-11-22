@@ -15,6 +15,7 @@ import java.io.IOException
 /**
  * awaitSearchLegs 双路等待测试（v2.0.17）：服务端腿慢/失败时搜索不能干等，
  * 20 秒上限一到就取消服务端腿、先用 agg 结果出结果；两路都失败时抛服务端错。
+ * 第 80 轮 v2.0.22：agg 腿同款 20 秒上限，慢 agg 腿也不能拖住已到手的服务端结果。
  */
 class SearchLegsTest {
 
@@ -84,5 +85,60 @@ class SearchLegsTest {
             assertEquals("srv", merged.first().source)
             assertEquals(2, merged.size)
         }
+    }
+
+    // 第 80 轮 v2.0.22：agg 腿也要有等待上限——agg 单次调用最坏约 66 秒，
+    // 服务端结果早到了也不能干等它；超时即取消 agg 腿、先用服务端结果出结果。
+    @Test
+    fun `slow agg leg times out and server results are returned`() = runBlocking {
+        supervisorScope {
+            val server = async { listOf(result("哪吒", "srv")) }
+            val agg = async { delay(60_000); listOf(result("哪吒2", "agg")) }
+            val start = System.currentTimeMillis()
+            val merged = awaitSearchLegs(
+                server, agg, "哪吒",
+                serverWaitMs = 5_000L, aggWaitMs = 100L,
+            )
+            val elapsed = System.currentTimeMillis() - start
+            // agg 腿 60 秒才回，服务端结果必须在远小于 60 秒内出来。
+            assertTrue("agg leg must not block on server results (elapsed=${elapsed}ms)", elapsed < 10_000)
+            assertEquals(listOf("哪吒"), merged.map { it.title })
+            agg.join()
+            assertTrue(agg.isCancelled)
+        }
+    }
+
+    @Test
+    fun `agg leg timeout exception falls back to server results`() = runBlocking {
+        supervisorScope {
+            val server = async { listOf(result("哪吒", "srv")) }
+            val agg = async<List<SearchResult>> {
+                // 真生成一个 TimeoutCancellationException（其构造器是 internal，无法直接 new）。
+                withTimeout(10) { delay(60_000) }
+                emptyList()
+            }
+            val merged = awaitSearchLegs(
+                server, agg, "哪吒",
+                serverWaitMs = 5_000L, aggWaitMs = 5_000L,
+            )
+            assertEquals(listOf("哪吒"), merged.map { it.title })
+        }
+    }
+
+    @Test
+    fun `both legs timing out throws the server error`() {
+        val thrown = assertThrows(IOException::class.java) {
+            runBlocking {
+                supervisorScope {
+                    val server = async { delay(60_000); listOf(result("服务端片", "srv")) }
+                    val agg = async { delay(60_000); listOf(result("哪吒", "agg")) }
+                    awaitSearchLegs(
+                        server, agg, "哪吒",
+                        serverWaitMs = 100L, aggWaitMs = 100L,
+                    )
+                }
+            }
+        }
+        assertTrue(thrown.message!!.contains("服务端搜索超时"))
     }
 }

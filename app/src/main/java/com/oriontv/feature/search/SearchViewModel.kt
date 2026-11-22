@@ -465,7 +465,13 @@ class SearchViewModel @Inject constructor(
             aggApi.searchVideos(query).list.orEmpty()
                 .map(DetailSearchLogic::mapAggItemToSearchResult)
         }
-        awaitSearchLegs(serverDeferred, aggDeferred, query, SERVER_SEARCH_WAIT_MS)
+        awaitSearchLegs(
+            serverDeferred,
+            aggDeferred,
+            query,
+            serverWaitMs = SERVER_SEARCH_WAIT_MS,
+            aggWaitMs = AGG_SEARCH_WAIT_MS,
+        )
     }
 
     /** 联想 chips：历史里含当前输入的词（最多 5 条）。 */
@@ -565,6 +571,14 @@ class SearchViewModel @Inject constructor(
          */
         const val SERVER_SEARCH_WAIT_MS = 20_000L
 
+        /**
+         * 第 80 轮 v2.0.22：agg 搜索腿的最长等待（毫秒，与服务端腿同为 20 秒）——
+         * agg 单次调用最坏 4 次尝试 × 15 秒读超时 + 1/2/3 秒退避 ≈ 66 秒，
+         * 之前 agg 腿的 await() 无上限，服务端结果早到了也要干等它；20 秒内
+         * agg 没回就取消 agg 腿、先用服务端结果出结果（两路都无结果时抛服务端错）。
+         */
+        const val AGG_SEARCH_WAIT_MS = 20_000L
+
         /** C4-P1-5：SavedStateHandle 键（搜索切走再回不丢结果）。 */
         const val SAVED_QUERY_KEY = "search_query"
         const val SAVED_SEARCHED_QUERY_KEY = "search_searched_query"
@@ -651,6 +665,10 @@ fun mergeSearchResults(
  * 结果出结果。服务端腿自身的超时（[TimeoutCancellationException]）算
  * 服务端失败、回落 agg；只有外层取消（普通 [CancellationException]）
  * 才原样抛出。两路都失败时抛服务端那边的错。
+ * 第 80 轮 v2.0.22：agg 腿同样最多等 aggWaitMs——旧实现只给服务端腿
+ * 设上限，agg 腿的 await() 无上限；agg 单次调用最坏 4 次尝试 × 15 秒
+ * 读超时 + 1/2/3 秒退避 ≈ 66 秒，服务端结果早到了也要干等它；超时即
+ * 取消 agg 腿、先用服务端结果出结果（与服务端腿同款对称处理）。
  * 取消必须原样抛出（runCatching 会吞 CancellationException，见内层检查）。
  */
 internal suspend fun awaitSearchLegs(
@@ -658,6 +676,7 @@ internal suspend fun awaitSearchLegs(
     aggDeferred: Deferred<List<SearchResult>>,
     query: String,
     serverWaitMs: Long,
+    aggWaitMs: Long = SearchViewModel.AGG_SEARCH_WAIT_MS,
 ): List<SearchResult> {
     var serverError: Throwable? = null
     val serverResults: List<SearchResult>? = try {
@@ -676,11 +695,22 @@ internal suspend fun awaitSearchLegs(
         serverError = e
         null
     }
-    val aggOutcome = runCatching { aggDeferred.await() }
-    aggOutcome.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-    val aggResults = aggOutcome.getOrNull()
+    // 第 80 轮 v2.0.22：agg 腿加与服务端腿同款的等待上限（见函数头注释）。
+    // agg 腿自身的超时算 agg 失败、回落服务端结果；外层取消原样抛出。
+    val aggResults: List<SearchResult>? = try {
+        withTimeoutOrNull(aggWaitMs) { aggDeferred.await() } ?: run {
+            aggDeferred.cancel()
+            null
+        }
+    } catch (e: TimeoutCancellationException) {
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
     if (serverResults == null && aggResults == null) {
-        throw serverError ?: aggOutcome.exceptionOrNull() ?: IOException("搜索失败")
+        throw serverError ?: IOException("搜索失败")
     }
     return mergeSearchResults(serverResults.orEmpty(), aggResults.orEmpty(), query)
 }
