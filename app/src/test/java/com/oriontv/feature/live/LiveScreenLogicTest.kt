@@ -232,6 +232,71 @@ class LiveScreenLogicTest {
     }
 
     @Test
+    fun `live root up down keys intercept only first press when all closed and root focused`() {
+        // 第 81 轮 C5：面板/EPG/确认框全关且焦点在根部时上/下恒为换台——首按
+        // KeyDown 在预览阶段拦截，不让空间导航把焦点偷到导航轨（松键再也
+        // 到不了根 onKeyUp 的 changeChannel，平板实测方向键不切台即此因）。
+        assertTrue(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionUp, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        assertTrue(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionDown, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        // 长按重复不走这里，仍由重复拦截换台
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionDown, rootFocused = true, repeatCount = 1,
+            ),
+        )
+        // 面板/EPG/确认框任一打开时不拦（上/下交给焦点移动）
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = true, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionUp, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = true, exitConfirmOpen = false,
+                key = Key.DirectionDown, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = true,
+                key = Key.DirectionUp, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        // 焦点在失败页/空态按钮上时不拦：上/下是按钮行内移动或失败页换台
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionDown, rootFocused = false, repeatCount = 0,
+            ),
+        )
+        // 左/右不是换台，不拦（左/右走切线路的谓词）
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionLeft, rootFocused = true, repeatCount = 0,
+            ),
+        )
+        assertFalse(
+            shouldInterceptLiveChannelKeys(
+                panelOpen = false, epgDialogOpen = false, exitConfirmOpen = false,
+                key = Key.DirectionRight, rootFocused = true, repeatCount = 0,
+            ),
+        )
+    }
+
+    @Test
     fun `failed overlay left right keys do not switch line`() {
         // A35-P1-1：失败页在时左/右是两按钮（“重试 / 频道面板”）的行内移动——
         // 按钮不消费方向键 KeyUp，根 onKeyUp 的 else 分支无条件 changeLine

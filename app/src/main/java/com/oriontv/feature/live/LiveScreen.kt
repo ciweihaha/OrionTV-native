@@ -187,6 +187,27 @@ internal fun shouldInterceptLiveLineKeys(
     (key == Key.DirectionLeft || key == Key.DirectionRight)
 
 /**
+ * 直播根部上/下键是否由预览拦截（可单测，第 81 轮 C5）：
+ * 面板/EPG/退出确认全关、且焦点在根部时，上/下恒为换台——首按 KeyDown
+ * 若不消费，空间导航会把焦点移走（上键可落到左侧导航轨，下键同理），
+ * 松键再也到不了根 onKeyUp 的 changeChannel；平板实测“方向键不切台、
+ * 确定键开列表不可靠”即此因（焦点一旦落在导航轨上，确定键在已选中的
+ * 直播项上什么都不做）。只拦首按 KeyDown（repeatCount == 0），长按重复
+ * 仍走下面的重复拦截换台；KeyUp 不拦，仍到根 onKeyUp 走换台。
+ * 焦点不在根部时（失败页按钮等）不拦，按钮行内移动不受影响。
+ * 与 [shouldInterceptLiveLineKeys]（左/右切线路）同款做法。
+ */
+internal fun shouldInterceptLiveChannelKeys(
+    panelOpen: Boolean,
+    epgDialogOpen: Boolean,
+    exitConfirmOpen: Boolean,
+    key: Key,
+    rootFocused: Boolean,
+    repeatCount: Int,
+): Boolean = !panelOpen && !epgDialogOpen && !exitConfirmOpen && rootFocused &&
+    repeatCount == 0 && (key == Key.DirectionUp || key == Key.DirectionDown)
+
+/**
  * A35-P1-1：失败页在时根部左/右松键是否切线路（可单测）——失败页
  * （playbackFailed）出现时左/右是失败页两按钮（“重试 / 频道面板”）的行内
  * 移动：按钮只是普通 clickable，不消费方向键 KeyUp，冒泡到根 onKeyUp 的
@@ -454,6 +475,23 @@ fun LiveScreen(
                         uiState.exitConfirmOpen,
                         event.key,
                         rootFocused,
+                    )
+                ) {
+                    return@onPreviewKeyEvent true
+                }
+                // 第 81 轮 C5：面板/EPG/确认框全关且焦点在根部时，上/下首按 KeyDown
+                // 在预览阶段消费——不消费时空间导航先把焦点移走（上键落导航轨），
+                // 松键到不了下面 onKeyUp 的 changeChannel，方向键换台失效；
+                // 与上面左/右切线路的拦截同款。长按重复（repeatCount > 0）
+                // 不走这里，仍由下面的重复拦截换台。
+                if (event.type == KeyEventType.KeyDown &&
+                    shouldInterceptLiveChannelKeys(
+                        uiState.panelOpen,
+                        uiState.epgDialogChannel != null,
+                        uiState.exitConfirmOpen,
+                        event.key,
+                        rootFocused,
+                        event.nativeKeyEvent.repeatCount,
                     )
                 ) {
                     return@onPreviewKeyEvent true

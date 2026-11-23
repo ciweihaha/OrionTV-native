@@ -211,15 +211,24 @@ fun OnScreenKeyboard(
      */
     onSearch: (String) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * 第 81 轮 A11：全键/九键与中/英文档位由调用方（搜索页）持有——键盘是
+     * showKeyboard 开关的，关了重开组合体会重建，档位放本函数里 remember
+     * 会丢回默认全键；放搜索页则关开不丢。符号板 ABC 回到进符号板前的档位。
+     */
+    nineKeyMode: Boolean,
+    onNineKeyModeChange: (Boolean) -> Unit,
+    zhMode: Boolean,
+    onZhModeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var nineKeyMode by remember { mutableStateOf(false) }
     // 第 80 轮：符号板档（?12 键进出；全键 / 9 键是页签，符号是叠加档）。
     var symbolMode by remember { mutableStateOf(false) }
+    // 第 81 轮 A11：进符号板前的档位——ABC 回到这里，不默认回全键。
+    var symbolReturnNineKey by remember { mutableStateOf(false) }
     val firstKeyRequester = remember { FocusRequester() }
     // 第 74 轮：内置中文拼音输入——中/英切换（默认中文）；中文模式字母进拼音缓冲、
     // 不直接上屏，候选栏点选上屏，空格选首选词；第 80 轮九键中文改 T9 数字码。
-    var zhMode by remember { mutableStateOf(true) }
     var pinyinBuffer by remember { mutableStateOf("") }
     // 第 79 轮：多音节一起选——pickedChars 是已为前面音节选好的字（按音节顺序），
     // 候选栏先给当前待选音节出字，选完最后一个音节整词上屏；改拼音字母时按
@@ -244,11 +253,20 @@ fun OnScreenKeyboard(
         zhMode -> letterAlternatives.getOrNull(segIndex)?.joinToString("") ?: pinyinBuffer
         else -> ""
     }
-    // 候选栏内容：中文走 displayCandidates（词典 + 整词预览），九键英文走 T9 词表；
+    // 第 81 轮 A7：当前切分列表（直接传给候选函数，不再只传拼成的拼音串——
+    // xi+an 与 xian 拼出来是同一个串，贪心重切会把分词悄悄丢回默认）。
+    val currentSegments: List<String> = when {
+        !zhMode -> emptyList()
+        nineKeyMode -> digitAlternatives.getOrNull(segIndex)
+            ?: segmentPinyin(effectivePinyin)
+        else -> letterAlternatives.getOrNull(segIndex)
+            ?: segmentPinyin(pinyinBuffer)
+    }
+    // 候选栏内容：中文走 displayCandidatesForSegments（词典 + 整词预览），九键英文走 T9 词表；
     // 全键英文与符号档没有候选栏。
     val candidates = when {
         symbolMode -> emptyList()
-        zhMode -> displayCandidates(effectivePinyin, pickedChars)
+        zhMode -> displayCandidatesForSegments(currentSegments, pickedChars)
         nineKeyMode -> t9EnglishCandidates(nineKeyDigits)
         else -> emptyList()
     }
@@ -293,7 +311,7 @@ fun OnScreenKeyboard(
             emit(query + word)
             return
         }
-        val (text, nextPicked) = selectCandidateStep(effectivePinyin, pickedChars, index)
+        val (text, nextPicked) = selectCandidateStepForSegments(currentSegments, pickedChars, index)
         if (text != null) {
             clearPinyinState()
             emit(query + text)
@@ -322,7 +340,7 @@ fun OnScreenKeyboard(
     fun onPunctuationKey() {
         var base = query
         if (zhMode) {
-            commitPickedPhrase(effectivePinyin, pickedChars)?.let {
+            commitPickedPhraseForSegments(currentSegments, pickedChars)?.let {
                 base += it
                 clearPinyinState()
             }
@@ -339,7 +357,7 @@ fun OnScreenKeyboard(
     /** 空格：中文模式有完整音节时按已选字 + 剩余音节首选字拼整词上屏；九键英文提交首选 T9 词；否则加空格。 */
     fun onSpace() {
         if (zhMode) {
-            val first = commitPickedPhrase(effectivePinyin, pickedChars)
+            val first = commitPickedPhraseForSegments(currentSegments, pickedChars)
             if (first != null) {
                 clearPinyinState()
                 emit(query + first)
@@ -414,7 +432,7 @@ fun OnScreenKeyboard(
     fun handleSearch() {
         var finalQuery = query
         if (zhMode) {
-            commitPickedPhrase(effectivePinyin, pickedChars)?.let {
+            commitPickedPhraseForSegments(currentSegments, pickedChars)?.let {
                 finalQuery += it
                 clearPinyinState()
             }
@@ -481,7 +499,7 @@ fun OnScreenKeyboard(
                 text = "拼音全键",
                 selected = !nineKeyMode,
                 onClick = {
-                    nineKeyMode = false
+                    onNineKeyModeChange(false)
                     symbolMode = false
                     clearPinyinState()
                 },
@@ -490,7 +508,7 @@ fun OnScreenKeyboard(
                 text = "拼音九键",
                 selected = nineKeyMode,
                 onClick = {
-                    nineKeyMode = true
+                    onNineKeyModeChange(true)
                     symbolMode = false
                     clearPinyinState()
                 },
@@ -589,6 +607,8 @@ fun OnScreenKeyboard(
                 KeyboardKey(
                     label = "ABC",
                     onClick = {
+                        // 第 81 轮 A11：回到进符号板前的档位（九键进、九键回），不默认回全键。
+                        onNineKeyModeChange(symbolReturnNineKey)
                         symbolMode = false
                         clearPinyinState()
                     },
@@ -629,6 +649,8 @@ fun OnScreenKeyboard(
                     KeyboardKey(
                         label = "?12",
                         onClick = {
+                            // 第 81 轮 A11：记下进符号板前的档位，ABC 按它回来。
+                            symbolReturnNineKey = nineKeyMode
                             symbolMode = true
                             clearPinyinState()
                         },
@@ -637,7 +659,7 @@ fun OnScreenKeyboard(
                     KeyboardKey(
                         label = if (zhMode) "中文" else "英文",
                         onClick = {
-                            zhMode = !zhMode
+                            onZhModeChange(!zhMode)
                             clearPinyinState()
                         },
                         modifier = Modifier.weight(1f).fillMaxHeight(),

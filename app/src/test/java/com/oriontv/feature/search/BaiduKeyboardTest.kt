@@ -74,6 +74,33 @@ class BaiduKeyboardTest {
     }
 
     @Test
+    fun `segmented xian as xi-an shows 西安 first not xian 现`() {
+        // 第 81 轮 A7 回归：分词把 xian 切成 xi+an 后，候选栏首选必须是“西安”，
+        // 不能悄悄贪心重切回 xian 的“现”——旧实现只传拼音串，分词按了等于没按。
+        assertEquals("现", displayCandidates("xian", emptyList())[0])
+        val segmented = displayCandidatesForSegments(listOf("xi", "an"), emptyList())
+        assertEquals("西安", segmented[0])
+        assertTrue("xi+an 候选里应有西", segmented.contains("西"))
+        // 点首选整词位直接上屏“西安”。
+        val (text, picked) = selectCandidateStepForSegments(listOf("xi", "an"), emptyList(), 0)
+        assertEquals("西安", text)
+        assertTrue(picked.isEmpty())
+        // 空格/搜索同样按 xi+an 拼词。
+        assertEquals("西安", commitPickedPhraseForSegments(listOf("xi", "an"), emptyList()))
+        // 逐字选：西 -> 安，选完上屏“西安”。
+        val xiIndex = segmented.indexOf("西")
+        assertTrue(xiIndex >= 0)
+        val (_, picked1) = selectCandidateStepForSegments(listOf("xi", "an"), emptyList(), xiIndex)
+        assertEquals(listOf("西"), picked1)
+        val cands1 = displayCandidatesForSegments(listOf("xi", "an"), picked1)
+        val anIndex = cands1.indexOf("安")
+        assertTrue(anIndex >= 0)
+        val (text2, picked2) = selectCandidateStepForSegments(listOf("xi", "an"), picked1, anIndex)
+        assertEquals("西安", text2)
+        assertTrue(picked2.isEmpty())
+    }
+
+    @Test
     fun `digit segmentation alternatives for 626 include man mao nao`() {
         val alts = segmentDigitCodeAlternatives("626")
         assertTrue("626 应有多种切分", alts.size >= 3)

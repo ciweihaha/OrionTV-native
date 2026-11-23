@@ -67,8 +67,11 @@ fun isComposablePinyin(input: String): Boolean {
 }
 
 /** 全是完整音节时，各音节首选字拼成的词（如 zhongguo -> 中国）；否则 null。 */
-fun phraseFirstCandidate(input: String): String? {
-    val segments = segmentPinyin(input)
+fun phraseFirstCandidate(input: String): String? =
+    phraseFirstCandidateForSegments(segmentPinyin(input))
+
+/** [phraseFirstCandidate] 的切分版：按给定的切分拼首选词，不再贪心重切。 */
+fun phraseFirstCandidateForSegments(segments: List<String>): String? {
     if (segments.isEmpty() || segments.any { !isValidSyllable(it) }) return null
     return segments.joinToString("") { getCandidates(it).firstOrNull() ?: "" }
 }
@@ -80,8 +83,11 @@ fun isLastSegmentPrefix(input: String): Boolean {
 }
 
 /** 已选字 + 其余完整音节的首选字拼成的整词预览；有未完成音节时 null。 */
-fun phrasePreview(input: String, picked: List<String>): String? {
-    val segments = segmentPinyin(input)
+fun phrasePreview(input: String, picked: List<String>): String? =
+    phrasePreviewForSegments(segmentPinyin(input), picked)
+
+/** [phrasePreview] 的切分版：按给定的切分拼整词预览，不再贪心重切。 */
+fun phrasePreviewForSegments(segments: List<String>, picked: List<String>): String? {
     if (segments.isEmpty() || segments.any { !isValidSyllable(it) }) return null
     return segments.mapIndexed { i, seg ->
         picked.getOrNull(i) ?: getCandidates(seg).firstOrNull() ?: ""
@@ -90,36 +96,60 @@ fun phrasePreview(input: String, picked: List<String>): String? {
 
 /** 当前待选的音节（picked 覆盖之后的第一个完整音节）；没有时 null。
  * 末段还没拼完时返回 null——用户还在打字，先不急着选前面的音节。 */
-fun currentSyllable(input: String, picked: List<String>): String? {
-    val segments = segmentPinyin(input)
+fun currentSyllable(input: String, picked: List<String>): String? =
+    currentSyllableForSegments(segmentPinyin(input), picked)
+
+/** [currentSyllable] 的切分版：按给定的切分取当前待选音节。 */
+fun currentSyllableForSegments(segments: List<String>, picked: List<String>): String? {
     if (segments.isEmpty() || segments.any { !isValidSyllable(it) }) return null
     return segments.getOrNull(picked.size)
 }
 
 /** 当前待选音节的候选字。 */
-fun currentSyllableCandidates(input: String, picked: List<String>): List<String> {
-    val seg = currentSyllable(input, picked) ?: return emptyList()
+fun currentSyllableCandidates(input: String, picked: List<String>): List<String> =
+    currentSyllableCandidatesForSegments(segmentPinyin(input), picked)
+
+/** [currentSyllableCandidates] 的切分版。 */
+fun currentSyllableCandidatesForSegments(segments: List<String>, picked: List<String>): List<String> {
+    val seg = currentSyllableForSegments(segments, picked) ?: return emptyList()
     return getCandidates(seg)
 }
 
 /** 候选行展示顺序：整词预览在首位（多音节且全是完整音节时），其后是当前待选音节的字（UI 层再截断到 10 个）。 */
-fun displayCandidates(input: String, picked: List<String>): List<String> {
-    if (input.isEmpty()) return emptyList()
-    val segments = segmentPinyin(input)
-    val preview = if (segments.size >= 2) phrasePreview(input, picked) else null
-    return listOfNotNull(preview) + currentSyllableCandidates(input, picked)
+fun displayCandidates(input: String, picked: List<String>): List<String> =
+    displayCandidatesForSegments(segmentPinyin(input), picked)
+
+/**
+ * [displayCandidates] 的切分版（第 81 轮 A7 根因修复）：
+ * 分词轮换出的切分（如 xian -> xi+an）拼成的拼音串与贪心切分（xian）完全
+ * 相同，旧实现只传拼音串、进函数又贪心重切一次，切分被悄悄丢回默认，
+ * 分词键在全键 xian 上按了等于没按。UI 层改传当前切分列表，候选栏按该
+ * 切分出词：xian 切 xi+an 时首选是“西安”，不再是 xian 的“现”。
+ */
+fun displayCandidatesForSegments(segments: List<String>, picked: List<String>): List<String> {
+    if (segments.isEmpty()) return emptyList()
+    val preview = if (segments.size >= 2) phrasePreviewForSegments(segments, picked) else null
+    return listOfNotNull(preview) + currentSyllableCandidatesForSegments(segments, picked)
 }
 
 /** 点选候选行第 index 个（展示顺序与 [displayCandidates] 一致）。
  * 返回（要上屏的整词，没有时 null；选好后的 picked 列表）：
  * 整词位：直接上屏整词；字位：记下该字，未选完继续选下一音节，选完则上屏整词。 */
-fun selectCandidateStep(input: String, picked: List<String>, index: Int): Pair<String?, List<String>> {
-    val segments = segmentPinyin(input)
+fun selectCandidateStep(input: String, picked: List<String>, index: Int): Pair<String?, List<String>> =
+    selectCandidateStepForSegments(segmentPinyin(input), picked, index)
+
+/** [selectCandidateStep] 的切分版：按给定的切分点选（与 [displayCandidatesForSegments] 同款切分）。 */
+fun selectCandidateStepForSegments(
+    segments: List<String>,
+    picked: List<String>,
+    index: Int,
+): Pair<String?, List<String>> {
     if (segments.isEmpty()) return null to picked
-    val preview = if (segments.size >= 2) phrasePreview(input, picked) else null
+    val preview = if (segments.size >= 2) phrasePreviewForSegments(segments, picked) else null
     if (preview != null && index == 0) return preview to emptyList()
     val charIndex = if (preview != null) index - 1 else index
-    val ch = currentSyllableCandidates(input, picked).getOrNull(charIndex) ?: return null to picked
+    val ch = currentSyllableCandidatesForSegments(segments, picked).getOrNull(charIndex)
+        ?: return null to picked
     val next = picked + ch
     return if (next.size >= segments.size) {
         next.joinToString("") to emptyList()
@@ -129,7 +159,12 @@ fun selectCandidateStep(input: String, picked: List<String>, index: Int): Pair<S
 }
 
 /** 空格/搜索：已选字 + 剩余音节首选字拼成的整词上屏；有未完成音节时 null。 */
-fun commitPickedPhrase(input: String, picked: List<String>): String? = phrasePreview(input, picked)
+fun commitPickedPhrase(input: String, picked: List<String>): String? =
+    commitPickedPhraseForSegments(segmentPinyin(input), picked)
+
+/** [commitPickedPhrase] 的切分版：按给定的切分拼整词上屏。 */
+fun commitPickedPhraseForSegments(segments: List<String>, picked: List<String>): String? =
+    phrasePreviewForSegments(segments, picked)
 
 /** 缓冲改动后保留仍有效的已选字：前面音节没变的保留，变了的及之后全丢。 */
 fun retainPicked(oldInput: String, newInput: String, picked: List<String>): List<String> {

@@ -135,6 +135,11 @@ fun SearchScreen(
     // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
     // 状态不丢（普通 remember 随组合处置而丢失）。
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
+    // 第 81 轮 A11：键盘档位（全键/九键、中/英文）由搜索页持有——键盘开着
+    // 时才在组合里，档位放键盘函数里 remember 会随开关重建丢回默认全键；
+    // 放这里则开关不丢档位（与上面 showKeyboard 的 rememberSaveable 同款意图）。
+    var keyboardNineKeyMode by remember { mutableStateOf(false) }
+    var keyboardZhMode by remember { mutableStateOf(true) }
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
 
@@ -615,6 +620,10 @@ fun SearchScreen(
                             viewModel.searchNow(finalQuery)
                         },
                         onDismiss = { showKeyboard = false },
+                        nineKeyMode = keyboardNineKeyMode,
+                        onNineKeyModeChange = { keyboardNineKeyMode = it },
+                        zhMode = keyboardZhMode,
+                        onZhModeChange = { keyboardZhMode = it },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
