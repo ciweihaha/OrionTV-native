@@ -58,6 +58,8 @@ class LiveViewModel @Inject constructor(
     private var digitCommitJob: Job? = null
     /** 稳定播出确认任务（P1-6）：播出满 10 秒才调 confirmStablePlayback 清零失败计数。 */
     private var stablePlayJob: Job? = null
+    /** 第 82 轮 v2.0.25：播出中卡死看门狗任务——已播出过的台连续缓冲超 30 秒即按断流处理。 */
+    private var stallWatchdogJob: Job? = null
     private var tickerJob: Job? = null
     private var epgRefreshJob: Job? = null
     /** A6-P2-5：“刷新直播源”在途任务——连点时第二次直接返回，不再并发拉网、
@@ -122,8 +124,17 @@ class LiveViewModel @Inject constructor(
         override fun onPlaybackStateChanged(playbackState: Int) {
             // A4-P2-9：同上，不是自己的播放不改直播的缓冲态。
             if (!playerManager.isCurrentOwner(playbackToken)) return
+            val buffering = playbackState == Player.STATE_BUFFERING
             _uiState.update {
-                it.copy(isBuffering = playbackState == Player.STATE_BUFFERING)
+                it.copy(isBuffering = buffering)
+            }
+            // 第 82 轮 v2.0.25：播出中卡死看门狗——已播出过（playingConfirmed）
+            // 又进缓冲时武装，30 秒仍无数据即按断流处理；首播缓冲不武装
+            // （playingConfirmed 还是 false，就绪超时管它）；出缓冲即撤防。
+            if (shouldArmStallWatchdog(playingConfirmed, buffering)) {
+                armStallWatchdog()
+            } else if (!buffering) {
+                stallWatchdogJob?.cancel()
             }
         }
     }
@@ -394,6 +405,8 @@ class LiveViewModel @Inject constructor(
         playbackToken = playerManager.claimPlayback()
         // 换台即开启新的稳定窗口：旧台的稳定确认任务不再有效（P1-6）。
         stablePlayJob?.cancel()
+        // 第 82 轮 v2.0.25：新开播即撤掉旧台的卡死看门狗（新会话首播缓冲由就绪超时管）。
+        stallWatchdogJob?.cancel()
         val url = controller.currentUrl ?: return
         playingConfirmed = false
         // A12-P2-1：回页时同台仍在缓冲——直接 play() 续播，不 stop()+playUrl()：
@@ -456,6 +469,9 @@ class LiveViewModel @Inject constructor(
 
     /** 断流：按 LiveController 的升级链处理（备用线路 → 下一台 → >5 次停手）。 */
     private fun handlePlaybackError() {
+        // 第 82 轮 v2.0.25：看门狗已触发即完成使命，先撤防——刷新链接在途时
+        // 播放器仍可能再报缓冲，不撤防会在刷新完成前又武装一条新的看门狗。
+        stallWatchdogJob?.cancel()
         // A4-P2-9：归属校验——点播页在前台时，直播页的监听器还挂着，
         // 点播的错误不能触发直播切台（会抢走点播的播放器）。
         if (!playerManager.isCurrentOwner(playbackToken)) return
@@ -552,6 +568,8 @@ class LiveViewModel @Inject constructor(
             is LiveErrorAction.GiveUp -> {
                 // 终端分支：就绪超时已无意义，取消它，免得 15 秒后多算一次失败并重复 Toast。
                 readyTimeoutJob?.cancel()
+                // 第 82 轮 v2.0.25：失败页已出，看门狗同样无意义，一并取消。
+                stallWatchdogJob?.cancel()
                 // C9-P2-1：失败页出现时若面板开着先关面板（再落焦点到“重试”）——
                 // 之前面板留在失败页底下，失败页的重试焦点与面板焦点打架；
                 // 与 C8-P2-3（播放页错误关抽屉）同款。
@@ -571,8 +589,34 @@ class LiveViewModel @Inject constructor(
                 // 面板打开时只提示不跳台：同样取消就绪超时；并在面板内留常驻“信号异常”提示，
                 // 不只靠 2 秒 Toast（播好后由 onIsPlayingChanged 清掉）。
                 readyTimeoutJob?.cancel()
+                // 第 82 轮 v2.0.25：只提示不动作时看门狗也不再跑（面板内手动换台会开播新会话）。
+                stallWatchdogJob?.cancel()
                 _uiState.update { it.copy(failCount = controller.failCount, signalError = true) }
                 showToast(action.message)
+            }
+        }
+    }
+
+    /**
+     * 第 82 轮 v2.0.25：武装播出中卡死看门狗——30 秒后仍在缓冲（且仍是本页
+     * 的播放、页面仍在前台、确实播出过）即按断流处理。delay 越过后二次核对
+     * （与就绪超时同款协作式取消 + 状态复核）：期间切台/重播/出缓冲都会
+     * 取消本任务，误触发不了；面板打开时断流链只提示不跳台，与
+     * handlePlaybackError 的既有行为一致，不另分支。
+     */
+    private fun armStallWatchdog() {
+        stallWatchdogJob?.cancel()
+        stallWatchdogJob = viewModelScope.launch {
+            delay(LiveController.STALL_WATCHDOG_MS)
+            if (
+                shouldFireStallWatchdog(
+                    stillBuffering = _uiState.value.isBuffering,
+                    playingConfirmed = playingConfirmed,
+                    isOwner = playerManager.isCurrentOwner(playbackToken),
+                    pageActive = pageActive,
+                )
+            ) {
+                handlePlaybackError()
             }
         }
     }
@@ -844,6 +888,7 @@ class LiveViewModel @Inject constructor(
      */
     private fun cancelPendingPlaybackJobs() {
         readyTimeoutJob?.cancel()
+        stallWatchdogJob?.cancel()
         cancelDigitCommit()
         panelTimerJob?.cancel()
     }
@@ -1012,6 +1057,7 @@ class LiveViewModel @Inject constructor(
         toastJob?.cancel()
         panelTimerJob?.cancel()
         stablePlayJob?.cancel()
+        stallWatchdogJob?.cancel()
         digitCommitJob?.cancel()
         playerManager.removeListener(playerListener)
         // 后台播放已移除（第 74 轮）：退出直播页即停播，不再按开关区分。
@@ -1140,6 +1186,26 @@ class LiveViewModel @Inject constructor(
          * delay 的任务仍会恢复执行，须凭 pagePaused 二次核对。
          */
         internal fun shouldFirePendingPlaybackTask(pagePaused: Boolean): Boolean = !pagePaused
+
+        /**
+         * 第 82 轮 v2.0.25：播出中卡死看门狗是否武装（可单测）——只有“已经播出
+         * 过、现在又进缓冲”才武装；首播缓冲（还没播出过）不武装，就绪超时管它；
+         * 已出缓冲时调用方直接撤防，不经此函数。
+         */
+        internal fun shouldArmStallWatchdog(playingConfirmed: Boolean, isBuffering: Boolean): Boolean =
+            playingConfirmed && isBuffering
+
+        /**
+         * 第 82 轮 v2.0.25：看门狗 30 秒到点是否按断流处理（可单测）——四项全
+         * 满足才处理：仍在缓冲、确实播出过、播放器仍归本页、页面仍在前台；
+         * 任一项不满足都是误触发（已恢复、已切台、已离页、点播抢走了播放器）。
+         */
+        internal fun shouldFireStallWatchdog(
+            stillBuffering: Boolean,
+            playingConfirmed: Boolean,
+            isOwner: Boolean,
+            pageActive: Boolean,
+        ): Boolean = stillBuffering && playingConfirmed && isOwner && pageActive
 
         /**
          * 刷新后 EPG 弹窗应持的新频道对象（可单测，第 7 轮 P2-12）：在新表里按

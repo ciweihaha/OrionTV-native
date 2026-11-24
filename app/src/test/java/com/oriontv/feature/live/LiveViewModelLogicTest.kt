@@ -235,4 +235,53 @@ class LiveViewModelLogicTest {
         )
         assertEquals(null, LiveViewModel.nextChannelUrl(noUrl, 0, "http://a/1.m3u8"))
     }
+
+    @Test
+    fun `stall watchdog arms only after playback confirmed and buffering`() {
+        // 第 82 轮 v2.0.25：播出中卡死才武装——首播缓冲（还没播出过）不武装，
+        // 就绪超时管它；已播出过但没在缓冲也不武装。
+        assertTrue(LiveViewModel.shouldArmStallWatchdog(playingConfirmed = true, isBuffering = true))
+        assertFalse(LiveViewModel.shouldArmStallWatchdog(playingConfirmed = false, isBuffering = true))
+        assertFalse(LiveViewModel.shouldArmStallWatchdog(playingConfirmed = true, isBuffering = false))
+        assertFalse(LiveViewModel.shouldArmStallWatchdog(playingConfirmed = false, isBuffering = false))
+    }
+
+    @Test
+    fun `stall watchdog fires only when still buffering and owned and foreground`() {
+        // 第 82 轮 v2.0.25：30 秒到点四项全满足才按断流处理——任一项不满足
+        // 都是误触发（已恢复、已切台、已离页、点播抢走了播放器）。
+        assertTrue(
+            LiveViewModel.shouldFireStallWatchdog(
+                stillBuffering = true, playingConfirmed = true, isOwner = true, pageActive = true,
+            ),
+        )
+        assertFalse(
+            LiveViewModel.shouldFireStallWatchdog(
+                stillBuffering = false, playingConfirmed = true, isOwner = true, pageActive = true,
+            ),
+        )
+        assertFalse(
+            LiveViewModel.shouldFireStallWatchdog(
+                stillBuffering = true, playingConfirmed = false, isOwner = true, pageActive = true,
+            ),
+        )
+        assertFalse(
+            LiveViewModel.shouldFireStallWatchdog(
+                stillBuffering = true, playingConfirmed = true, isOwner = false, pageActive = true,
+            ),
+        )
+        assertFalse(
+            LiveViewModel.shouldFireStallWatchdog(
+                stillBuffering = true, playingConfirmed = true, isOwner = true, pageActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `stall watchdog timeout is longer than ready timeout`() {
+        // 第 82 轮 v2.0.25：看门狗必须比 15 秒就绪超时长，否则首播缓冲时两条
+        // 超时叠加、失败计数多算一次。
+        assertTrue(LiveController.STALL_WATCHDOG_MS > LiveViewModel.LIVE_READY_TIMEOUT_MS)
+        assertEquals(30_000L, LiveController.STALL_WATCHDOG_MS)
+    }
 }
