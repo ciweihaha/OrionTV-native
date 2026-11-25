@@ -178,8 +178,8 @@ class SearchViewModel @Inject constructor(
             if (gen != generation) return@launch
             executeSearch(trimmed, gen)
         }
-        // Jewel 第 9 轮 P2-6：拼音输入时补 iQIYI 中文候选——屏上键盘敲出的是拼音
-        // 字母，历史联想只有搜过的词；拼音串发给 iQIYI 联想接口出中文候选，补在
+        // Jewel 第 9 轮 P2-6：拼音输入时补 iQIYI 中文候选——系统输入法敲出的
+        // 是拼音字母，历史联想只有搜过的词；拼音串发给 iQIYI 联想接口出中文候选，补在
         // 历史联想之后（mergeSuggestions）。联想失败/迟到时只留历史联想，不弹错。
         if (PinyinTable.isPinyinLike(trimmed)) {
             suggestJob = viewModelScope.launch {
@@ -741,17 +741,16 @@ fun findSavedResult(results: List<SearchResult>, savedKey: String?): Int {
 }
 
 /**
- * Jewel 第 8 轮 P1-1：搜索开始时是否把焦点收回搜索框（纯逻辑，可单测）——
+ * 搜索开始时是否把焦点收回搜索框（纯逻辑，可单测）——
  * 只在焦点确实在结果区（或刚从结果区因网格卸载而丢失，见 SearchScreen 的
- * resultsAreaHadFocus latch）时收回；焦点在屏上键盘按键上时不动
- * （遥控逐字输入不被偷焦点）；扫码弹窗开着时不动（焦点在弹窗内）。
+ * resultsAreaHadFocus latch）时收回；扫码弹窗开着时不动（焦点在弹窗内）。
  * C8-P1-3 的意图保留：远程输入触发新搜索、焦点在结果卡上时仍收回。
+ * 2026-11-25 输入法改版：自带屏上键盘已停用，keyboardHasFocus 参数随之删除。
  */
 fun shouldReclaimSearchFocusOnLoading(
     resultsAreaHadFocus: Boolean,
-    keyboardHasFocus: Boolean,
     remoteInputModalOpen: Boolean,
-): Boolean = resultsAreaHadFocus && !keyboardHasFocus && !remoteInputModalOpen
+): Boolean = resultsAreaHadFocus && !remoteInputModalOpen
 
 /**
  * Jewel 第 8 轮 P2-4：返回焦点恢复是否需要按保存键轮询（纯逻辑，可单测）——

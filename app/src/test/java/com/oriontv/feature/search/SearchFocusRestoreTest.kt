@@ -44,24 +44,13 @@ class SearchFocusRestoreTest {
     }
 
     @Test
-    fun `keyboard back handler yields to global modal`() {
-        // C12-P2-1：屏上键盘的 BackHandler 后注册、优先于 NavHost 的全局
-        // handler；全局弹窗开着时让位，返回键先关全局弹窗、而不是先收键盘。
-        assertTrue(shouldEnableKeyboardBackHandler(showKeyboard = true, globalModalOpen = false))
-        assertFalse(shouldEnableKeyboardBackHandler(showKeyboard = true, globalModalOpen = true))
-        assertFalse(shouldEnableKeyboardBackHandler(showKeyboard = false, globalModalOpen = false))
-    }
-
-    @Test
     fun `loading reclaims focus only from results area`() {
         // Jewel 第 8 轮 P1-1：焦点在结果卡上时收回（C8-P1-3 意图保留）；
-        // 焦点在屏上键盘按键上时不动；扫码弹窗开着时不动；
-        // 焦点从未进过结果区时不动（不做无谓跳转）。
-        assertTrue(shouldReclaimSearchFocusOnLoading(true, false, false))
-        assertFalse(shouldReclaimSearchFocusOnLoading(true, true, false))
-        assertFalse(shouldReclaimSearchFocusOnLoading(true, false, true))
-        assertFalse(shouldReclaimSearchFocusOnLoading(false, false, false))
-        assertFalse(shouldReclaimSearchFocusOnLoading(false, true, false))
+        // 扫码弹窗开着时不动；焦点从未进过结果区时不动（不做无谓跳转）。
+        // 2026-11-25 输入法改版：自带屏上键盘已停用，keyboardHasFocus 参数随之删除。
+        assertTrue(shouldReclaimSearchFocusOnLoading(true, false))
+        assertFalse(shouldReclaimSearchFocusOnLoading(true, true))
+        assertFalse(shouldReclaimSearchFocusOnLoading(false, false))
     }
 
     @Test

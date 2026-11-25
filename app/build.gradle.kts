@@ -78,8 +78,8 @@ android {
         applicationId = "com.oriontv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10730
-        versionName = "2.0.26"
+        versionCode = 10731
+        versionName = "2.0.27"
 
         // 内置 MoonTV 账号密码（第 75 轮）：构建时注入；空串 = 未配置，内置登录关闭。
         // 密码嵌进 APK 二进制（不在 git 里），这是内置账号固有的取舍，用户已确认要内置登录。

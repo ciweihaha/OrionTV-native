@@ -22,7 +22,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +34,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
@@ -64,10 +64,12 @@ import kotlinx.coroutines.delay
 
 /**
  * 搜索页（ui-design.md §5.5）：
- * 顶部搜索框（屏上键盘 + 扫码远程输入入口）+ 输入时下方联想 chips；
+ * 顶部搜索框（系统输入法 + 扫码远程输入入口）+ 输入时下方联想 chips；
  * 结果网格；无结果提示 + “换个关键词”；搜索历史 chips（常驻不跳、标题旁“清除”一键清空）；
  * 搜索不清空已输内容，返回搜索页保留上次结果。
  * 焦点（P1-4）：首进落搜索框；从详情返回时恢复上次点的结果卡片，不拉回搜索框。
+ * 2026-11-25 输入法改版：自带屏上键盘（全键/九键）已停用，搜索框获焦即弹
+ * 系统输入法（电视上装的百度输入法电视版）；没装或没设成默认时页内给引导。
  */
 @Composable
 fun SearchScreen(
@@ -82,7 +84,7 @@ fun SearchScreen(
     globalModalOpen: Boolean = false,
     /**
      * Jewel 第 9 轮 P2-4：左侧导航轨是否正持有焦点——轨获焦时结果区 latch
-     * 清掉，下一次搜索启动不再把焦点从轨上拉回搜索框（与键盘容器同款）。
+     * 清掉，下一次搜索启动不再把焦点从轨上拉回搜索框。
      */
     navRailHasFocus: Boolean = false,
 ) {
@@ -102,27 +104,24 @@ fun SearchScreen(
     var searchBoxFocused by remember { mutableStateOf(false) }
     // C10-P2-1：输入框内部用 TextFieldValue，才能知道光标位置（与设置输入框
     // 同款，见 SettingsInputRow 的 C7-P2-3）：光标不在边界时左右键只移光标；
-    // 光标已在行首/行尾时移焦点——左出到导航轨、右进“屏上键盘/手机扫码输入”
-    // 按钮，是有意逃逸，不是陷阱破口。
+    // 光标已在行首/行尾时移焦点——左出到导航轨、右进“手机扫码输入”按钮，
+    // 是有意逃逸，不是陷阱破口。
     // 第 73 轮：焦点移动改到 onPreviewKeyEvent（KeyDown 预览阶段）——
     // BasicTextField 在 KeyDown 就吃掉方向键做光标移动，KeyUp 阶段再处理
     // 焦点已无从移动（第 72 轮实测：搜索框里按 下/右 焦点出不去）。
     // 旧的 KeyUp 快照法（cursorBeforeLeftMove/cursorBeforeRightMove）随之删除。
     var searchTextFieldValue by remember { mutableStateOf(TextFieldValue(uiState.query)) }
-    // 外部改了 query（历史填回、清空、屏上键盘输入）时同步回输入框，光标落行尾。
+    // 外部改了 query（历史填回、清空、系统输入法输入）时同步回输入框，光标落行尾。
     LaunchedEffect(uiState.query) {
         if (uiState.query != searchTextFieldValue.text) {
             searchTextFieldValue = TextFieldValue(uiState.query, TextRange(uiState.query.length))
         }
     }
     // Jewel 第 8 轮 P1-1：加载开始即抢焦点时，必须区分焦点在哪——
-    // 焦点在屏上键盘按键上时绝不能收回搜索框（遥控逐字输入时每敲一字、
-    // 300ms 防抖一到就被偷走，键盘基本不可用）；焦点在结果区时才收回
-    // （C8-P1-3 原意图：远程输入触发新搜索、结果网格卸载后焦点有明确落点）。
+    // 焦点在结果区时才收回（C8-P1-3 原意图：远程输入触发新搜索、结果网格卸载后焦点有明确落点）。
     // 不能在 effect 里现读结果区焦点态：加载开始的同时结果网格即卸载，
     // 焦点随卸载节点一起丢失，现读到的已是 false、该收回的场景反而收不回；
-    // 故用 latch——进入结果区时置位，落到搜索框/键盘时才清掉。
-    var keyboardHasFocus by remember { mutableStateOf(false) }
+    // 故用 latch——进入结果区时置位，落到搜索框时才清掉。
     var resultsAreaHadFocus by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     var showRemoteInputModal by remember { mutableStateOf(false) }
@@ -132,16 +131,11 @@ fun SearchScreen(
     // 注意：必须放在 showRemoteInputModal 声明之后（Kotlin 局部变量先声明后引用）。
     val modalOpenState = rememberUpdatedState(globalModalOpen)
     val remoteModalOpenState = rememberUpdatedState(showRemoteInputModal)
-    // P2-10（第 5 轮）：键盘开关用 rememberSaveable——进详情返回后键盘
-    // 状态不丢（普通 remember 随组合处置而丢失）。
-    var showKeyboard by rememberSaveable { mutableStateOf(false) }
-    // 第 81 轮 A11：键盘档位（全键/九键、中/英文）由搜索页持有——键盘开着
-    // 时才在组合里，档位放键盘函数里 remember 会随开关重建丢回默认全键；
-    // 放这里则开关不丢档位（与上面 showKeyboard 的 rememberSaveable 同款意图）。
-    var keyboardNineKeyMode by remember { mutableStateOf(false) }
-    var keyboardZhMode by remember { mutableStateOf(true) }
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
+    // 2026-11-25 输入法改版：系统输入法引导判定（只读一次，不随重组反复查）。
+    val imeContext = LocalContext.current
+    val imeGuidance by remember { mutableStateOf(readImeGuidance(imeContext)) }
 
     // Jewel 第 9 轮 P2-4：导航轨获焦即清结果区 latch——焦点已移到轨上时，
     // 下一次搜索启动（远程输入文本到达/防抖到点）不再把焦点从轨上拉回搜索框。
@@ -149,26 +143,6 @@ fun SearchScreen(
     // 时结果区容器自己的 onFocusChanged 会重新置位 latch，不丢 P1-1 的收回语义。
     LaunchedEffect(navRailHasFocus) {
         if (navRailHasFocus) resultsAreaHadFocus = false
-    }
-
-    // C5-P1-1：屏上键盘由开变关时焦点回搜索框——之前键盘关闭后焦点留在已
-    // 卸载的键盘按键上，遥控器数秒内按什么都没反应。
-    // C11-P2-1：全局弹窗开着时不抢焦（弹窗关闭后由 tick effect 恢复）。
-    var keyboardWasOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(showKeyboard) {
-        if (showKeyboard) {
-            keyboardWasOpen = true
-            // 第 73 轮：应用内键盘打开时收起系统输入法——两键盘同时开会抢空间，
-            // 系统输入法还会把结果区再压一截。输入框焦点不受影响。
-            keyboardController?.hide()
-        } else if (keyboardWasOpen) {
-            keyboardWasOpen = false
-            // Jewel 第 8 轮 P1-1：键盘卸载时键盘焦点态不再回调，手动清掉，
-            // 不留陈旧的 keyboardHasFocus 拦住后续的加载抢焦。
-            keyboardHasFocus = false
-            // C11-P2-1：全局弹窗开着时不抢焦（弹窗关闭后由 tick effect 恢复）。
-            if (!globalModalOpen) searchRequester.requestFocus()
-        }
     }
 
     // P1-4/P2-9：首进落搜索框；返回时按条目键恢复上次的结果卡片。
@@ -224,10 +198,8 @@ fun SearchScreen(
     // C13-P2-1：加扫码弹窗门控——C12-P1-5 只给 tick effect 加了，加载/错误
     // 两个 effect 只有全局弹窗门控；扫码弹窗开着时搜索加载/失败会把焦点抢出
     // 弹窗。恢复口：扫码弹窗关闭后由它自己的关闭 effect 把焦点还给触发点。
-    // Jewel 第 8 轮 P1-1：旧实现无守卫——屏上键盘每敲一字、300ms 防抖一到、
-    // 搜索一开始就把焦点从键盘按键上偷回搜索框，遥控逐字输入基本不可用。
-    // 改为只在焦点确实在结果区时才收回（见 shouldReclaimSearchFocusOnLoading）：
-    // 焦点在键盘按键上时不动；扫码弹窗开着时不动（焦点在弹窗内）。
+    // Jewel 第 8 轮 P1-1：只在焦点确实在结果区时才收回（见 shouldReclaimSearchFocusOnLoading）：
+    // 焦点在搜索框/联想 chip 上时不动；扫码弹窗开着时不动（焦点在弹窗内）。
     // 结果区 latch 的道理见上面 resultsAreaHadFocus 的注释。
     // 两道门控取合取：C13-P2-1 的全局/扫码弹窗门控与 P1-1 的结果区 latch
     // 门控都要过才收回，任一不满足都不抢焦。
@@ -241,7 +213,6 @@ fun SearchScreen(
         if (uiState.isLoading && shouldRunSearchTickRestore(globalModalOpen, showRemoteInputModal) &&
             shouldReclaimSearchFocusOnLoading(
                 resultsAreaHadFocus = resultsAreaHadFocus,
-                keyboardHasFocus = keyboardHasFocus,
                 remoteInputModalOpen = showRemoteInputModal,
             )
         ) {
@@ -291,16 +262,11 @@ fun SearchScreen(
         }
     }
 
-    // P2-10（第 5 轮）：返回键先收屏上键盘。注册在弹窗 handler 之前，
-    // 两者都开时弹窗先关（后注册的优先）。
-    // C12-P2-1：全局弹窗开着时本 handler 让位——后注册优先于 NavHost 的
-    // 全局 handler，返回键会先收键盘、而不是先关视觉上在上的全局弹窗。
-    BackHandler(enabled = shouldEnableKeyboardBackHandler(showKeyboard, globalModalOpen)) { showKeyboard = false }
     // P2-5（第 5 轮）：返回键先关扫码弹窗，不直接 pop 搜索页。
-    // 顺序注意：弹窗在键盘之上，BackHandler 是后注册的优先；键盘的
-    // handler（P2-10）注册在这一行之前，两者都开时先关弹窗。
-    // C13-P1-2：加全局弹窗门控——同页键盘 handler、扫码弹窗自身、设置页兜底
+    // C13-P1-2：加全局弹窗门控——同页扫码弹窗自身、设置页兜底
     // 都有门控，唯独这处漏了；全局弹窗开着时返回键应先关全局弹窗。
+    // 2026-11-25 输入法改版：自带屏上键盘已停用，其 BackHandler 随之删除——
+    // 系统输入法打开时返回键由输入法自己消费（收起输入法），不需要 app 再拦一道。
     BackHandler(enabled = shouldEnableRemoteInputBackHandler(showRemoteInputModal, globalModalOpen)) { showRemoteInputModal = false }
 
     // B30-P2-1：根 Box + 扫码弹窗挂根级覆盖层（与设置页同款）——弹窗之前
@@ -310,10 +276,8 @@ fun SearchScreen(
         Column(
             modifier = Modifier.fillMaxSize(),
         ) {
-            // v2.0.23：键盘贴底通栏——根 Column 不再统一加左右/底部内边距；
-            // 上半区（搜索框 + 结果）自己带 48dp 左右、32dp 顶部内边距
-            // （与 ContentPadding 同值），键盘是根 Column 的末尾直系子项、
-            // 全宽、贴着屏幕底边。
+            // v2.0.23：根 Column 不再统一加左右/底部内边距；
+            // 上半区（搜索框 + 结果）自己带 48dp 左右、32dp 顶部内边距。
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -322,10 +286,10 @@ fun SearchScreen(
                         start = 48.dp,
                         end = 48.dp,
                         top = 32.dp,
-                        bottom = if (showKeyboard) 16.dp else 32.dp,
+                        bottom = 32.dp,
                     ),
             ) {
-                // 顶部搜索框 + 屏上键盘 + 扫码输入入口。
+                // 顶部搜索框 + 扫码输入入口。
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
@@ -355,7 +319,13 @@ fun SearchScreen(
                                     searchBoxFocused = it.isFocused
                                     // Jewel 第 8 轮 P1-1：焦点已回搜索框，结果区 latch 清掉，
                                     // 后续加载不再重复收回。
-                                    if (it.isFocused) resultsAreaHadFocus = false
+                                    if (it.isFocused) {
+                                        resultsAreaHadFocus = false
+                                        // 2026-11-25 输入法改版：搜索框获焦即弹系统输入法
+                                        // （电视上 BasicTextField 获焦不一定自动弹，显式 show 一次；
+                                        // FongMi 那边同款教训：系统输入法有时弹不出）。
+                                        keyboardController?.show()
+                                    }
                                 }
                                 .onPreviewKeyEvent { event ->
                                     // 第 73 轮：焦点移动必须发生在 KeyDown 预览阶段——
@@ -393,19 +363,15 @@ fun SearchScreen(
                         )
                     }
                     Spacer(modifier = Modifier.width(16.dp))
-                    // Jewel 第 9 轮 P2-4：顶栏按钮行获焦即清结果区 latch（与键盘容器
-                    // 同款）——焦点已移到“屏上键盘/手机扫码输入”按钮上时，下一次搜索
-                    // 启动不再把焦点从按钮上拉回搜索框。Row 整体 hasFocus 含子孙，
-                    // 按钮间移动不重复触发；搜索框不在本 Row 内，不受影响。
+                    // Jewel 第 9 轮 P2-4：顶栏按钮行获焦即清结果区 latch——焦点已移到
+                    // “手机扫码输入”按钮上时，下一次搜索启动不再把焦点从按钮上拉回搜索框。
+                    // Row 整体 hasFocus 含子孙，按钮间移动不重复触发；搜索框不在本 Row 内，不受影响。
+                    // 2026-11-25 输入法改版：“屏上键盘”按钮已删——输入走系统输入法，不再切自带键盘。
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.onFocusChanged { if (it.hasFocus) resultsAreaHadFocus = false },
                     ) {
-                        SecondaryButton(
-                            text = if (showKeyboard) "收起键盘" else "屏上键盘",
-                            onClick = { showKeyboard = !showKeyboard },
-                        )
                         SecondaryButton(
                             text = "手机扫码输入",
                             onClick = { showRemoteInputModal = true },
@@ -413,11 +379,37 @@ fun SearchScreen(
                         )
                     }
                 }
+                // 2026-11-25 输入法改版：系统输入法引导——没装输入法、或百度输入法
+                // 电视版装了没设成默认时，在搜索框下方给一行提示 + “去设置”按钮；
+                // 判定见 SystemIme.kt，正常情况（百度是默认、或本机用别的输入法）不显示。
+                if (imeGuidance != ImeGuidance.NONE) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = when (imeGuidance) {
+                                ImeGuidance.NO_IME -> "没检测到输入法：去当贝市场装百度输入法电视版，装好在设置里启用"
+                                ImeGuidance.BAIDU_NOT_DEFAULT -> "百度输入法电视版已装，但现在不是默认输入法，去设置里切换成默认"
+                                ImeGuidance.NONE -> ""
+                            },
+                            style = OrionTextStyles.Body,
+                            color = OrionColors.TextSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryButton(
+                            text = "去设置",
+                            onClick = { openImeSettings(imeContext) },
+                        )
+                    }
+                }
                 // v2.0.23：两栏布局取消——结果区占满全宽（联想/历史 chip + 结果
-                // 网格都在上半区），键盘移到根 Column 末尾、贴底通栏（见下）。
-                // 第 73 轮：联想 chip + 历史 chip 移到键盘上方（输入时内容，理应在
-                // 输入框旁边）——原先在结果区顶部，键盘打开后结果区被压到 ~0，
-                // chip 被顶出屏幕、点不到（第 72 轮遗留 1a/1b）。
+                // 网格都在上半区）。
+                // 第 73 轮：联想 chip + 历史 chip 移到搜索框下方（输入时内容，理应在
+                // 输入框旁边）——原先在结果区顶部，输入时 chip 被顶出屏幕、点不到
+                // （第 72 轮遗留 1a/1b）。
                 // 焦点 latch 与结果区同款：chip 获焦即置位，加载开始时 chip 卸载、
                 // 焦点丢失，effect 凭 latch 把焦点收回搜索框。
                 // 第 76 轮：两栏布局后 chip 在右栏顶部（与结果区同栏）。
@@ -435,7 +427,6 @@ fun SearchScreen(
                                     text = suggestion,
                                     selected = false,
                                     onClick = {
-                                        showKeyboard = false
                                         viewModel.searchNow(suggestion)
                                     },
                                 )
@@ -473,7 +464,6 @@ fun SearchScreen(
                                     text = keyword,
                                     selected = false,
                                     onClick = {
-                                        showKeyboard = false
                                         viewModel.searchHistory(keyword)
                                         // C6-P1-3：点历史 chip 后搜新词，焦点回搜索框——
                                         // 搜索框常驻，搜完结果出来后方向键可下移进结果区。
@@ -484,15 +474,10 @@ fun SearchScreen(
                         }
                     }
                 }
-                // P1-8：电视端屏上键盘（全键 + 9 键两档，最小可用实现）。
-                // P2-10（第 5 轮）：搜完收键盘（“搜索”键、联想 chip、历史 chip
-                // 都是“搜完”，都收起，不再盖住下方结果区）。
-                // 第 76 轮：键盘已移到左栏（见上），这里不再重复渲染。
-
                 // Jewel 第 8 轮 P1-1：结果区容器（结果/错误区）——
                 // 焦点进结果区即置位 latch；加载开始时网格卸载、焦点随之丢失，
                 // effect 凭 latch（而非卸载后的现读焦点态）决定收回搜索框。
-                // 第 73 轮：联想 chip + 历史 chip 已移到键盘上方（本文件上部），
+                // 第 73 轮：联想 chip + 历史 chip 已移到搜索框下方（本文件上部），
                 // 不再属于结果区。
                 Column(
                     modifier = Modifier
@@ -550,7 +535,7 @@ fun SearchScreen(
                     uiState.results.isNotEmpty() -> {
                         LazyVerticalGrid(
                             state = gridState,
-                            // v2.0.23：结果区恒占满全宽（键盘贴底、不占左右），恒 6 列。
+                            // v2.0.23：结果区恒占满全宽，恒 6 列。
                             // （第 76 轮两栏 3 列已作废。）
                             columns = GridCells.Fixed(6),
                             horizontalArrangement = Arrangement.spacedBy(OrionDimens.CardSpacing),
@@ -589,7 +574,7 @@ fun SearchScreen(
                     // P2-12：初始空白态给引导，不留空白内容区。
                     uiState.query.isBlank() && uiState.history.isEmpty() -> {
                         Text(
-                            text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字，也可以打开屏上键盘输入。",
+                            text = "输入关键词开始搜索，或点“手机扫码输入”用手机打字。",
                             style = OrionTextStyles.Body,
                             color = OrionColors.TextSecondary,
                         )
@@ -597,41 +582,10 @@ fun SearchScreen(
                 }
                 } // Jewel 第 8 轮 P1-1：结果区容器结束。
             } // v2.0.23：上半区（搜索框 + 结果）结束。
-            // v2.0.23：键盘贴底通栏——根 Column 的末尾直系子项、全宽、
-            // 底边与屏幕底边齐平；总高由键盘内容定（全键 312dp / 九键 376dp）。
-            if (showKeyboard) {
-                // Jewel 第 8 轮 P1-1：键盘容器焦点态（hasFocus 含子孙按键）——
-                // 焦点进键盘即清掉结果区 latch，加载开始的 effect 不再偷焦点。
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged {
-                            keyboardHasFocus = it.hasFocus
-                            if (it.hasFocus) resultsAreaHadFocus = false
-                        },
-                ) {
-                    OnScreenKeyboard(
-                        query = uiState.query,
-                        onQueryChange = { viewModel.onQueryChange(it) },
-                        // 第 74 轮：键盘传回完整关键词（含刚上屏的首选字），
-                        // 直接用它搜，不再读可能还没更新的 uiState.query。
-                        onSearch = { finalQuery ->
-                            showKeyboard = false
-                            viewModel.searchNow(finalQuery)
-                        },
-                        onDismiss = { showKeyboard = false },
-                        nineKeyMode = keyboardNineKeyMode,
-                        onNineKeyModeChange = { keyboardNineKeyMode = it },
-                        zhMode = keyboardZhMode,
-                        onZhModeChange = { keyboardZhMode = it },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
         }
 
         // B30-P2-1：扫码弹窗挂根 Box 末尾（与设置页同款），不参与 Column
-        // 流式量测——键盘开着时再开弹窗，键盘不再被压到 0 高。
+        // 流式量测——弹窗不再把结果区压到 0 高。
         if (showRemoteInputModal) {
             RemoteInputModal(
                 serverUrl = remoteState.serverUrl,
@@ -674,9 +628,9 @@ fun SearchScreen(
  * - Left：光标在行首（start <= 0）才移焦点（左出到导航轨）；
  *   不在行首时只移光标。
  * - Right：光标在行尾（end >= textLength）才移焦点
- *   （右进“屏上键盘/手机扫码输入”按钮）；不在行尾时只移光标。
+ *   （右进“手机扫码输入”按钮）；不在行尾时只移光标。
  * - Down/Up：永远移焦点——单行搜索框，无多行文本可移光标；
- *   键盘开着时 Down 进键盘，关着时 Down 进提示词/结果区。
+ *   Down 进提示词/结果区。
  * 注意：光标位置取的是 KeyDown 预览阶段读到的值（移动前位置），
  * 与旧快照法等价，但判定与移动发生在同一次事件里，不再跨阶段。 */
 internal fun shouldMoveSearchFocusOnKeyDown(
@@ -701,16 +655,8 @@ internal fun shouldRunSearchTickRestore(globalModalOpen: Boolean, remoteInputMod
     !globalModalOpen && !remoteInputModalOpen
 
 /**
- * 屏上键盘的 BackHandler 是否启用（可单测，C12-P2-1）：键盘开着且全局弹窗
- * 未开着时才启用——后注册优先于 NavHost 的全局 handler，全局弹窗开着时
- * 返回键应先关全局弹窗，而不是先收底下的键盘。
- */
-internal fun shouldEnableKeyboardBackHandler(showKeyboard: Boolean, globalModalOpen: Boolean): Boolean =
-    showKeyboard && !globalModalOpen
-
-/**
  * 扫码弹窗的 BackHandler 是否启用（可单测，C13-P1-2）：扫码弹窗开着且全局
- * 弹窗未开着时才启用——与键盘 handler 同款谓词结构；之前漏了全局弹窗门控，
+ * 弹窗未开着时才启用；之前漏了全局弹窗门控，
  * 全局弹窗开着时返回键会先关底下的扫码弹窗、而不是先关视觉上在上的全局弹窗。
  */
 internal fun shouldEnableRemoteInputBackHandler(remoteInputModalOpen: Boolean, globalModalOpen: Boolean): Boolean =
