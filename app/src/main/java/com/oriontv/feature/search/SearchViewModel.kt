@@ -34,6 +34,7 @@ import okhttp3.OkHttpClient
 import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.TimeSource
 import javax.inject.Inject
 
 /**
@@ -576,6 +577,8 @@ class SearchViewModel @Inject constructor(
          * agg 单次调用最坏 4 次尝试 × 15 秒读超时 + 1/2/3 秒退避 ≈ 66 秒，
          * 之前 agg 腿的 await() 无上限，服务端结果早到了也要干等它；20 秒内
          * agg 没回就取消 agg 腿、先用服务端结果出结果（两路都无结果时抛服务端错）。
+         * 第 83 轮 v2.0.26：此上限从搜索开始算（两腿共用一个截止时间，见
+         * [awaitSearchLegs]）——不是服务端腿结束后再等 20 秒，总等待 ≤ 20 秒。
          */
         const val AGG_SEARCH_WAIT_MS = 20_000L
 
@@ -669,6 +672,12 @@ fun mergeSearchResults(
  * 设上限，agg 腿的 await() 无上限；agg 单次调用最坏 4 次尝试 × 15 秒
  * 读超时 + 1/2/3 秒退避 ≈ 66 秒，服务端结果早到了也要干等它；超时即
  * 取消 agg 腿、先用服务端结果出结果（与服务端腿同款对称处理）。
+ * 第 83 轮 v2.0.26：两路共用一个截止时间——两腿同时起跑，agg 腿的预算
+ * 从搜索开始算，不是从服务端腿结束算；旧实现先等服务端腿满 serverWaitMs、
+ * 再等 agg 腿满 aggWaitMs，两路都慢时总等待最长 serverWaitMs + aggWaitMs
+ *（40 秒），与“搜索 20 秒出结果”不符；改后总等待 ≤ 两腿上限的最大值
+ *（20 秒），agg 腿只等剩下的预算（已回的腿不受影响：withTimeoutOrNull(0)
+ * 下已完成的 await 直接返回，不被取消）。
  * 取消必须原样抛出（runCatching 会吞 CancellationException，见内层检查）。
  */
 internal suspend fun awaitSearchLegs(
@@ -679,6 +688,9 @@ internal suspend fun awaitSearchLegs(
     aggWaitMs: Long = SearchViewModel.AGG_SEARCH_WAIT_MS,
 ): List<SearchResult> {
     var serverError: Throwable? = null
+    // 第 83 轮 v2.0.26：两腿同时起跑，从这里计时（纯 Kotlin 单调时钟，
+    // JVM 单测可用，不依赖 android.os.SystemClock）。
+    val startMark = TimeSource.Monotonic.markNow()
     val serverResults: List<SearchResult>? = try {
         withTimeoutOrNull(serverWaitMs) { serverDeferred.await() } ?: run {
             serverDeferred.cancel()
@@ -697,8 +709,11 @@ internal suspend fun awaitSearchLegs(
     }
     // 第 80 轮 v2.0.22：agg 腿加与服务端腿同款的等待上限（见函数头注释）。
     // agg 腿自身的超时算 agg 失败、回落服务端结果；外层取消原样抛出。
+    // 第 83 轮 v2.0.26：agg 腿只等剩下的预算——服务端腿已耗掉的时间不重算，
+    // 两腿总等待不超过 max(serverWaitMs, aggWaitMs)。
+    val aggRemainingMs = (aggWaitMs - startMark.elapsedNow().inWholeMilliseconds).coerceAtLeast(0L)
     val aggResults: List<SearchResult>? = try {
-        withTimeoutOrNull(aggWaitMs) { aggDeferred.await() } ?: run {
+        withTimeoutOrNull(aggRemainingMs) { aggDeferred.await() } ?: run {
             aggDeferred.cancel()
             null
         }

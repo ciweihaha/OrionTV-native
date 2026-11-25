@@ -141,4 +141,43 @@ class SearchLegsTest {
         }
         assertTrue(thrown.message!!.contains("服务端搜索超时"))
     }
+
+    // 第 83 轮 v2.0.26：两路共用一个截止时间——两腿同时起跑，agg 腿的预算
+    // 从搜索开始算；两路都慢时总等待 ≤ 两腿上限的最大值，而不是两上限之和
+    //（旧实现先等服务端腿满额、再等 agg 腿满额，两路各 400ms 时要等 800ms）。
+    @Test
+    fun `both slow legs total wait is capped at the shared deadline`() {
+        val start = System.currentTimeMillis()
+        val thrown = assertThrows(IOException::class.java) {
+            runBlocking {
+                supervisorScope {
+                    val server = async { delay(60_000); listOf(result("服务端片", "srv")) }
+                    val agg = async { delay(60_000); listOf(result("哪吒", "agg")) }
+                    awaitSearchLegs(
+                        server, agg, "哪吒",
+                        serverWaitMs = 400L, aggWaitMs = 400L,
+                    )
+                }
+            }
+        }
+        val elapsed = System.currentTimeMillis() - start
+        assertTrue(thrown.message!!.contains("服务端搜索超时"))
+        // 共享截止：总等待约 400ms（服务端腿上限）；旧实现约 800ms。
+        assertTrue("total wait must be capped at shared deadline (elapsed=${elapsed}ms)", elapsed < 650)
+    }
+
+    // 第 83 轮 v2.0.26：共享截止仍给晚到的 agg 腿留余地——服务端腿超时后，
+    // agg 腿在剩余预算内回来时结果照常用，不是一到服务端上限就丢 agg。
+    @Test
+    fun `agg result arriving within shared deadline is used after server timeout`() = runBlocking {
+        supervisorScope {
+            val server = async { delay(60_000); listOf(result("服务端片", "srv")) }
+            val agg = async { delay(250); listOf(result("哪吒", "agg")) }
+            val merged = awaitSearchLegs(
+                server, agg, "哪吒",
+                serverWaitMs = 100L, aggWaitMs = 500L,
+            )
+            assertEquals(listOf("哪吒"), merged.map { it.title })
+        }
+    }
 }
