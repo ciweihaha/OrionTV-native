@@ -42,10 +42,15 @@ fun readImeGuidance(context: Context): ImeGuidance {
     return try {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             ?: return ImeGuidance.NONE
+        // 第 84 轮：必须读“已启用”列表——inputMethodList 是“已安装”列表
+        //（getInputMethodList），装了没启用的输入法也在里面；按它判定会让
+        // “一个启用的输入法都没有”的 NO_IME 永远触发不了（键盘弹不出却
+        // 没有任何引导），也会把“百度装了没启用”误报成“已启用没设默认”。
+        // 读失败直接按“不用引导”返回，不用空列表冒充 NO_IME。
         val enabled = try {
-            imm.inputMethodList.map { it.id }
+            imm.enabledInputMethodList.map { it.id }
         } catch (_: Exception) {
-            emptyList()
+            return ImeGuidance.NONE
         }
         val def = try {
             Settings.Secure.getString(context.contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)

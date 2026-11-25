@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,11 +37,14 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -133,9 +137,20 @@ fun SearchScreen(
     val remoteModalOpenState = rememberUpdatedState(showRemoteInputModal)
     // 扫码弹窗关闭后焦点还给触发点（P1-5）。
     var modalWasOpen by remember { mutableStateOf(false) }
-    // 2026-11-25 输入法改版：系统输入法引导判定（只读一次，不随重组反复查）。
+    // 2026-11-25 输入法改版：系统输入法引导判定。
+    // 第 84 轮：不能只读一次——用户点“去设置”启用/切换默认输入法后返回，
+    // 只读一次的判定还是旧的，引导横幅赖着不走。回前台（ON_RESUME）时
+    // 重读一次（与首页/收藏页的 ON_RESUME 刷新同款）；重组本身不反复查。
     val imeContext = LocalContext.current
-    val imeGuidance by remember { mutableStateOf(readImeGuidance(imeContext)) }
+    var imeGuidance by remember { mutableStateOf(readImeGuidance(imeContext)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) imeGuidance = readImeGuidance(imeContext)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Jewel 第 9 轮 P2-4：导航轨获焦即清结果区 latch——焦点已移到轨上时，
     // 下一次搜索启动（远程输入文本到达/防抖到点）不再把焦点从轨上拉回搜索框。

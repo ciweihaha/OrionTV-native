@@ -45,6 +45,16 @@ class SystemImeTest {
     }
 
     @Test
+    fun `baidu enabled but default unknown asks to switch`() {
+        // 第 84 轮：默认输入法读不到（null）时，百度已启用仍应引导去切换，
+        // 不能因为默认未知就当作“百度已是默认”放行。
+        assertEquals(
+            ImeGuidance.BAIDU_NOT_DEFAULT,
+            decideImeGuidance(listOf("com.baidu.input/.ImeService"), null),
+        )
+    }
+
+    @Test
     fun `baidu id match is case insensitive`() {
         assertEquals(
             ImeGuidance.BAIDU_NOT_DEFAULT,
