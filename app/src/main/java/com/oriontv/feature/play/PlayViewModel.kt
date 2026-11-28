@@ -138,6 +138,16 @@ class PlayViewModel @Inject constructor(
     private var subtitleGeneration: Int = -1
     private var lastAppliedSubtitle: SubtitleTrackInfo? = null
 
+    /**
+     * 第 85 轮：本轮外挂字幕挂载是否已下发过外挂轨选中——挂外挂字幕时先
+     * setSubtitleTrack(null) 关内嵌轨（连 TEXT 型一起禁用），外挂轨的
+     * SELECTION_FLAG_DEFAULT 在禁用态下选不上，须在轨道表更新时显式
+     * 下发外挂轨 override（见 externalSubtitleTrackToApply）。下发过一次
+     * 后置真，用户手动切内嵌/关字幕不再被抢回；重新挂载外挂字幕
+     * （replayCurrentWithExternalSubtitle / startEpisode 外挂分支）时复位。
+     */
+    private var externalSubtitleApplied: Boolean = false
+
     /** 是否在前台（PlayScreen 的 ON_RESUME/ON_PAUSE 观察者维护；轮询门控见 startPolling，P2-9）。 */
     @Volatile
     var isForeground: Boolean = true
@@ -616,6 +626,9 @@ class PlayViewModel @Inject constructor(
             _uiState.update { it.copy(externalSubtitle = null) }
         }
         if (externalForThisVideo != null) {
+            // 第 85 轮：同集重挂（换源/重试）也是新一轮外挂挂载——上一集
+            // 关字幕的 TEXT 禁用态可能还在，轨道表更新时须重新下发外挂轨。
+            externalSubtitleApplied = false
             playerManager.playUrlWithSubtitle(
                 episodes[episodeIndex],
                 Uri.parse(externalForThisVideo.uriString),
@@ -1382,11 +1395,16 @@ class PlayViewModel @Inject constructor(
     private fun refreshSubtitleTracks() {
         val state = _uiState.value
         val allTracks = playerManager.availableSubtitleTracks()
-        // 第 76 轮 v2.0.15：外挂字幕挂着时不自动选内嵌轨——外挂字幕是
-        // SubtitleConfiguration 挂的，Media3 按 SELECTION_FLAG_DEFAULT 默认选它；
-        // 这里再下发内嵌 override 会盖掉外挂字幕。外挂轨（label = 外挂文件名）
-        // 从内嵌列表里滤掉，不在菜单里出现两次；只更新轨道列表供菜单展示，
-        // 选中态保持关（内嵌），外挂字幕名单独显示。
+        // 第 76 轮 v2.0.15：外挂字幕挂着时不自动选内嵌轨——这里再下发内嵌
+        // override 会盖掉外挂字幕。外挂轨（label = 外挂文件名）从内嵌列表里
+        // 滤掉，不在菜单里出现两次；只更新轨道列表供菜单展示，选中态保持
+        // 关（内嵌），外挂字幕名单独显示。
+        // 第 85 轮：旧注释以为外挂轨靠 SELECTION_FLAG_DEFAULT 就能被选上，
+        // 漏了挂载时 setSubtitleTrack(null) 把 TEXT 型禁用了——禁用类型的
+        // 轨 Media3 一律不选，外挂字幕永远不出字。外挂轨出现在轨道表后
+        // 须显式下发一次它的 override（解禁 TEXT 型 + 选中外挂轨，内嵌轨
+        // 仍不选）；下发过后不再抢，用户手动切内嵌/关字幕优先
+        //（见 externalSubtitleTrackToApply）。
         val externalName = state.externalSubtitle?.name
         val newTracks = if (externalName != null) {
             allTracks.filter { it.label != externalName }
@@ -1394,6 +1412,14 @@ class PlayViewModel @Inject constructor(
             allTracks
         }
         if (externalName != null) {
+            val externalTrack = externalSubtitleTrackToApply(
+                allTracks, externalName, externalSubtitleApplied,
+            )
+            if (externalTrack != null) {
+                playerManager.setSubtitleTrack(externalTrack)
+                lastAppliedSubtitle = externalTrack
+                externalSubtitleApplied = true
+            }
             if (newTracks != state.subtitleTracks || state.selectedSubtitleIndex != null) {
                 _uiState.update { it.copy(subtitleTracks = newTracks, selectedSubtitleIndex = null) }
             }
@@ -1500,6 +1526,9 @@ class PlayViewModel @Inject constructor(
         val positionMs = playerManager.currentPositionMs
         playerManager.setSubtitleTrack(null)
         lastAppliedSubtitle = null
+        // 第 85 轮：新一轮挂载——外挂轨出现在轨道表后须重新下发选中
+        //（setSubtitleTrack(null) 刚把 TEXT 型禁用，外挂轨默认标志选不上）。
+        externalSubtitleApplied = false
         if (external != null) {
             playerManager.playUrlWithSubtitle(
                 url, Uri.parse(external.uriString), external.mimeType, external.name, positionMs,

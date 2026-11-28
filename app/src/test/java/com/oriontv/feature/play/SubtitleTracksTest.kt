@@ -147,6 +147,32 @@ class SubtitleTracksTest {
     }
 
     @Test
+    fun `external track is found by file name label`() {
+        // 第 85 轮：外挂轨以文件名作 label 挂在媒体项上，按 label 认它。
+        val tracks = listOf(
+            track("中文", "zh", group = 0, index = 0),
+            track("movie.2026.srt", "zh", group = 1, index = 0),
+        )
+        assertEquals(tracks[1], findExternalSubtitleTrack(tracks, "movie.2026.srt"))
+        assertNull(findExternalSubtitleTrack(tracks, "other.srt"))
+        assertNull(findExternalSubtitleTrack(emptyList(), "movie.2026.srt"))
+    }
+
+    @Test
+    fun `external track applies once per mount and not after manual override`() {
+        // 第 85 轮：挂外挂字幕时 TEXT 型被禁用，外挂轨须显式下发选中；
+        // 本轮挂载下发过一次后不再抢（用户手动切内嵌/关字幕优先）。
+        val tracks = listOf(
+            track("中文", "zh", group = 0, index = 0),
+            track("movie.srt", "zh", group = 1, index = 0),
+        )
+        assertEquals(tracks[1], externalSubtitleTrackToApply(tracks, "movie.srt", externalApplied = false))
+        assertNull(externalSubtitleTrackToApply(tracks, "movie.srt", externalApplied = true))
+        // 外挂轨还没出现在轨道表（字幕文件未加载完）时不下发，等下一次轨道更新。
+        assertNull(externalSubtitleTrackToApply(listOf(tracks[0]), "movie.srt", externalApplied = false))
+    }
+
+    @Test
     fun `external subtitle file support and mime types`() {
         // 第 76 轮 v2.0.15：外挂字幕扩展名与 Media3 MIME 类型映射。
         assertTrue(isSupportedSubtitleFile("movie.srt"))

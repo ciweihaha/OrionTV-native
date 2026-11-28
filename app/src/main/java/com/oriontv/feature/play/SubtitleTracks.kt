@@ -193,3 +193,33 @@ fun resolveSubtitleRefresh(
     val trackToApply = targetIndex?.let { newTracks[it] }
     return SubtitleRefreshDecision(targetIndex, trackToApply, trackToApply != lastApplied)
 }
+
+/**
+ * 外挂字幕轨定位（可单测，第 85 轮）：外挂字幕以文件名作 label 挂在媒体项上
+ * （SubtitleConfiguration.setLabel），在 currentTracks 里按 label 认它
+ * （与 PlayViewModel 把它从内嵌列表里滤掉的认法一致）。
+ */
+fun findExternalSubtitleTrack(
+    tracks: List<SubtitleTrackInfo>,
+    externalName: String,
+): SubtitleTrackInfo? = tracks.firstOrNull { it.label == externalName }
+
+/**
+ * 本轮外挂字幕挂载要下发选中的外挂轨（可单测，第 85 轮）——外挂轨已出现在
+ * 轨道表、且本轮挂载还没下发过选中时返回它，否则 null。
+ *
+ * 背景：挂外挂字幕时 replayCurrentWithExternalSubtitle 先
+ * setSubtitleTrack(null) 关内嵌轨，它把 TEXT 型一并禁用；Media3 对禁用
+ * 类型的轨一律不选，外挂轨的 SELECTION_FLAG_DEFAULT 也选不上——
+ * “已挂字幕”却永远不出字（旧注释以为默认标志够用，漏了禁用态）。
+ * 轨道表更新时须显式下发外挂轨 override（setSubtitleTrack 非 null
+ * 会先解禁 TEXT 型）。
+ * externalApplied 记“本轮挂载已下发过”：用户之后手动切内嵌/关字幕时
+ * 不再抢回外挂轨（手动选择优先）；重新挂载外挂字幕时调用方复位它。
+ */
+fun externalSubtitleTrackToApply(
+    tracks: List<SubtitleTrackInfo>,
+    externalName: String,
+    externalApplied: Boolean,
+): SubtitleTrackInfo? =
+    if (externalApplied) null else findExternalSubtitleTrack(tracks, externalName)
